@@ -1,0 +1,266 @@
+<sect1><title>内核参数解析</title>
+<sect2><title>前言</title>
+	<para>
+尽管内核对传递给它的参数进行解析的代码相对简单，但是这并不意味着它们不重要。内核并不是一次性就完成对所有的参数解析，而是经历了三个阶段。
+<itemizedlist> 
+	<listitem>第一个阶段位于特定架构的setup_arch调用的parse_cmdline函数中。它用来解析所有__early_begin和__early_end地址之间的参数。这些参数__early_param来定义，通常它们是内存配置相关的，因为这是为了生成页表以及实现内存管理做准备。</listitem>
+	<listitem>回到start_kernel函数，所有未被parse_cmdline函数解析的参数均被传递给setup_command_line函数，该函数主要用来保存这些参数备用。接着parse_early_param将继续解析剩下的参数。</listitem>
+	<listitem></listitem>
+</itemizedlist>
+ARM体系中通过__early_param声明的参数的一个示例：
+<programlisting><![CDATA[
+./mm/mmu.c:125:__early_param("cachepolicy=", early_cachepolicy);
+./mm/mmu.c:133:__early_param("nocache", early_nocache);
+./mm/mmu.c:141:__early_param("nowb", early_nowrite);
+./mm/mmu.c:153:__early_param("ecc=", early_ecc);
+./mm/mmu.c:655:__early_param("vmalloc=", early_vmalloc);
+./mm/init.c:46:__early_param("initrd=", early_initrd);
+./kernel/setup.c:415:__early_param("mem=", early_mem);
+]]></programlisting>
+setup_command_line的执行位于setup_arch之后，但是早于parse_cmdline。所有未被__early_param定义的参数通过command_line传递给它。
+<programlisting><![CDATA[
+static void __init setup_command_line(char *command_line)
+{
+	saved_command_line = alloc_bootmem(strlen (boot_command_line)+1);
+	static_command_line = alloc_bootmem(strlen (command_line)+1);
+	strcpy (saved_command_line, boot_command_line);
+	strcpy (static_command_line, command_line);
+}
+]]></programlisting>
+在setup_command_line中saved_command_line和static_command_line首先通过Bootmem机制分配内存，然后分别保存未处理的原始命令行，以及通过parse_cmdline处理过的命令行，一个实际的示例如下：
+<programlisting><![CDATA[
+CONFIG_CMDLINE="root=/dev/mtdblock2 rootfstype=cramfs init=/linuxrc console=ttySAC0,115200 mem=256M"
+
+saved_command_line:root=/dev/mtdblock2 rootfstype=cramfs console=ttySAC0,115200 mem=256M bootmem_debug=1
+static_command_line:root=/dev/mtdblock2 rootfstype=cramfs console=ttySAC0,115200 bootmem_debug=1
+]]></programlisting>
+</para>
+</sect2>
+<sect2><title>parse_args</title>
+在start_kernel中通过parse_args对剩下的参数继续解析。代码如下，显然又分为两个阶段，第一个阶段叫"early options"，位于parse_early_param，实际上它也是对parse_args函数的调用。第二个阶段叫"Booting kernel"。
+<programlisting><![CDATA[
+	parse_early_param();
+	parse_args("Booting kernel", static_command_line, __start___param,
+		   __stop___param - __start___param,
+		   &unknown_bootoption);
+]]></programlisting>
+parse_early_param函数自身会做一个检查，以防止函数被多次调用。boot_command_line是原始参数，所以"early options"阶段是对所有参数尝试解析，而实际的解析函数就是do_early_param。
+<programlisting><![CDATA[
+void __init parse_early_param(void)
+{
+	static __initdata int done = 0;
+	static __initdata char tmp_cmdline[COMMAND_LINE_SIZE];
+
+	if (done)
+		return;
+
+	/* All fall through to do_early_param. */
+	strlcpy(tmp_cmdline, boot_command_line, COMMAND_LINE_SIZE);
+	parse_args("early options", tmp_cmdline, NULL, 0, do_early_param);
+	done = 1;
+}
+]]></programlisting>
+do_early_param尝试对所有__setup_start和__setup_end间的struct obs_kernel_param类型中所有early成员为1的项进行匹配。这需要查看一下内核的链接脚本：
+<programlisting><![CDATA[
+arch/arm/kernel/vmlinux.lds.S
+      __setup_start = .;
+              *(.init.setup)
+      __setup_end = .;
+]]></programlisting>
+显然区间中的内容为.init.setup定义的段，所有使用该段的数据均由__setup_param，__setup和early_param定义。但是注意到__setup_param的最后一个参数，它决定了是在第一阶段被解析：early_param，还是第二阶段来解析：__setup。
+<programlisting><![CDATA[
+include/linux/init.h
+#define __setup_param(str, unique_id, fn, early)                        \
+        static char __setup_str_##unique_id[] __initdata __aligned(1) = str; \
+        static struct obs_kernel_param __setup_##unique_id      \
+                __used __section(.init.setup)                   \
+                __attribute__((aligned((sizeof(long)))))        \
+                = { __setup_str_##unique_id, fn, early }
+
+#define __setup(str, fn)                                        \
+        __setup_param(str, fn, fn, 0)
+
+/* NOTE: fn is as per module_param, not __setup!  Emits warning if fn
+ * returns non-zero. */
+#define early_param(str, fn)                                    \
+        __setup_param(str, fn, fn, 1)
+]]></programlisting>
+通过early_param声明的早期变量主要集中在mm文件夹和init文件夹下的代码中：
+<programlisting><![CDATA[
+mm/
+./page_alloc.c:2084:early_param("numa_zonelist_order", setup_numa_zonelist_order);
+./page_alloc.c:4119:early_param("kernelcore", cmdline_parse_kernelcore);
+./page_alloc.c:4120:early_param("movablecore", cmdline_parse_movablecore);
+./bootmem.c:46:early_param("bootmem_debug", bootmem_debug_setup);
+./mm_init.c:137:early_param("mminit_loglevel", set_mminit_loglevel);
+]]></programlisting>
+<programlisting><![CDATA[
+./init/main.c:158:early_param("nosmp", nosmp);
+./init/main.c:169:early_param("maxcpus", maxcpus);
+./init/main.c:249:early_param("debug", debug_kernel);
+./init/main.c:250:early_param("quiet", quiet_kernel);
+./init/main.c:258:early_param("loglevel", loglevel);
+]]></programlisting>
+注意到debug，quiet和loglevel，它们都是用来控制内核的日志级别，其中quiet使内核输出较少量信息，debug则输入很多调试信息。它们对应到内核中的console_printk[0]变量。
+<programlisting><![CDATA[
+include/linux/kernel.h
+#define console_loglevel (console_printk[0])
+#define default_message_loglevel (console_printk[1])
+#define minimum_console_loglevel (console_printk[2])
+#define default_console_loglevel (console_printk[3])
+]]></programlisting>
+为了更好地控制不同级别的信息显示在控制台上，内核设置了控制台的日志级别console_loglevel。printk日志级别的作用是打印一定级别的消息，与之类似，控制台只显示一定级别的消息。当日志级别小于console_loglevel时，消息才能显示出来。控制台相应的日志级别定义如下:
+<programlisting><![CDATA[
+kernel/printk.c
+/* printk's without a loglevel use this.. */
+#define DEFAULT_MESSAGE_LOGLEVEL 4 /* KERN_WARNING */
+
+/* We show everything that is MORE important than this.. */
+#define MINIMUM_CONSOLE_LOGLEVEL 1 /* Minimum loglevel we let people use */
+#define DEFAULT_CONSOLE_LOGLEVEL 7 /* anything MORE serious than KERN_DEBUG */
+
+int console_printk[4] = {
+	DEFAULT_CONSOLE_LOGLEVEL,	/* console_loglevel */
+	DEFAULT_MESSAGE_LOGLEVEL,	/* default_message_loglevel */
+	MINIMUM_CONSOLE_LOGLEVEL,	/* minimum_console_loglevel */
+	DEFAULT_CONSOLE_LOGLEVEL,	/* default_console_loglevel */
+};
+]]></programlisting>
+变量console_loglevel的初始值是DEFAULT_CONSOLE_LOGLEVEL，可以通过sys_syslog系统调用进行修改。调用klogd时可以指定-c开关选项来修改这个变量。如果要修改它的当前值，必须先杀掉klogd，再加-c选项重新启动它。通过读写/proc/sys/kernel/printk文件可读取和修改控制台的日志级别。查看这个文件的方法如下：
+<programlisting><![CDATA[
+# cat /proc/sys/kernel/printk
+4       4       1       7
+]]></programlisting>
+上面显示的4个数据分别对应当前控制台日志级别、默认的消息日志级别、最低的控制台日志级别和默认的控制台日志级别。可用下面的命令设置当前日志级别，这样所有级别小于8，也即0-7的消息都可以显示在控制台上。
+<programlisting><![CDATA[
+# echo 8 > /proc/sys/kernel/printk
+]]></programlisting>
+</sect2>
+<sect2><title>第二阶段</title>
+第二个阶段"Booting kernel"，用来解析__start___param与__stop___param之间的struct kernel_param成员，继续查看一下内核的链接脚本：
+<programlisting><![CDATA[
+include/asm-generic/vmlinux.lds.h
+        /* Built-in module parameters. */                               \
+        __param : AT(ADDR(__param) - LOAD_OFFSET) {                     \
+                VMLINUX_SYMBOL(__start___param) = .;                    \
+                *(__param)                                              \
+                VMLINUX_SYMBOL(__stop___param) = .;                     \
+                . = ALIGN((align));                                     \
+                VMLINUX_SYMBOL(__end_rodata) = .;                       \
+        }   
+
+arch/arm/kernel/vmlinux.lds
+ __start___param = .; *(__param) __stop___param = .;
+]]></programlisting>
+所以它们之间包含的段由__param声明：
+<programlisting><![CDATA[
+include/linux/moduleparam.h
+
+#define __module_param_call(prefix, name, set, get, arg, perm)          \
+        /* Default value instead of permissions? */                     \
+        static int __param_perm_check_##name __attribute__((unused)) =  \
+        BUILD_BUG_ON_ZERO((perm) < 0 || (perm) > 0777 || ((perm) & 2))  \
+        + BUILD_BUG_ON_ZERO(sizeof(""prefix) > MAX_PARAM_PREFIX_LEN);   \
+        static const char __param_str_##name[] = prefix #name;          \
+        static struct kernel_param __moduleparam_const __param_##name   \
+        __used                                                          \
+    __attribute__ ((unused,__section__ ("__param"),aligned(sizeof(void *)))) \
+        = { __param_str_##name, perm, set, get, { arg } }
+]]></programlisting>
+这是一个非常复杂的宏，显然它针对模块参数。它定义了一个kernel_param类型的变量，这个变量被放到了段__param。
+<programlisting><![CDATA[
+struct kernel_param {
+	const char *name;
+	unsigned int perm;
+	param_set_fn set;
+	param_get_fn get;
+	union {
+		void *arg;
+		const struct kparam_string *str;
+		const struct kparam_array *arr;
+	};
+};
+]]></programlisting>
+内核中并不推荐直接使用__module_param_call宏来定义kernel_param的实例，而是又扩展了两个宏module_param_named和module_param。
+<programlisting><![CDATA[
+#define module_param_call(name, set, get, arg, perm)                          \
+        __module_param_call(MODULE_PARAM_PREFIX, name, set, get, arg, perm)
+
+/* Helper functions: type is byte, short, ushort, int, uint, long,
+   ulong, charp, bool or invbool, or XXX if you define param_get_XXX,
+   param_set_XXX and param_check_XXX. */
+#define module_param_named(name, value, type, perm)                        \
+        param_check_##type(name, &(value));                                \
+        module_param_call(name, param_set_##type, param_get_##type, &value, perm); \
+        __MODULE_PARM_TYPE(name, #type)
+
+#define module_param(name, type, perm)                          \
+        module_param_named(name, name, type, perm)
+]]></programlisting>
+通常模块中使用module_param_named和module_param声明参数变量。为了理解上面的所做所为，这里对内核模块的编译做一个详尽的分析和说明。Linux编译内核模块的命令为make modules(如果不是在内核根文件夹下编译，那么需要-C参数指定内核文件夹)。在Linux的Makefile中对应的动作如下：
+<programlisting><![CDATA[
+modules: $(vmlinux-dirs) $(if $(KBUILD_BUILTIN),vmlinux)
+        $(Q)$(AWK) '!x[$$0]++' $(vmlinux-dirs:%=$(objtree)/%/modules.order) > $(objtree)/modules.order
+        @echo '  Building modules, stage 2.';
+        $(Q)$(MAKE) -f $(srctree)/scripts/Makefile.modpost
+        $(Q)$(MAKE) -f $(srctree)/scripts/Makefile.fwinst obj=firmware __fw_modbuild
+]]></programlisting>
+注意到它是通过Makefile.modpost进行编译和链接的，总共分为六个步骤。其中编译时的命令为：
+<programlisting><![CDATA[
+quiet_cmd_cc_o_c = CC      $@
+      cmd_cc_o_c = $(CC) $(c_flags) $(CFLAGS_MODULE)    \
+                   -c -o $@ $<
+]]></programlisting>
+CFLAGS_MODULE参数在Makefile中被赋值为-DMODULE，它将被Makefile向下传递，对于模块编译，它是非常重要的一个开关参数。模块相关的宏被统一定义在头文件moduleparam.h中，这里就会看到MODULE的作用。
+<programlisting><![CDATA[
+#ifdef MODULE
+#define ___module_cat(a,b) __mod_ ## a ## b
+#define __module_cat(a,b) ___module_cat(a,b)
+#define __MODULE_INFO(tag, name, info)					  \
+static const char __module_cat(name,__LINE__)[]				  \
+  __used								  \
+  __attribute__((section(".modinfo"),unused)) = __stringify(tag) "=" info
+#else  /* !MODULE */
+#define __MODULE_INFO(tag, name, info)
+#endif
+]]></programlisting>
+自此，模块编译和编译入内核的两种方式从这里开始相揖别。对它们的处理完全不同。首先对模块编译相关的宏做一解释：__MODULE_INFO，它用来记录模块的相关信息，并且放在.ko文件的.modinfo代码节中。__MODULE_INFO通常并不由模块直接调用，而是通过宏再次对它进行了封装。
+<programlisting><![CDATA[
+#define __MODULE_PARM_TYPE(name, _type)                                   \
+  __MODULE_INFO(parmtype, name##type, #name ":" _type)
+]]></programlisting>
+而module_param_string，module_param_named和module_param又是对它的封装，用来定义参数。这三个宏被开放给模块使用。另外最通用的几个中在module.h中定义：
+<programlisting><![CDATA[
+/* Generic info of form tag = "info" */
+#define MODULE_INFO(tag, info) __MODULE_INFO(tag, tag, info)
+
+#define MODULE_ALIAS(_alias) MODULE_INFO(alias, _alias)
+#define MODULE_LICENSE(_license) MODULE_INFO(license, _license)
+#define MODULE_DESCRIPTION(_description) MODULE_INFO(description, _description)
+#define MODULE_PARM_DESC(_parm, desc) \
+        __MODULE_INFO(parm, _parm, #_parm ":" desc)
+#define MODULE_VERSION(_version) MODULE_INFO(version, _version)
+#define MODULE_AUTHOR(_author) MODULE_INFO(author, _author)
+]]></programlisting>
+为了深入对它的了解，一个__MODULE_PARM_TYPE(bisa, "string")的定义被扩展成如下信息，显然它被定义成一个静态数组，数组中定义了参数名，以及参数类型。
+<programlisting><![CDATA[
+#define __stringify_1(x)        #x
+#define __stringify(x)          __stringify_1(x)
+
+static const char __mod_bisatype29[] __used __attribute__((section(".modinfo"),unused)) = "parmtype" "=" "bisa" ":" "string"
+]]></programlisting>
+通过modinfo命令可以查看内核模块的这些数组的内容：
+<programlisting><![CDATA[
+# modinfo xt_MARK.ko 
+filename:       xt_MARK.ko
+alias:          ip6t_MARK
+alias:          ipt_MARK
+description:    Xtables: packet mark modification
+author:         Marc Boucher <marc@mbsi.ca>
+license:        GPL
+depends:        
+vermagic:       2.6.28.6 preempt mod_unload ARMv6 
+]]></programlisting>
+而第二种情况__MODULE_INFO宏被定义成空，所以被编译进内核的模块代码是没有对应的.modinfo节信息的。它使用struct kernel_param来表示参数的相关信息。并且这些信息被放在名为__param的节中。而内核在解析参数到"Booting kernel"阶段时，就会对这些节中的参数名一一匹配，如果通过Bootloader或者在CONFIG_CMDLINE中定义了该参数，那么此时将被解析，以备将来的内嵌的模块进行加载。
+</sect2>
+</sect1>

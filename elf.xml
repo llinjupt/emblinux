@@ -1,0 +1,1167 @@
+<sect1><title>ELF格式</title>
+	<para>
+可执行链接格式（Executable and Linking Format）最初是由UNIX系统实验室（UNIX System Laboratories，USL）开发并发布的，作为应用程序二进制接口（Application Binary Interface，ABI）的一部分。
+ELF文件有三种存在形式：
+<itemizedlist> 
+	<listitem>可重定位文件（Relocatable File） 包含适合于与其他目标文件链接来创建可执行文件或者共享目标文件的代码和数据，比如.o目标文件。</listitem>
+	<listitem>可执行文件（Executable File）包含适合于执行的一个程序，此文件规定了exec() 如何创建一个程序的进程映像。</listitem>
+	<listitem>共享目标文件（Shared Object File） 包含可在两种上下文中链接的代码和数据。首先链接编辑器可以将它和其它可重定位文件和共享目标文件一起处理，生成另外一个目标文件。其次，动态链接器（Dynamic Linker）可能将它与某个可执行文件以及其它共享目标一起组合，创建进程映像。比如.so文件。
+</listitem>
+</itemizedlist>
+	</para>	
+	<para>
+ELF文件需要同时满足连接和加载的需要，所以ELF文件的组成要同时考虑这两种情况。ELF格式提供了两种不同的视角，链接器把ELF文件看成是Section的集合，而加载器把ELF文件看成是Segment的集合。下图是从两种视角来看ELF文件格式的视图：
+<figure><title>ELF的两种视图<footnote><para>这并不意味着ELF文件总是按ELF头，程序头表，节和节头表的顺序安排内容，重定位节几乎总是位于ELF文件的最后。</para></footnote></title><graphic fileref="images/elf_view.jpg"/></figure>
+<itemizedlist>
+<listitem>文件开始处是一个ELF头部（ELF Header），用来描述整个文件的组织。</listitem>
+<listitem>程序头部表（Program Header Table），如果存在的话，告诉系统如何创建进程映像。用来构造进程映像的目标文件必须具有程序头部表，可重定位文件不需要这个表。共享库文件通常也有这个表。</listitem>
+<listitem>节部分包含链接视图的大量信息：指令、数据、符号表、重定位信息等等。</listitem>
+<listitem>节头部表（Section Heade Table）包含了描述文件节的信息，每个节在表中都有一项，每一项给出诸如节名称、节大小这类信息。用于链接的目标文件必须包含节头部表，其他目标文件可选。</listitem>
+</itemizedlist>
+	</para>
+<sect2><title>ELF头部</title>
+	<para>
+文件的最开始几个字节给出如何解释文件的提示信息。这些信息独立于处理器，也独立于文件中的其余内容。一个32位体系架构的ELF Header部分可以用下面数据结构表示，它来自于Linux内核中的include/linux/elf.h文件：
+<programlisting><![CDATA[
+#define EI_NIDENT       16
+
+/* 32-bit ELF base types. */
+typedef __u32   Elf32_Addr;
+typedef __u16   Elf32_Half;
+typedef __u32   Elf32_Off;
+typedef __s32   Elf32_Sword;
+typedef __u32   Elf32_Word;
+
+typedef struct elf32_hdr{
+  unsigned char e_ident[EI_NIDENT];
+  Elf32_Half    e_type;
+  Elf32_Half    e_machine;
+  Elf32_Word    e_version;
+  Elf32_Addr    e_entry;  /* Entry point */
+  Elf32_Off     e_phoff;
+  Elf32_Off     e_shoff;
+  Elf32_Word    e_flags;
+  Elf32_Half    e_ehsize;
+  Elf32_Half    e_phentsize;
+  Elf32_Half    e_phnum;
+  Elf32_Half    e_shentsize;
+  Elf32_Half    e_shnum;
+  Elf32_Half    e_shstrndx;
+} Elf32_Ehdr;
+]]></programlisting>
+通常这是一个52字节的头。其中，e_ident数组给出了ELF的一些体系架构的标识信息，这个数组中不同下标的含义如下表所示：
+	<table><title>ELF e_ident内容列表</title>
+	<tgroup cols="4">
+<thead><row><entry>e_ident索引值</entry><entry>名称</entry><entry>取值</entry><entry>含义</entry></row></thead>
+	<tbody>
+	<row><entry>0</entry><entry>EI_MAG0</entry><entry>0x7f</entry><entry>Magic Number[0]</entry></row>
+	<row><entry>1</entry><entry>EI_MAG1</entry><entry>‘E’</entry><entry>Magic Number[1]</entry></row>
+	<row><entry>2</entry><entry>EI_MAG2</entry><entry>‘L’</entry><entry>Magic Number[2]</entry></row>
+	<row><entry>3</entry><entry>EI_MAG3</entry><entry>‘F’</entry><entry>Magic Number[3]</entry></row>	
+	<row><entry>4</entry><entry>EI_CLASS</entry><entry>1/2</entry><entry>32/64位</entry></row>
+	<row><entry>5</entry><entry>EI_DATA</entry><entry>1/2</entry><entry>编码方式：1 小端字节序(LSB)；2大端字节序（MSB）</entry></row>
+	<row><entry>6</entry><entry>EI_VERSION</entry><entry>1</entry><entry>版本号，必须是EV_CURRENT，也即1</entry></row>
+	<row><entry>7</entry><entry>EI_OSABI</entry><entry>7</entry><entry>操作系统ABI标识</entry></row>
+	<row><entry>8</entry><entry>EI_PAD</entry><entry>0</entry><entry>标记e_ident中未使用字节的开始，从它开始所有位置0</entry></row>
+	</tbody>
+	</tgroup>
+	</table>
+EI_OSABI用于标识操作系统以及目标文件所面向的 ABI。其他 ELF 结构中的一些字段包含的标志和值具有特定于操作系统或 ABI 的含义。这些字段的解释由此字节的值确定。不是所有系统都支持该字段。
+	<table><title>ELF Header中各个字段的含义</title>
+	<tgroup cols="4">
+<colspec colnum="1" colname="1"/>
+<colspec colnum="2" colname="2"/>
+<colspec colnum="3" colname="3"/>
+<colspec colnum="4" colname="4"/>	
+<thead><row><entry>成员</entry><entry>名称</entry><entry>取值</entry><entry>含义</entry></row></thead>
+	<tbody>
+	<row><entry>e_ident</entry><entry></entry><entry></entry><entry>ELF文件标示</entry></row>	
+	<row><entry morerows="4">e_ident</entry><entry>ET_NONE</entry><entry>0</entry><entry>未知目标文件格式</entry></row>
+	<row><entry>ET_REL</entry><entry>1</entry><entry>可重定位文件</entry></row>
+	<row><entry>ET_EXEC</entry><entry>2</entry><entry>可执行文件</entry></row>	
+	<row><entry>ET_DYN</entry><entry>3</entry><entry>共享目标文件</entry></row>	
+	<row><entry>ET_CORE</entry><entry>4</entry><entry>Core文件，转储格式</entry></row>
+	
+	<row><entry morerows="9">e_machine</entry>
+			 <entry>EM_NONE</entry><entry>0</entry><entry>未指定</entry></row>
+	<row><entry>EM_M32</entry><entry>1</entry><entry>AT&amp;T WE 32100</entry></row>
+	<row><entry>EM_SPARC</entry><entry>2</entry><entry>SPARC</entry></row>	
+	<row><entry>ET_386</entry><entry>3</entry><entry>Intel 80386</entry></row>	
+	<row><entry>EM_68K</entry><entry>4</entry><entry>Motorola 68000</entry></row>
+	<row><entry>EM_88K</entry><entry>5</entry><entry>Motorola 88000</entry></row>
+	<row><entry>EM_860</entry><entry>7</entry><entry>Intel 808600</entry></row>
+	<row><entry>EM_MIPS</entry><entry>8</entry><entry>MIPS RS3000 Big-Endian</entry></row>
+	<row><entry>EM_MIPS_RS4_BE</entry><entry>10</entry><entry>MIPS RS4000 Big-Endian</entry></row>
+	<row><entry>EM_ARM</entry><entry>40</entry><entry>Advanced RISC Machines ARM</entry></row>		
+	
+	<row><entry morerows="1">e_version</entry>
+			 <entry>EV_NONE</entry><entry>0</entry><entry>不可用</entry></row>
+	<row><entry>EV_CURRENT</entry><entry>1</entry><entry>当前版本</entry></row>
+	<row><entry>e_entry</entry><entry namest="2" nameend="4">程序入口的虚拟地址。如果目标文件没有程序入口，可以为0。</entry></row>
+	<row><entry>e_phoff</entry><entry namest="2" nameend="4">
+	<literallayout>程序头部表（Program Header Table）的偏移量（以字节为单位）。如果文件没有程序头部表，可以为0。</literallayout></entry></row>
+	<row><entry>e_shoff</entry><entry namest="2" nameend="4"><literallayout>节头部表（Section Header Table）的偏移量（以字节为单位）。如果文件没有节头部表，可以为0。</literallayout></entry></row>
+	<row><entry>e_flags</entry><entry namest="2" nameend="4"><literallayout>保存与文件相关的，特定于处理器的标志。标志名称采用EF_machine_flag 的格式。</literallayout></entry></row>
+	<row><entry>e_ehsize</entry><entry namest="2" nameend="4"><literallayout>ELF 头部的大小（以字节为单位）。</literallayout></entry></row>
+	<row><entry>e_phentsize</entry><entry namest="2" nameend="4">程序头表中一项的大小（以字节为单位）。所有项的大小都相同。</entry></row>
+	<row><entry>e_phnum</entry><entry namest="2" nameend="4">程序头部表的表项数目。可以为 0。</entry></row>
+	<row><entry>e_shentsize</entry><entry namest="2" nameend="4">节头的大小（以字节为单位）。节头是节头表中的一项。所有项的大小都相同。</entry></row>
+	<row><entry>e_shnum</entry><entry namest="2" nameend="4">节头部表的表项数目。可以为 0。</entry></row>
+	<row><entry>e_shstrndx</entry><entry namest="2" nameend="4"><literallayout>节头部表中与节名称字符串表相关的表项的索引。如果文件没有节名称字符串表，此参数可以
+	为SHN_UNDEF。</literallayout></entry></row>	
+	</tbody>
+	</tgroup>
+	</table>
+完整的e_machine列表可以从
+<ulink url="http://www.sco.com/developers/gabi/2009-10-26/contents.html">www.sco.com</ulink>得到。
+	</para>	
+	<para>
+使用readelf工具可以很容易得到当前ELF文件的头部，这里提供一个最小化的程序，它包含数据段和代码段，但是没有引用任何库函数。
+<programlisting><![CDATA[
+.section .data                  #定义数据段
+msg: .asciz "Hello world!\n"
+len= .-msg
+
+.align 4
+.section .text                  #定义代码段
+.globl _start                   #_start指明程序的入口
+_start:                         #.globl说明将被外部引用
+movl $1, %ebx                   #sys_write参数
+movl $msg, %ecx
+movl $len, %edx
+movl $4, %eax                   #sys_write的系统调用号
+int $0x80
+
+movl $0, %ebx                   #sys_exit系统调用的参数
+movl $1, %eax                   #sys_exit的系统调用号
+int $0x80                       #通过int 80使能内核调用
+]]></programlisting>
+使用如下命令并得到头部信息：
+<programlisting><![CDATA[
+# as i386.S -o i386.o
+# ld i386.o -o i386 
+# readelf -h i386
+readelf -h i386
+ELF Header:
+  Magic:   7f 45 4c 46 01 01 01 00 00 00 00 00 00 00 00 00 
+  Class:                             ELF32
+  Data:                              2's complement, little endian
+  Version:                           1 (current)
+  OS/ABI:                            UNIX - System V
+  ABI Version:                       0
+  Type:                              EXEC (Executable file)
+  Machine:                           Intel 80386
+  Version:                           0x1
+  Entry point address:               0x8048074
+  Start of program headers:          52 (bytes into file)
+  Start of section headers:          208 (bytes into file)
+  Flags:                             0x0
+  Size of this header:               52 (bytes)
+  Size of program headers:           32 (bytes)
+  Number of program headers:         2
+  Size of section headers:           40 (bytes)
+  Number of section headers:         6
+  Section header string table index: 3
+]]></programlisting>
+结果中输出了上面分析的所有头部信息，其中Machine为Intel 80386，类型为EXEC可执行文件，little endian等。它根据头部信息中定义的字段来解析，并一一输出。这个文件很小，可以看到它有2个程序头，每个头部项大小为32bytes；有6个节头部，每个头部项大小为40bytes。
+	</para>
+	<para>
+另一个更加直观的解析ELF文件头的程序名为dumpelf，来自于gentoo的pax-utils程序包。它将结构体的定义和对应的值同时输出，这里仅仅给出头部信息：
+<programlisting><![CDATA[
+#dumpelf  i386
+/* ELF dump of 'i386' 632 (0x278) bytes */
+struct {
+        Elf32_Ehdr ehdr;
+        Elf32_Phdr phdrs[2];
+        Elf32_Shdr shdrs[6];
+} dumpedelf_0 = {
+
+.ehdr = {
+        .e_ident = { /* (EI_NIDENT bytes) */
+                /* [0] EI_MAG:        */ 0x7F,'E','L','F',
+                /* [4] EI_CLASS:      */ 1 , /* (ELFCLASS32) */
+                /* [5] EI_DATA:       */ 1 , /* (ELFDATA2LSB) */
+                /* [6] EI_VERSION:    */ 1 , /* (EV_CURRENT) */
+                /* [7] EI_OSABI:      */ 0 , /* (ELFOSABI_NONE) */
+                /* [8] EI_ABIVERSION: */ 0 ,
+                /* [9] EI_PAD:        */ 0x00 /* x 7 bytes */
+        },
+        .e_type      = 2          , /* (ET_EXEC) */
+        .e_machine   = 3          , /* (EM_386) */
+        .e_version   = 1          ,
+        .e_entry     = 0x8048074  ,
+        .e_phoff     = 52         , /* (bytes into file) */
+        .e_shoff     = 208        , /* (bytes into file) */
+        .e_flags     = 0x0        ,
+        .e_ehsize    = 52         , /* (bytes) */
+        .e_phentsize = 32         , /* (bytes) */
+        .e_phnum     = 2          , /* (program headers) */
+        .e_shentsize = 40         , /* (bytes) */
+        .e_shnum     = 6          , /* (section headers) */
+        .e_shstrndx  = 3         
+},
+......
+]]></programlisting>	
+	</para>
+</sect2>
+
+<sect2><title>ELF节</title>
+	<para>
+<programlisting><![CDATA[	
+# readelf -h i386.o
+ELF Header:
+......
+  Type:                              REL (Relocatable file)
+......
+  Number of program headers:         0
+  Size of section headers:           40 (bytes)
+  Number of section headers:         8
+  Section header string table index: 5	
+]]></programlisting>
+使用readelf查看.o文件，可以发现它的程序头为0，也即.o文件没有程序头，因为它是REL可重定位文件，而不是可执行文件。但是无论是可从定位文件，还是可执行文件，对于有意义的ELF文件来说，它们的节头都不应该为0。
+
+除了ELF 头部、程序头部表、节头部表外，其余的所有信息都位于节中，节具有以下特性：
+<itemizedlist> 
+	<listitem>目标文件中的每个节都有对应的节头来描述它，反过来，有节头部并不意味着有节。</listitem>
+	<listitem>每个节占用文件中一个连续字节域（这个区域可能长度为 0）。</listitem>
+	<listitem>文件中的节不能重叠，不允许一个字节存在于两个节中的情况发生。</listitem>
+	<listitem>目标文件中可能包含非活动空间（INACTIVE SPACE）。这些区域不属于任何头部和节，其内容未指定。</listitem>
+</itemizedlist>
+通过节头表可以定位文件的所有节。节头部使用以下结构体来描述：
+<programlisting><![CDATA[
+typedef struct
+{
+  Elf32_Word	sh_name;		/* Section name (string tbl index) */
+  Elf32_Word	sh_type;		/* Section type */
+  Elf32_Word	sh_flags;		/* Section flags */
+  Elf32_Addr	sh_addr;		/* Section virtual addr at execution */
+  Elf32_Off	sh_offset;		/* Section file offset */
+  Elf32_Word	sh_size;		/* Section size in bytes */
+  Elf32_Word	sh_link;		/* Link to another section */
+  Elf32_Word	sh_info;		/* Additional section information */
+  Elf32_Word	sh_addralign;		/* Section alignment */
+  Elf32_Word	sh_entsize;		/* Entry size if section holds table */
+} Elf32_Shdr;
+]]></programlisting>	
+节头表就是Elf32_Shdr结构的数组，节头表索引是此数组的下标。ELF头的e_shoff成员表示从文件的起始位置到节头表的字节偏移；e_shnum 成员表示节头表包含的项数；e_shentsize 成员表示每一项的大小。如果节数大于或等于SHN_LORESERVE (0xff00)，则e_shnum 值为SHN_UNDEF (0)。节头表的实际项数包含在节头表中索引为0 的sh_size字段中，否则初始项的sh_size 成员值为零。（以字节为单位）。索引的大小不是无限制的，另外还有一些特殊的保留索引值：
+	<table><title>节头部表中的保留下标</title>
+	<tgroup cols="3">
+	<thead><row><entry>名称</entry><entry>值</entry><entry>含义</entry></row></thead>
+	<tbody>
+	<row><entry>SHN_UNDEF</entry><entry>0</entry><entry>未定义的节</entry></row>
+	<row><entry>SHN_LORESERVE</entry><entry>0xff00</entry><entry>保留索引的下界</entry></row>
+	<row><entry>SHN_LOPROC-SHN_HIPROC</entry><entry>0xff00-0xff1f</entry><entry>保留给处理器</entry></row>
+	<row><entry>SHN_ABS</entry><entry>0xfff1</entry><entry><literallayout>对应引用的绝对值。例如，已定义的与节数SHN_ABS 
+相关的符号具有绝对值，并且不受重定位影响。</literallayout></entry></row>
+	<row><entry>HN_COMMON</entry><entry>0xfff2</entry><entry><literallayout>相对于此节定义的符号是公共符号。如 FORTRAN
+中COMMON 或者未分配的 C 外部变量。</literallayout></entry></row>
+	<row><entry>SHN_HIRESERVE</entry><entry>0xffff</entry><entry>保留索引的上届</entry></row>
+	</tbody>
+	</tgroup>
+	</table>
+对节头中各个字段的解释如下：
+<itemizedlist> 
+<listitem>sh_name 给出节名称，注意到它的类型并不是一个字符串，而是一个Elf32_Word类型，它是节头部字符串表节（Section Header String Table Section）的一个索引值，对应的名字是一个以NULL结尾的字符串。</listitem>
+<listitem>sh_type 为节的内容和语义进行分类。参见节类型。</listitem>
+<listitem>sh_flags 节支持1位形式的标志，这些标志描述了多种属性。</listitem>
+<listitem>sh_addr 如果节将出现在进程的内存映像中，此成员给出节的第一个字节应处的位置。否则，此字段为 0。</listitem>
+<listitem>sh_offset 此成员的取值给出节的第一个字节与文件头之间的偏移。不过SHT_NOBITS 类型的节不占用文件的空间，因此其 sh_offset 成员给出的是其概念性的偏移。</listitem>
+<listitem>sh_size 此成员给出节的长度（字节数）。除非节的类型是 SHT_NOBITS，否则节占用文件中的sh_size 字节。类型为SHT_NOBITS 的节长度可能非零，不过却不占用文件中的空间</listitem>
+<listitem>sh_link 此成员给出节头部表索引链接。其具体的解释依赖于节类型。</listitem>
+<listitem>sh_info 此成员给出附加信息，其解释依赖于节类型。</listitem>
+<listitem>sh_addralign 某些节带有地址对齐约束。例如，如果一个节保存一个doubleword，那么系统必须保证整个节能够按双字对齐。sh_addr 对 sh_addralign 取模，结果必须为 0。目前仅允许取值为 0 和 2 的幂次数。数值 0 和 1 表示节没有对齐约束。</listitem>
+<listitem>sh_entsize 某些节中包含固定大小的项目，如符号表。对于这类节，此成员给出每个表项的长度字节数。如果节中并不包含固定长度表项的表，此成员取值为 0。</listitem>
+</itemizedlist>
+索引为零（SHN_UNDEF）的节头部也是存在的，尽管此索引标记的是未定义的节引用。这个节的内容固定如下：
+<programlisting><![CDATA[
+/* Section Header #0 '' 0xD0 */
+{
+        .sh_name      = 0          ,
+        .sh_type      = 0          , /* [SHT_NULL] */
+        .sh_flags     = 0          ,
+        .sh_addr      = 0x0        ,
+        .sh_offset    = 0          , /* (bytes) */
+        .sh_size      = 0          , /* (bytes) */
+        .sh_link      = 0          ,
+        .sh_info      = 0          ,
+        .sh_addralign = 0          ,
+        .sh_entsize   = 0         
+}
+]]></programlisting>
+这些信息使用dumpelf得到，节头表中第一个索引，也即第一项永远被填充为全0值。使用readelf可以得到一个ELF文件中关于节的统计信息：
+<programlisting><![CDATA[
+# readelf -S i386
+There are 6 section headers, starting at offset 0xd0:
+
+Section Headers:
+  [Nr] Name              Type            Addr     Off    Size   ES Flg Lk Inf Al
+  [ 0]                   NULL            00000000 000000 000000 00      0   0  0
+  [ 1] .text             PROGBITS        08048074 000074 000022 00  AX  0   0  4
+  [ 2] .data             PROGBITS        08049098 000098 000010 00  WA  0   0  4
+  [ 3] .shstrtab         STRTAB          00000000 0000a8 000027 00      0   0  1
+  [ 4] .symtab           SYMTAB          00000000 0001c0 000090 10      5   5  4
+  [ 5] .strtab           STRTAB          00000000 000250 000028 00      0   0  1
+Key to Flags:
+  W (write), A (alloc), X (execute), M (merge), S (strings)
+  I (info), L (link order), G (group), T (TLS), E (exclude), x (unknown)
+  O (extra OS processing required) o (OS specific), p (processor specific)
+]]></programlisting>
+第一列是节头表项的索引，第二列对应节的名字，它们被存储在名为.shstrtab的节中。readelf -S的输出结果与接头信息中的对应关系如下：
+<programlisting><![CDATA[
+[Nr] Name                    Type       Addr     Off       Size    ES         Flg      Lk      Inf     Al
+索引 sh_name（shstrtab索引） sh_type    sh_addr  sh_offset sh_size sh_entsize sh_flags sh_link sh_info sh_addralign      
+]]></programlisting>
+</para>
+<para>
+节类型sh_type字段解释如下：
+	<table><title>节类型定义</title>
+	<tgroup cols="2">
+	<thead><row><entry>名称</entry><entry>取值</entry><entry>含义</entry></row></thead>
+	<tbody>
+
+	<row><entry>SHT_NULL</entry><entry>0</entry><entry><literallayout>此值标志节头部是非活动的，没有对应的节。此节头部中的其他成员取值无意义。</literallayout></entry></row>
+	<row><entry>SHT_PROGBITS</entry><entry>1</entry><entry><literallayout>此节包含程序定义的信息，其格式和含义都由程序来解释。</literallayout></entry></row>
+	<row><entry>SHT_SYMTAB</entry><entry>2</entry><entry><literallayout>此节包含一个符号表。目前目标文件对每种类型的节都只能包含一个，
+	不过这个限制将来可能发生变化。一般，SHT_SYMTAB 节提供用于链接编辑
+	（指 ld 而言）的符号，尽管也可用来实现动态链接。</literallayout></entry></row>
+	<row><entry>SHT_STRTAB</entry><entry>3</entry><entry><literallayout>此节包含字符串表。目标文件可能包含多个字符串表节。</literallayout></entry></row>
+	<row><entry>SHT_RELA</entry><entry>4</entry><entry><literallayout>此节包含重定位表项，其中可能会有补齐内容（addend），
+例如 32 位目标文件中的 Elf32_Rela 类型。目标文件可能拥有多个重定位节。</literallayout></entry></row>
+	<row><entry>SHT_HASH</entry><entry>5</entry><entry><literallayout>此节包含符号哈希表。所有参与动态链接的目标都必须包含一个符号哈希表。
+目前，一个目标文件只能包含一个哈希表，不过此限制将来可能会解除。</literallayout></entry></row>
+	<row><entry>SHT_DYNAMIC</entry><entry>6</entry><entry><literallayout>此节包含动态链接的信息。目前一个目标文件中只能包含一个动态节，
+将来可能会取消这一限制。</literallayout></entry></row>
+	<row><entry>SHT_NOTE</entry><entry>7</entry><entry><literallayout>此节包含以某种方式来标记文件的信息。</literallayout></entry></row>
+	<row><entry>SHT_NOBITS</entry><entry>8</entry><entry><literallayout>这种类型的节不占用文件中的空间，其他方面和SHT_PROGBITS
+相似。尽管此节不包含任何字节，成员sh_offset 中还是会包含概念性的文件偏移</literallayout></entry></row>
+	<row><entry>SHT_REL</entry><entry>9</entry><entry><literallayout>此节包含重定位表项，其中没有补齐（addends），例如32 
+位目标文件中的 Elf32_rel 类型。目标文件中可以拥有多个重定位节。</literallayout></entry></row>
+	<row><entry>SHT_SHLIB</entry><entry>10</entry><entry><literallayout>此节被保留，不过其语义是未规定的。包含此类型节的程序与 ABI 不兼容。</literallayout></entry></row>
+	<row><entry>SHT_DYNSYM</entry><entry>11</entry><entry><literallayout>作为一个完整的符号表，它可能包含很多对动态链接而言不必要的符号。
+因此，目标文件也可以包含一个 SHT_DYNSYM节，其中保存动态链接符号的一个最小集合，以节省空间。</literallayout></entry></row>
+	</tbody>
+	</tgroup>
+	</table>
+</para>
+<para>
+sh_flags字段定义了一个节中包含的内容是否可以修改、是否可以执行等信息。如果一个标志位被设置，则该位取值为1。未定义的各位都设置为0。
+	<table><title>sh_flags字段取值</title>
+	<tgroup cols="2">
+	<thead><row><entry>名称</entry><entry>取值</entry><entry>含义</entry></row></thead>
+	<tbody>
+	<row><entry>SHF_WRITE</entry><entry>1</entry><entry><literallayout>节包含进程执行过程中将可写的数据。</literallayout></entry></row>
+	<row><entry>SHF_ALLOC</entry><entry>2</entry><entry><literallayout>标识在进程执行过程中占用内存的节。一些控制节不位于目标文件的内存映像中。对于
+这些节，此属性处于禁用状态。</literallayout></entry></row>
+	<row><entry>SHF_EXECINSTR</entry><entry>4</entry><entry><literallayout>标识包含可执行计算机指令的节。</literallayout></entry></row>
+	</tbody>
+	</tgroup>
+	</table>
+</para>
+<para>
+根据节类型的不同，sh_link 和 sh_info 的具体含义也有所不同：
+	<table><title>sh_link 和sh_info 解释</title>
+	<tgroup cols="2">
+	<thead><row><entry>sh_type</entry><entry>sh_link</entry><entry>sh_info</entry></row></thead>
+	<tbody>
+	<row><entry>SHT_DYNAMIC</entry><entry>此节中条目所用到的字符串表格的节头部索引</entry><entry>0</entry></row>
+	<row><entry>SHT_HASH</entry><entry>此哈希表所适用的符号表的节头部索引</entry><entry>0</entry></row>
+	<row><entry>SHT_REL/SHT_RELA</entry><entry>相关符号表的节头部索引</entry><entry>重定位所适用的节的节头部索引</entry></row>	
+	<row><entry>SHT_SYMTAB/SHT_DYNSYM</entry><entry>相关联的字符串表的节头部索引</entry><entry><literallayout>最后一个局部符号（绑定 STB_LOCAL）
+	的符号表索引值加一</literallayout></entry></row>
+	<row><entry>SHN_UNDEF</entry><entry>其它</entry><entry>0</entry></row>
+	</tbody>
+	</tgroup>
+	</table>
+</para>
+<para>
+特殊节包含程序和控制信息的各种节。下表中的各节由系统使用，并且具有指明的类型和属性:
+<table><title>常见特殊节</title>
+	<tgroup cols="2">
+	<thead><row><entry>名称</entry><entry>类型</entry><entry>属性</entry><entry>含义</entry></row></thead>
+	<tbody>
+
+	<row><entry>.bss</entry><entry>SHT_NOBITS</entry><entry>SHF_ALLOC<?linebreak?>
+SHF_WRITE</entry><entry><literallayout>包含将出现在程序的内存映像中的为初始化数据。根据定义，
+当程序开始执行，系统将把这些数据初始化为 0。
+此节不占用文件空间。</literallayout></entry></row>
+
+	<row><entry>.comment</entry><entry>SHT_PROGBITS</entry><entry></entry><entry><literallayout>
+包含版本控制信息。</literallayout></entry></row>
+	<row><entry>.data<?linebreak?>
+.data1</entry><entry>SHT_PROGBITS</entry><entry>SHF_ALLOC<?linebreak?>
+SHF_WRITE</entry><entry><literallayout>这些节包含初始化了的数据，将出现在程序的内存映像中。</literallayout></entry></row>
+	<row><entry>.debug</entry><entry>SHT_PROGBITS</entry><entry></entry><entry><literallayout>此节包含用于符号调试的信息。</literallayout></entry></row>
+	<row><entry>.dynamic</entry><entry>SHT_DYNAMIC</entry><entry></entry><entry><literallayout>此节包含动态链接信息。节的属性将包含 SHF_ALLOC 位。
+是否 SHF_WRITE 位被设置取决于处理器。</literallayout></entry></row>
+
+	<row><entry>.dynstr</entry><entry>SHT_STRTAB</entry><entry>SHF_ALLOC</entry><entry><literallayout>此节包含用于动态链接的字符串，大多数情况下
+这些字符串代表了与符号表项相关的名称。</literallayout></entry></row>
+
+	<row><entry>.fini</entry><entry>SHT_PROGBITS</entry><entry>SHF_ALLOC<?linebreak?>
+SHF_EXECINSTR</entry><entry><literallayout>此节包含了可执行的指令，是进程终止代码的一部分。
+程序正常退出时，系统将安排执行这里的代码。</literallayout></entry></row>
+
+	<row><entry>.got</entry><entry>SHT_PROGBITS</entry><entry></entry><entry><literallayout>此节包含全局偏移表。</literallayout></entry></row>
+	<row><entry>.hash</entry><entry>SHT_HASH</entry><entry>SHF_ALLOC</entry><entry><literallayout>此节包含了一个符号哈希表。</literallayout></entry></row>
+	<row><entry>.init</entry><entry>SHT_PROGBITS</entry><entry>SHF_ALLOC<?linebreak?>SHF_EXECINSTR</entry><entry><literallayout>此节包含了可执行指令，是进程初始化代码的一部分。
+当程序开始执行时，系统要在开始调用主程序入口之前
+（通常指 C 语言的 main 函数）执行这些代码。</literallayout></entry></row>
+	<row><entry>.interp</entry><entry>SHT_PROGBITS</entry><entry></entry><entry><literallayout>此节包含程序解释器的路径名。如果程序包含一个可加载的段，
+	段中包含此节，那么节的属性将包含SHF_ALLOC 位，
+	否则该位为 0。	</literallayout></entry></row>
+	<row><entry>.rodata<?linebreak?>.rodata1</entry><entry>SHT_PROGBITS</entry><entry>SHF_ALLOC</entry><entry><literallayout>这些节包含只读数据，这些数据通常参与进程映像的不可写段。</literallayout></entry></row>
+	
+	<row><entry>.shstrtab</entry><entry>SHT_STRTAB</entry><entry></entry><entry><literallayout>此节包含节名称。</literallayout></entry></row>
+	<row><entry>.strtab</entry><entry>SHT_STRTAB</entry><entry></entry><entry><literallayout>此节包含字符串，通常是代表与符号表项相关的名称。
+如果文件拥有一个可加载的段，段中包含符号串表，
+节的属性将包含SHF_ALLOC 位，否则该位为 0。</literallayout></entry></row>
+	<row><entry>.symtab</entry><entry>SHT_SYMTAB</entry><entry></entry><entry><literallayout>此节包含一个符号表。如果文件中包含一个可加载的段，
+并且该段中包含符号表，那么节的属性中包含SHF_ALLOC 位，
+否则该位置为 0。</literallayout></entry></row>
+	<row><entry>.text</entry><entry>SHT_PROGBITS</entry><entry>SHF_ALLOC<?linebreak?>SHF_EXECINSTR</entry><entry><literallayout>此节包含程序的可执行指令。</literallayout></entry></row>
+	<row><entry>.note</entry><entry>SHT_NOTE</entry><entry></entry><entry><literallayout>此节中包含注释信息，有独立的格式。</literallayout></entry></row>
+	<row><entry>.plt</entry><entry>SHT_PROGBITS</entry><entry></entry><entry><literallayout>此节包含过程链接表（procedure linkage table）	</literallayout></entry></row>
+	</tbody>
+	</tgroup>
+	</table>
+</para>
+在分析这些节的时候，需要注意如下事项：
+<itemizedlist> 
+	<listitem>以“.”开头的节名称是系统保留的。应用程序可以使用没有前缀的节名称，以避免与系统节冲突。</listitem>
+	<listitem>目标文件格式允许人们定义不在上述列表中的节。</listitem>
+	<listitem>目标文件中也可以包含多个名字相同的节。</listitem>
+	<listitem>保留给处理器体系结构的节名称一般构成为：处理器体系结构名称简写+节名称。</listitem>
+	<listitem>处理器名称应该与 e_machine 中使用的名称相同。例如.i386.psect节是由i386体系结构定义的 psect 节。</listitem>
+</itemizedlist>
+</sect2>
+<sect2><title>字符串表</title>
+<para>
+前文提到sh_name中存储的是shstrtab节中的索引值，shstrtab是一个特殊的字符串表（String Table），它被用来存储所有节的名字。
+</para>
+<para>
+字符串表节包含以NULL（ASCII码0）结尾的字符序列，通常称为字符串。ELF目标文件通常使用字符串来表示符号和节名称。对字符串的引用通常以字符串在字符串表中的下标给出。一般，第一个字节（索引为0）定义为一个空字符串。类似的，字符串表的最后一个字节也定义为NULL，以确保所有的字符串都以NULL结尾。索引为0的字符串在不同的上下文中可以表示无名或者名字为NULL的字符串。允许存在空的字符串表节，其节头部的sh_size成员应该为0。对空的字符串表而言，非0的索引值是非法的。例如：对于各个节而言，节头部的sh_name成员包含其对应的节头部字符串表节的索引，此节由ELF头的e_shstrndx成员给出。依据上面readelf的输出结果可以得到例子中ELF的shstrtab节位于偏移地址0x0000a8处，并且长度为0x27，这里使用hexdump来查看该地址处的数据：
+<programlisting><![CDATA[
+Section Headers:
+  [Nr] Name              Type            Addr     Off    Size   ES Flg Lk Inf Al
+  [ 0]                   NULL            00000000 000000 000000 00      0   0  0
+  [ 1] .text             PROGBITS        08048074 000074 000022 00  AX  0   0  4
+  [ 2] .data             PROGBITS        08049098 000098 000010 00  WA  0   0  4
+  [ 3] .shstrtab         STRTAB          00000000 0000a8 000027 00      0   0  1
+  [ 4] .symtab           SYMTAB          00000000 0001c0 000090 10      5   5  4
+  [ 5] .strtab           STRTAB          00000000 000250 000028 00      0   0  1
+# hexdump -s 0xa8 -n 39 i386 -C
+000000a8  00 2e 73 79 6d 74 61 62  00 2e 73 74 72 74 61 62  |..symtab..strtab|
+000000b8  00 2e 73 68 73 74 72 74  61 62 00 2e 74 65 78 74  |..shstrtab..text|
+000000c8  00 2e 64 61 74 61 00                              |..data.|
+]]></programlisting>
+readelf提供了方便的参数-x num|name来查看对应的节的内容，但是它给出的偏移地址总是从0开始。
+<programlisting><![CDATA[
+# readelf -x .shstrtab i386
+Hex dump of section '.shstrtab':
+  0x00000000 002e7379 6d746162 002e7374 72746162 ..symtab..strtab
+  0x00000010 002e7368 73747274 6162002e 74657874 ..shstrtab..text
+  0x00000020 002e6461 746100                     ..data.
+]]></programlisting>
+为了验证每个节头中的sh_offset的结果与此对应，查看dumpelf的输出结果：
+<programlisting><![CDATA[
+.shdrs = {
+/* Section Header #0 '' 0xD0 */
+{
+	.sh_name      = 0          , // 索引为0, 对应00
+	......
+},
+/* Section Header #1 '.text' 0xF8 */
+{
+	.sh_name      = 27         , // 索引为27，2e 74 65 78 74 00 对应".text\0"
+	......
+},
+	......
+]]></programlisting>
+另一个值得注意的是.strtab字符串表，它通常被.symtab所引用。一个ELF文件可以包含多个字符串表，且可以重名。这是因为引用它们的节头项中的sh_link会指示使用的节字符串的索引，而其节中的某个字段将指明相对于该节的一个偏移，对于符号表来说，它是st_name。
+<programlisting><![CDATA[
+# readelf -x .strtab i386
+Hex dump of section '.strtab':
+  0x00000000 006d7367 006c656e 005f7374 61727400 .msg.len._start.
+  0x00000010 5f5f6273 735f7374 61727400 5f656461 __bss_start._eda
+  0x00000020 7461005f 656e6400                   ta._end.
+]]></programlisting>
+</para>
+</sect2>	
+<sect2><title>解释器</title>	
+解释器（interpreter）在程序使用动态库时，由它实现动态链接。启动动态链接的动态可执行文件或共享库可以包含一个PT_INTERP 程序头元素。在exec过程中，系统将从PT_INTERP 段检索路径名，并通过解释程序文件段创建初始进程映像。解释程序负责从系统接收控制并为应用程序提供环境。
+PT_INTERP实际上只包含一个名为.interp的节。.interp类似于字符串表但是它通常只有一个节项，其中的内容就是解释器的路径。对于Linux来说，它通常位于/lib/ld-linux.so.xx，无论如何它总是以ld开头，比如：
+<programlisting><![CDATA[
+ldd /bin/bash 
+	linux-gate.so.1 =>  (0x00b25000)
+	libncurses.so.5 => /lib/libncurses.so.5 (0x004c3000)
+	libdl.so.2 => /lib/libdl.so.2 (0x006cc000)
+	libc.so.6 => /lib/libc.so.6 (0x007ac000)
+	/lib/ld-linux.so.2 (0x00f13000)
+]]></programlisting>
+一个名为sum的示例，为了使它非常简洁，并不使用gcc进行链接。它包含两个文件sum.c，以及一个汇编语言写成的main.S文件：
+<example><title>解释器示例</title>
+<programlisting><![CDATA[
+# cat sum.cat
+int sum(int a, int b)
+{	
+	return a + b;
+}
+
+# cat main.S
+.section .text
+.align 2
+.global _start
+_start:
+ mov r0, #1
+ mov r1, #2
+ bl sum			//调用sum.c中sum
+ mov r7, #1
+ svc 0x00000000
+]]></programlisting></example>
+main.S中提供了入口函数_start，它将调用sum.c中的sum函数。编译过程如下：
+<programlisting><![CDATA[
+# arm-linux-cc -c sum.c -o sum.o 
+# arm-linux-ld -shared sum.o -o libsum.so //链接为动态库
+# arm-linux-as main.S -o main.o
+# arm-linux-ld main.o libsum.so -rpath=./ -o sum //-rpath指定动态库的搜索位置
+]]></programlisting>
+但是运行sum的时候却提示无法运行，就起原因看一下它的解释器：
+<programlisting><![CDATA[
+# arm-linux-readelf -x .interp sum
+Hex dump of section '.interp':
+  0x000080d4 2f757372 2f6c6962 2f6c642e 736f2e31 /usr/lib/ld.so.1
+  0x000080e4 00                            
+]]></programlisting>
+显然ld默认使用的解释器是/usr/lib/ld.so.1，然而系统中的解释器确是位于/lib/ld-uClibc-0.9.30.1.so。
+<programlisting><![CDATA[
+# ls /lib/ld-* -al
+-rwxrwxrwx    1 root     root        21200 Sep 27  2010 /lib/ld-uClibc-0.9.30.1.so
+lrwxrwxrwx    1 root     root           21 Sep  5  2011 /lib/ld-uClibc.so.0 -> ld-uClibc-0.9.30.1.so
+]]></programlisting>
+一个可行的方法是将ld-uClibc-0.9.30.1.so拷贝到/usr/lib/并更名为ld.so.1。最好的办法是更改.interp节的内容，ld提供了--dynamic-linker选项:
+<programlisting><![CDATA[
+# arm-linux-ld main.o --dynamic-link=/lib/ld-uClibc.so.0 libsum.so -rpath=./ -o sum 
+# arm-linux-readelf -x .interp sum
+Hex dump of section '.interp':
+  0x000080d4 2f6c6962 2f6c642d 75436c69 62632e73 /lib/ld-uClibc.s
+  0x000080e4 6f2e3000                            o.0.                         
+]]></programlisting>
+实际上gcc在编译和链接的时候就是通过该参数来指定解释器的：
+<programlisting><![CDATA[
+# arm-linux-gcc hello.c -o hello --verbose
+	......
+	--eh-frame-hdr -dynamic-linker /lib/ld-uClibc.so.0 -X -m armelf_linux_eabi -o hello 
+	......
+]]></programlisting>
+通过dumpelf可以查看PT_DYNAMIC程序头表的内容，以及.interp节内容。
+<programlisting><![CDATA[
+# dumpelf sum
+......
+/* Program Header #1 0x54 */
+{
+	.p_type   = 3          , /* [PT_INTERP] */
+	.p_offset = 212        ,
+	.p_vaddr  = 0x80D4     ,
+	.p_paddr  = 0x80D4     ,
+	.p_filesz = 20         ,
+	.p_memsz  = 20         ,
+	.p_flags  = 4          ,
+	.p_align  = 1         
+},
+......
+/* Section Header #1 '.interp' 0x3F0 */
+{
+	.sh_name      = 27         ,
+	.sh_type      = 1          , /* [SHT_PROGBITS] */
+	.sh_flags     = 2          ,
+	.sh_addr      = 0x80D4     ,
+	.sh_offset    = 212        , /* (bytes) */
+	.sh_size      = 20         , /* (bytes) */
+	.sh_link      = 0          ,
+	.sh_info      = 0          ,
+	.sh_addralign = 1          ,
+	.sh_entsize   = 0         
+},
+......
+]]></programlisting>
+可以看到p_offset和sh_offset是一致的，p_filesz和sh_size也是一致的，它们都只指向解释器的路径/lib/ld-uClibc.so.0。
+</sect2>
+<sect2><title>符号表</title>
+<para>
+ELF的符号表（Symbol Table）中包含用来定位、重定位程序中符号定义和引用的信息。符号表索引是对此数组的索引。索引0表示表中的第一表项，同时也作为未定义符号的索引。符号表对应的表项内容使用如下数据结构描述：
+<programlisting><![CDATA[
+typedef struct
+{
+  Elf32_Word	st_name;		/* Symbol name (string tbl index) */
+  Elf32_Addr	st_value;		/* Symbol value */
+  Elf32_Word	st_size;		/* Symbol size */
+  unsigned char	st_info;		/* Symbol type and binding */
+  unsigned char	st_other;		/* Symbol visibility */
+  Elf32_Section	st_shndx;		/* Section index */
+} Elf32_Sym;
+]]></programlisting>
+符号表项字段:
+<itemizedlist> 
+<listitem>st_name 包含目标文件符号字符串表的索引，其中包含符号名的字符串表示。如果该值非0，则它表示了给出符号名的字符串表索引，否则符号表项没有名称。注：外部 C 符号在 C 语言和目标文件的符号表中具有相同的名称。
+</listitem>
+<listitem>st_value 此成员给出相关联的符号的取值。依赖于具体的上下文，它可能是一个绝对值、一个地址等等。</listitem>
+<listitem>st_size 很多符号具有相关的尺寸大小。例如一个数据对象的大小是对象中包含的字节数。如果符号没有大小或者大小未知，则此成员为 0。</listitem>
+<listitem>st_info 此成员给出符号的类型和绑定属性。下面给出若干取值和含义的绑定关系。</listitem>
+<listitem>st_other 该成员当前包含0，其含义没有定义。</listitem>
+<listitem>st_shndx 每个符号表项都以和其他节间的关系的方式给出定义。此成员给出相关的节头部表索引。某些索引具有特殊含义。</listitem>
+</itemizedlist>
+使用readelf -s 选项查看符号表的内容，相当方便：
+<programlisting><![CDATA[
+# readelf -s i386
+Symbol table '.symtab' contains 9 entries:
+   Num:    Value  Size Type    Bind   Vis      Ndx Name
+     0: 00000000     0 NOTYPE  LOCAL  DEFAULT  UND 
+     1: 08048074     0 SECTION LOCAL  DEFAULT    1 
+     2: 08049098     0 SECTION LOCAL  DEFAULT    2 
+     3: 08049098     0 NOTYPE  LOCAL  DEFAULT    2 msg
+     4: 0000000e     0 NOTYPE  LOCAL  DEFAULT  ABS len
+     5: 08048074     0 NOTYPE  GLOBAL DEFAULT    1 _start
+     6: 080490a8     0 NOTYPE  GLOBAL DEFAULT  ABS __bss_start
+     7: 080490a8     0 NOTYPE  GLOBAL DEFAULT  ABS _edata
+     8: 080490a8     0 NOTYPE  GLOBAL DEFAULT  ABS _end
+]]></programlisting>
+readelf的结果将符号表项中的名字放在了最后，对应最后一列。i386总的符号表中共有9项，Bind指定绑定的类型，下面将对它进行详细介绍。另外注意到st_name也是一索引，对应.strtab。
+</para>
+<para>
+st_info 中包含符号类型和绑定信息，相关操作如下：
+<programlisting><![CDATA[
+/* How to extract and insert information held in the st_info field.  */
+#define ELF32_ST_BIND(val)		(((unsigned char) (val)) >> 4)
+#define ELF32_ST_TYPE(val)		((val) & 0xf)
+#define ELF32_ST_INFO(bind, type)	(((bind) << 4) + ((type) & 0xf))
+]]></programlisting>
+从中可以看出，st_info的低四位表示符号绑定，用于确定链接可见性和行为。具体的绑定类型如：
+	<table><title>符号的绑定类型</title>
+	<tgroup cols="2">
+	<thead><row><entry>名称</entry><entry>取值</entry><entry>含义</entry></row></thead>
+	<tbody>
+	<row><entry>STB_LOCAL</entry><entry>0</entry><entry><literallayout>局部符号在包含该符号定义的目标文件以外不可见。
+	相同名称的局部符号可以存在于多个文件中，互不影响。</literallayout></entry></row>
+	<row><entry>STB_GLOBAL</entry><entry>1</entry><entry><literallayout>全局符号对所有将组合的目标文件都是可见的。一个文件
+	中对某个全局符号的定义将满足另一个文件对相同全局符
+	号的未定义引用。</literallayout></entry></row>
+	<row><entry>STB_WEAK</entry><entry>2</entry><entry><literallayout>弱符号与全局符号类似，不过他们的定义优先级比较低。</literallayout></entry></row>
+	<row><entry>STB_LOPROC<?linebreak?>STB_HIPROC</entry><entry>13<?linebreak?>15</entry><entry><literallayout>处于这个范围的取值是保留给处理器专用语义的。	</literallayout></entry></row>	
+	</tbody>
+	</tgroup>
+	</table>
+在每个符号表中，所有具有 STB_LOCAL 绑定的符号都优先于弱符号和全局符号。符号表节中的 sh_info 头部成员包含第一个非局部符号的符号表索引。	
+</para>
+<para>
+符号类型与绑定类型共用st_info，占据高4bytes，定义如下：
+	<table><title>符号类型</title>
+	<tgroup cols="3">
+	<thead><row><entry>名称</entry><entry>取值</entry><entry>含义</entry></row></thead>
+	<tbody>
+	<row><entry>STT_NOTYPE</entry><entry>0</entry><entry><literallayout>符号的类型没有指定</literallayout></entry></row>
+	<row><entry>STT_OBJECT</entry><entry>1</entry><entry><literallayout>符号与某个数据对象相关，比如一个变量、数组等等</literallayout></entry></row>
+	<row><entry>STT_FUNC</entry><entry>2</entry><entry><literallayout>符号与某个函数或者其他可执行代码相关</literallayout></entry></row>
+	<row><entry>STT_SECTION</entry><entry>3</entry><entry><literallayout>符号与某个函数或者其他可执行代码相关</literallayout></entry></row>
+	<row><entry>STT_FILE</entry><entry>4</entry><entry><literallayout>符号与某个节相关。这种类型的符号表项主要用于重定位，
+	通常具有 STB_LOCAL 绑定，其节索引是SHN_ABS，
+	并且它优先于文件的其他 STB_LOCAL 符号（如果有的话）。</literallayout></entry></row>
+	<row><entry>STT_LOPROC<?linebreak?>STT_HIPROC</entry><entry>13<?linebreak?>15</entry><entry><literallayout>此范围的符号类型值保留给处理器专用语义用途。</literallayout></entry></row>
+	</tbody>
+	</tgroup>
+	</table>
+</para>
+<para>在共享目标文件中的函数符号（类型为STT_FUNC）具有特别的重要性。当其他目标文件引用了来自某个共享目标中的函数时，链接编辑器自动为所引用的符号创建过程链接表项。类型不是 STT_FUNC 的共享目标符号不会自动通过过程链接表进行引用。</para>
+<para>如果一个符号的取值引用了某个节中的特定位置，那么它的节索引成员（st_shndx）包含了其在节头部表中的索引。当节在重定位过程中被移动时，符号的取值也会随之变化，对符号的引用始终会“指向”程序中的相同位置。</para>
+<para>
+某些特殊的节索引具有不同的语义：
+<itemizedlist> 
+<listitem>SHN_ABS：符号具有绝对取值，不会因为重定位而发生变化。</listitem>
+<listitem>SHN_COMMON：符号标注了一个尚未分配的公共块。符号的取值给出了对齐约束，与节的 sh_addralign 成员类似。就是说，链接编辑器将为符号分配存储空间，地址位于 st_value 的倍数处。符号的大小给出了所需要的字节数。</listitem>
+<listitem>SHN_UNDEF：此节表索引值意味着符号没有定义。当链接编辑器将此目标文件与其他定义了该符号的目标文件进行组合时，此文件中对该符号的引用将被链接到实际定义的位置。</listitem>
+</itemizedlist>
+</para>
+不同的目标文件类型中符号表项对st_value成员具有不同的解释：
+<itemizedlist>
+<listitem>在可重定位文件中，st_value 中遵从了节索引为 SHN_COMMON 的符号的对齐约束。</listitem>
+<listitem>在可重定位的文件中，st_value 中包含已定义符号的节偏移。就是说，st_value 是从 st_shndx 所标识的节头部开始计算，到符号位置的偏移。</listitem>
+<listitem>在可执行和共享目标文件中，st_value 包含一个虚地址。为了使得这些文件的符号对动态链接器更有用，节偏移（针对文 件的解释）让位于虚拟地址（针对内存的解释），因为这时与节号无关。尽管符号表取值在不同的目标文件中具有相似的含义，适当的程序可以采取高效的数据访问方式。</listitem>
+</itemizedlist>
+</sect2>	
+<sect2><title>重定位信息</title>
+<para>
+重定位是将符号引用与符号定义进行连接的过程。例如，当程序调用了一个函数时，相关的调用指令必须把控制传输到适当的目标执行地址。
+可重定位文件必须包含如何修改其节内容的信息，从而允许可执行文件和共享目标文件保存进程的程序映像的正确信息。重定位表项就是这样一些数据。它的数据结构如下：
+<programlisting><![CDATA[
+/* Relocation table entry without addend (in section of type SHT_REL).  */
+
+typedef struct
+{
+  Elf32_Addr	r_offset;		/* Address */
+  Elf32_Word	r_info;			/* Relocation type and symbol index */
+} Elf32_Rel;
+
+/* Relocation table entry with addend (in section of type SHT_RELA).  */
+
+typedef struct
+{
+  Elf32_Addr	r_offset;		/* Address */
+  Elf32_Word	r_info;			/* Relocation type and symbol index */
+  Elf32_Sword	r_addend;		/* Addend */
+} Elf32_Rela;
+
+/* How to extract and insert information held in the r_info field.  */
+
+#define ELF32_R_SYM(val)		((val) >> 8)
+#define ELF32_R_TYPE(val)		((val) & 0xff)
+#define ELF32_R_INFO(sym, type)		(((sym) << 8) + ((type) & 0xff))
+]]></programlisting>
+
+其中，各个字段的说明如下：
+<itemizedlist> 
+	<listitem>r_offset 此成员给出了重定位动作所适用的位置。对于一个可重定位文件而言，此值是从节头部开始到将被重定位影响的存储单位之间的字节偏移。对于可执行文件或者共享目标文件而言，其取值是被重定位影响到的存储单元的虚拟地址。</listitem>
+	<listitem>r_info
+此成员给出要进行重定位的符号表索引，以及将实施的重定位类型。例如一个调用指令的重定位项将包含被调用函数的符号表索引。如果索引是 STN_UNDEF，那么重定位使用 0 作为“符号值”。重定位类型是和处理器相关的。当程序代码引用一个重定位项的重定位类型或者符号表索引，则表示对表项的 r_info 成员应用 ELF32_R_TYPE 或者 ELF32_R_SYM 的结果。</listitem>
+<listitem>r_addend 此成员给出一个常量补齐，用来计算将被填充到可重定位字段的数值。</listitem>
+</itemizedlist>
+如上所述，只有 Elf32_Rela 项目可以明确包含补齐信息。类型为 Elf32_Rel 的表项在将被修改的位置保存隐式的补齐信息。依赖于处理器体系结构，各种形式都可能存在，甚至是必需的。因此，对特定机器的实现可以仅使用一种形式，也可以根据上下文使用不同的形式。
+</para>
+<para>
+对重定位节头的说明给出一个实例，一个名为libadd1.c的文件引用了一个名为sub1的外部函数，将它编译为目标文件，并查看节头中的内容：
+<programlisting><![CDATA[
+extern void sub1(int *i);
+
+void add1(int *i)
+{
+        (*i)++;
+        (*i)++;
+        sub1(i);
+}
+
+# gcc -c libadd1.c  -O2 -o libadd1.o  //为了不使生成的代码过于冗长，使用-O2选项优化
+# dumpelf libadd1.o 
+......
+/* Section Header #1 '.text' 0xF0 */
+{
+        .sh_name      = 31         ,
+        .sh_type      = 1          , /* [SHT_PROGBITS] */
+        .sh_flags     = 6          ,
+        .sh_addr      = 0x0        ,
+        .sh_offset    = 64         , /* (bytes) */
+        .sh_size      = 15         , /* (bytes) */
+        .sh_link      = 0          ,
+        .sh_info      = 0          ,
+        .sh_addralign = 16         ,
+        .sh_entsize   = 0         
+},
+......
+/* Section Header #2 '.rel.text' 0x118 */
+{
+        .sh_name      = 27         ,
+        .sh_type      = 9          , /* [SHT_REL] */
+        .sh_flags     = 0          ,
+        .sh_addr      = 0x0        ,
+        .sh_offset    = 768        , /* (bytes) */
+        .sh_size      = 8          , /* (bytes) */
+        .sh_link      = 8          ,
+        .sh_info      = 1          ,
+        .sh_addralign = 4          ,
+        .sh_entsize   = 8         
+},
+......
+/* Section Header #8 '.symtab' 0x208 */
+{
+        .sh_name      = 1          ,
+        .sh_type      = 2          , /* [SHT_SYMTAB] */
+        .sh_flags     = 0          ,
+        .sh_addr      = 0x0        ,
+        .sh_offset    = 600        , /* (bytes) */
+        .sh_size      = 144        , /* (bytes) */
+        .sh_link      = 9          ,
+        .sh_info      = 7          ,
+        .sh_addralign = 4          ,
+        .sh_entsize   = 16        
+},
+]]></programlisting>
+一个名为.rel.text的可重定位节头表明它是对.text节的重定位指示。由于sh_type是SHT_REL类型，那么sh_link和sh_info的值将分别对应相关符号表的节头部索引和重定位所适用的节的节头部索引。所以符号表的节头部索引为8，也即.symtab节头；符号表的节头部索引为1，也即.text索引。
+</para>
+<para>
+显然重定位节会引用两个其它节：符号表、要修改的节。节头部的sh_info和sh_link成员给出了这些关系。不同目标文件的重定位表项对r_offset成员具有略微不同的解释。
+<itemizedlist> 
+	<listitem>在可重定位文件中，r_offset中包含节偏移。就是说重定位节自身描述了如何修改文件中的其他节；重定位偏移指定了被修改节中的一个存储单元。</listitem>
+<listitem>在可执行文件和共享的目标文件中，r_offset中包含一个虚拟地址。为了使得这些文件的重定位表项对动态链接器更为有用，节偏移（针对文件的解释）让位于虚地址（针对内存的解释）。</listitem>
+</itemizedlist>
+循着上例，.rel.text中的sh_entsize给出了一个节的大小为8，sh_size给出了所有重定位节的大小为8，这里重定位节中有一重定位项，使用readelf和hexdump查看对应的信息:
+<programlisting><![CDATA[
+# readelf -r libadd1.o          
+
+Relocation section '.rel.text' at offset 0x300 contains 1 entries:
+ Offset     Info    Type            Sym.Value  Sym. Name
+0000000b  00000802 R_386_PC32        00000000   sub1
+
+# hexdump -s 0x300 -n 10 libadd1.o -C 
+00000300  0b 00 00 00 02 08 00 00                           |........|
+]]></programlisting>
+hexdump中的-n参数使用10，而不是8，是为了看到输出结果已经是文件尾，所以ELF文件中的最后不是并不一定就是节头信息。重定位节信息几乎总是被安排在最后。readelf输出结果中的偏移值为0000000b，也即r_offset。对于一个可重定位文件而言，此值是从节头开始到将被重定位影响的存储单位之间的字节偏移。为了证实，使用objdump查看反汇编结果，令人惊讶的是.text节开始偏移0x0b处就是被调用的sub1函数应该填充的地址。
+<programlisting><![CDATA[
+# objdump -D libadd1.o 
+......
+Disassembly of section .text:
+00000000 <add1>:
+   0:   55                      push   %ebp
+   1:   89 e5                   mov    %esp,%ebp
+   3:   8b 45 08                mov    0x8(%ebp),%eax
+   6:   83 00 02                addl   $0x2,(%eax)
+   9:   5d                      pop    %ebp
+   a:   e9 fc ff ff ff          jmp    b <add1+0xb> //对sub1的调用需要重定位信息的帮助
+......   
+]]></programlisting>
+<figure><title>重定位节间的关系</title><graphic fileref="images/elf_rel.gif"/></figure>
+</para>
+<para>
+链接器会将一个或多个可重定位文件合并以形成输出。链接器首先确定如何合并和定位输入文件。然后，链接器会更新符号值并执行重定位。应用于可执行文件或共享库文件的重定位类似，并会取得相同的结果。接下来的说明使用以下标记：
+<itemizedlist> 
+	<listitem>A 用来计算可重定位字段的取值的补齐。</listitem>
+	<listitem>B 共享目标在执行过程中被加载到内存中的位置（基地址）。</listitem>
+	<listitem>G 在执行过程中，重定位项的符号的地址所处的位置 —— 全局偏移表的索引。</listitem>
+	<listitem> GOT 全局偏移表（GOT）的地址。</listitem>
+	<listitem>L 某个符号的过程链接表项的位置（节区偏移/地址）。过程链接表项把函数调用重定位到正确的目标位置。链接编辑器构造初始的过程链接表，动态链接器在执行过程中修改这些项目。</listitem>
+	<listitem>P 存储单位被重定位（用 r_offset 计算）到的位置（节区偏移或者地址）。</listitem>
+	<listitem>S 其索引位于重定位项中的符号的取值。</listitem>
+</itemizedlist> 
+尽管对 r_offset 的解释会有少许不同，重定位类型的含义始终不变。SYSTEM V仅使用Elf32_Rel重定位表项，在被重定位的字段中包含补齐量。补齐量和计算结果始终采用相同的字节顺序，Linux继承了这一特性。
+	
+	<table><title>x86体系结构下常见的重定位类型</title>
+	<tgroup cols="5">
+	<thead><row><entry>名称</entry><entry>数值</entry><entry>字段</entry><entry>计算</entry><entry>含义</entry></row></thead>
+	<tbody>
+	<row><entry>R_386_NONE</entry><entry>0</entry><entry></entry><entry></entry><entry><literallayout></literallayout></entry></row>
+	<row><entry>R_386_32</entry><entry>1</entry><entry>word32</entry><entry>S+A</entry><entry><literallayout></literallayout></entry></row>
+	<row><entry>R_386_PC32</entry><entry>2</entry><entry>word32</entry><entry>S+A-P</entry><entry><literallayout></literallayout></entry></row>
+	<row><entry>R_386_GOT32</entry><entry>3</entry><entry>word32</entry><entry>G+A-P</entry><entry><literallayout>此重定位类型计算从全局偏移表基址到符号的全局偏移表项之间的距离。
+它会通知连接编辑器构造一个全局偏移表。</literallayout></entry></row>
+	<row><entry>R_386_PLT32</entry><entry>4</entry><entry>word32</entry><entry>L+A-P</entry><entry><literallayout>
+	此重定位类型计算符号的过程链接表项的地质，并通知链接器构造
+一个过程链接表。</literallayout></entry></row>
+	<row><entry></entry><entry></entry><entry></entry><entry></entry><entry><literallayout></literallayout></entry></row>
+	<row><entry></entry><entry></entry><entry></entry><entry></entry><entry><literallayout></literallayout></entry></row>
+	</tbody>
+	</tgroup>
+	</table>
+关于重定位的整个过程将在链接器中进一步阐明。
+</para>
+<para>
+</para>
+</sect2>	
+<sect2><title>程序头部</title>
+<para>
+可执行文件或者共享目标文件的程序头部（Program Header）是一个结构数组，每个结构描述了一个段或者系统准备程序执行所必需的其它信息。目标文件的“段”包含一个或者多个“节”，也就是“段内容（Segment Contents）”。程序头部仅对于可执行文件和共享目标文件有意义。
+可执行目标文件在ELF头部的e_phentsize和e_phnum成员中给出其自身程序头部的大小。程序头部的数据结构如下：
+<programlisting><![CDATA[
+typedef struct
+{
+  Elf32_Word	p_type;			/* Segment type */
+  Elf32_Off	p_offset;		/* Segment file offset */
+  Elf32_Addr	p_vaddr;		/* Segment virtual address */
+  Elf32_Addr	p_paddr;		/* Segment physical address */
+  Elf32_Word	p_filesz;		/* Segment size in file */
+  Elf32_Word	p_memsz;		/* Segment size in memory */
+  Elf32_Word	p_flags;		/* Segment flags */
+  Elf32_Word	p_align;		/* Segment alignment */
+} Elf32_Phdr;
+]]></programlisting>
+其中各个字段说明如下：
+<itemizedlist> 
+<listitem>p_type 此数组元素描述的段的类型，或者如何解释此数组元素的信息。具体如下列表。</listitem>
+<listitem>p_offset 此成员给出从文件头到该段第一个字节的偏移。</listitem>
+<listitem>p_vaddr 此成员给出段的第一个字节将被放到内存中的虚拟地址。</listitem>
+<listitem>p_paddr 此成员仅用于与物理地址相关的系统中。因为 System V 忽略所有应用程序的物理地址信息，此字段对与可执行文件和共享目标文件而言具体内容是未指定的。</listitem>
+<listitem>p_filesz 此成员给出段在文件映像中所占的字节数。可以为0。</listitem>
+<listitem>p_memsz 此成员给出段在内存映像中占用的字节数。可以为0。</listitem>
+<listitem>p_flags 此成员给出与段相关的标志。</listitem>
+<listitem>p_align 可加载的进程段的 p_vaddr 和 p_offset 取值必须合适，相对于对页面大小的取模而言。此成员给出段在文件中和内存中如何对齐。数值 0 和 1 表示不需要对齐。否则 p_align 应该是个正整数，并且是 2 的幂次数，p_vaddr 和 p_offset 对 p_align 取模后应该相等。</listitem>
+</itemizedlist> 
+可执行ELF目标文件中的段类型如下表:
+	<table><title>段类型</title>
+	<tgroup cols="3">
+	<thead><row><entry>名字</entry><entry>取值</entry><entry>含义</entry></row></thead>
+	<tbody>
+	<row><entry>PT_NULL</entry><entry>0</entry><entry><literallayout>此数组元素未用。结构中其他成员都是未定义的</literallayout></entry></row>
+	<row><entry>PT_LOAD</entry><entry>1</entry><entry><literallayout>此数组元素给出一个可加载的段，段的大小由 p_filesz 和
+p_memsz 描述。文件中的字节被映射到内存段开始处。
+如果 p_memsz 大于p_filesz，“剩余”的字节要清零。
+p_filesz 不能大于 p_memsz。可加载的段在程序头部
+表中根据 p_vaddr 成员按升序排列。</literallayout></entry></row>
+	<row><entry>PT_DYNAMIC</entry><entry>2</entry><entry><literallayout>数组元素给出动态链接信息。</literallayout></entry></row>
+	<row><entry>PT_INTERP</entry><entry>3</entry><entry><literallayout>数组元素给出一个 NULL 
+结尾的字符串的位置和长度，该字符串将被当作解释器
+调用。这种段类型仅对与可执行文件有意义（尽管也可
+能在共享目标文件上发生）。在一个文件中不能出现一
+次以上。如果存在这种类型的段，它必须在所有可加载
+段项目的前面。</literallayout></entry></row>
+	<row><entry>PT_NOTE</entry><entry>4</entry><entry><literallayout>此数组元素给出附加信息的位置和大小。</literallayout></entry></row>
+	<row><entry>PT_SHLIB</entry><entry>5</entry><entry><literallayout>此段类型被保留，不过语义未指定。包含这种类型的段
+的程序与ABI 不符。</literallayout></entry></row>
+	<row><entry>PT_PHDR</entry><entry>6</entry><entry><literallayout>此类型的数组元素如果存在，则给出了程序头部表自
+身的大小和位置，既包括在文件中也包括在内存中的信息。
+此类型的段在文件中不能出现一次以上。并且只有程序头部
+表是程序的内存映像的一部分时才起作用。如果存在此类型
+段，则必须在所有可加载段项目的前面。</literallayout></entry></row>
+	</tbody>
+	</tgroup>
+	</table>
+</para>
+<para>
+使用dumpelf输出的程序头字段：
+<programlisting><![CDATA[
+......
+.phdrs = {
+/* Program Header #0 0x34 */
+{
+	.p_type   = 1          , /* [PT_LOAD] */
+	.p_offset = 0          ,
+	.p_vaddr  = 0x8048000  ,
+	.p_paddr  = 0x8048000  ,
+	.p_filesz = 150        ,
+	.p_memsz  = 150        ,
+	.p_flags  = 5          ,
+	.p_align  = 4096      
+},
+/* Program Header #1 0x54 */
+{
+	.p_type   = 1          , /* [PT_LOAD] */
+	.p_offset = 152        ,
+	.p_vaddr  = 0x8049098  ,
+	.p_paddr  = 0x8049098  ,
+	.p_filesz = 16         ,
+	.p_memsz  = 16         ,
+	.p_flags  = 6          ,
+	.p_align  = 4096      
+}
+},
+......
+]]></programlisting>	
+</para>
+<para>
+</para>
+</sect2>
+<sect2><title>基地址</title>
+<para>
+基地址（Base Address）用来对程序的内存映像进行重定位。可执行文件和共享库文件都有一个基本地址，该地址就是与程序目标文件的内存映像关联的
+最低虚拟地址，也即类型为PT_LOAD的程序头的p_vaddr指定的最小的地址。基本地址的其中一种用途是在动态链接过程中重定位程序的内存映像。对于可执行文件来说不同的体系架构具有不同的基地址，链接器调用的脚本决定了它的值：
+<programlisting><![CDATA[
+# ld --verbose
+	......
+  /* Read-only sections, merged into text segment: */
+  PROVIDE (__executable_start = 0x08048000); . = 0x08048000 + SIZEOF_HEADERS;
+  .interp         : { *(.interp) }
+  .note.gnu.build-id : { *(.note.gnu.build-id) }
+	...... 
+]]></programlisting>
+对于i386来说，0x08048000就是可执行ELF文件的基地址，但是对于ARM来说它是0x80000，并且这个地址并非不可改变。
+<programlisting><![CDATA[
+# ld --verbose
+	......
+  /* Read-only sections, merged into text segment: */
+  PROVIDE (__executable_start = 0x00008000); . = 0x00008000 + SIZEOF_HEADERS;
+  .interp         : { *(.interp) }
+  .note.gnu.build-id : { *(.note.gnu.build-id) }
+  ......
+]]></programlisting>
+基地址意味着一个全局的偏移，它总是通过可执行文件的p_vaddr参数来体现，对于一个.o文件来说，它没有程序头，所以的基地址永远是0。
+<programlisting><![CDATA[
+# dumpelf i386.o 
+......
+struct {
+        Elf32_Ehdr ehdr;
+        Elf32_Phdr phdrs[0]; // 程序头为0
+        Elf32_Shdr shdrs[8];
+} dumpedelf_0 = {
+......
+]]></programlisting>
+一个可执行的ELF文件中的程序头内包含了偏移后的基地址，i386中PT_LOAD类型的程序头中最低的虚拟地址对应了0x8048000。一个为0的虚拟地址并非不可接受，只要这些地址没有被约定作为其它的用途。对于i386来说，比0x8048000低的地址通常被用于动态库，而高的地址除了部分用来加载程序本身外，则会被用于堆和栈。但是这不是绝对的，即便对于i386，不同的内核版本，可能对地址的安排也会不同。
+<programlisting><![CDATA[
+# dumpelf i386
+......
+.phdrs = {
+/* Program Header #0 0x34 */
+{
+        .p_type   = 1          , /* [PT_LOAD] */
+        .p_offset = 0          ,
+        .p_vaddr  = 0x8048000  ,
+        .p_paddr  = 0x8048000  ,
+        .p_filesz = 150        ,
+        .p_memsz  = 150        ,
+        .p_flags  = 5          ,
+        .p_align  = 4096      
+},
+/* Program Header #1 0x54 */
+{
+        .p_type   = 1          , /* [PT_LOAD] */
+        .p_offset = 152        ,
+        .p_vaddr  = 0x8049098  ,
+        .p_paddr  = 0x8049098  ,
+        .p_filesz = 16         ,
+        .p_memsz  = 16         ,
+        .p_flags  = 6          ,
+        .p_align  = 4096      
+}
+......
+]]></programlisting>
+对于一个普通的动态库来说，它的基地址通常就是0，它在被加载到内核映像时动态分配地址。下面的示例指明了一个动态库的基地址为0。
+但是并非所有动态库的基地址均为0，对于系统内的动态库，比如libc-xx.so，它通常被约定一个地址，内存总是尝试把它加载到该约定的基地址上，这样内核不会为分配虚拟地址和连接动态库而做太多的工作。
+<programlisting><![CDATA[
+# dumpelf libadd1.so
+.phdrs = {
+/* Program Header #0 0x34 */
+{
+        .p_type   = 1          , /* [PT_LOAD] */
+        .p_offset = 0          ,
+        .p_vaddr  = 0x0        ,
+        .p_paddr  = 0x0        ,
+        .p_filesz = 350        ,
+        .p_memsz  = 350        ,
+        .p_flags  = 5          ,
+        .p_align  = 4096      
+},
+......
+
+# dumpelf /lib/libc-2.7.so
+......
+/* Program Header #2 0x74 */
+{
+        .p_type   = 1          , /* [PT_LOAD] */
+        .p_offset = 0          ,
+        .p_vaddr  = 0xBDF000   , // libc-2.7.so的基地址
+        .p_paddr  = 0xBDF000   ,
+        .p_filesz = 1387436    ,
+        .p_memsz  = 1387436    ,
+        .p_flags  = 5          ,
+        .p_align  = 4096
+},
+......
+]]></programlisting>
+可执行文件或者共享目标文件的内存映像的基地址并不总是和文件内的基地址相同，它们是在执行过程中从三个数值计算的：
+<itemizedlist> 
+	<listitem>内存加载地址</listitem>。
+	<listitem>最大页面大小</listitem>
+	<listitem>程序的可加载段的最低虚地址</listitem>
+</itemizedlist> 
+</para>
+<para>
+程序头部中的虚拟地址可能不能代表程序内存映像的实际虚地址。要计算基地址，首先要确定与 PT_LOAD 段的最低p_vaddr 的值。通过对内存地址向最接近的最大页面大小圆整，就可以得到基地址。根据要加载到内存中的文件的类型，内存地址可能与p_vaddr 相同也可能不同。对于一个运行的i386程序，它的虚拟地址的分配可以通过cat /proc/$(pid)/maps得到:
+<programlisting><![CDATA[
+# cat /proc/2051/maps 
+00110000-00111000 r-xp 00110000 00:00 0          [vdso]
+00bc0000-00bdb000 r-xp 00000000 fd:00 1180197    /lib/ld-2.7.so
+00bdb000-00bdc000 r-xp 0001a000 fd:00 1180197    /lib/ld-2.7.so
+00bdc000-00bdd000 rwxp 0001b000 fd:00 1180197    /lib/ld-2.7.so
+00bdf000-00d32000 r-xp 00000000 fd:00 1180198    /lib/libc-2.7.so
+00d32000-00d34000 r-xp 00153000 fd:00 1180198    /lib/libc-2.7.so
+00d34000-00d35000 rwxp 00155000 fd:00 1180198    /lib/libc-2.7.so
+00d35000-00d38000 rwxp 00d35000 00:00 0 
+08048000-0804b000 r-xp 00000000 fd:00 1993076    /sbin/mingetty
+0804b000-0804c000 rw-p 00002000 fd:00 1993076    /sbin/mingetty
+09476000-09497000 rw-p 09476000 00:00 0 
+b7fc3000-b7fc5000 rw-p b7fc3000 00:00 0 
+b7fd6000-b7fd7000 rw-p b7fd6000 00:00 0 
+bf90b000-bf920000 rw-p bffea000 00:00 0          [stack]
+]]></programlisting>
+可以清楚地看到/lib/ld-2.7.so的地址被加载到的了00bdf000到00d35000，这个地址通常和.so文件中的基地址保持了一致，但是如果地址和其他加载部分，比如其他.so文件发生了冲突，将会被调节到其他地址，但是无论如何它的加载地址总是对齐到页面大小，对于Linux来说通常为4K(0x1000)，并且占据整数个页面大小，这是分页功能的一部分。
+</para>
+
+<para>
+这里提供一个修改应用程序基地址的例子，首先通过ld --verbose得到连接脚本，移除其中的解释部分:
+<programlisting><![CDATA[
+GNU ld version 2.17.50.0.18-1 20070731
+  Supported emulations:
+   elf_i386
+   i386linux
+using internal linker script:
+==================================================
+// 这里是linker script
+==================================================
+]]></programlisting>
+提取后的脚本通常如下所示，将其保存为.lds文档。通过修改其中的0x08048000就可以改变输出程序的基地址。
+<programlisting><![CDATA[
+/* Script for -z combreloc: combine and sort reloc sections */
+OUTPUT_FORMAT("elf32-i386", "elf32-i386",
+              "elf32-i386")
+OUTPUT_ARCH(i386)
+ENTRY(_start)
+SEARCH_DIR("/usr/i386-redhat-linux/lib"); SEARCH_DIR("/usr/local/lib"); SEARCH_DIR("/lib"); SEARCH_DIR("/usr/lib");
+SECTIONS
+{
+  /* Read-only sections, merged into text segment: */
+  PROVIDE (__executable_start = 0x08048000); . = 0x08048000 + SIZEOF_HEADERS;
+......
+  /* DWARF 3 */
+  .debug_pubtypes 0 : { *(.debug_pubtypes) }
+  .debug_ranges   0 : { *(.debug_ranges) }
+  .gnu.attributes 0 : { KEEP (*(.gnu.attributes)) }
+  /DISCARD/ : { *(.note.GNU-stack) *(.gnu_debuglink) }
+}
+]]></programlisting>
+<programlisting><![CDATA[
+ PROVIDE (__executable_start = 0); . = 0 + SIZEOF_HEADERS;
+]]></programlisting>
+一个使用该链接脚本的示例程序如下，它包含test.c和libadd1.c两个文件，其中libadd1.c一个将被编译为libadd1.so文件。
+test.c中的内容如下：
+<programlisting><![CDATA[
+#include <stdlib.h>
+#include <stdio.h>
+
+extern void add1(int *i);
+
+int main()
+{
+        int i = 0;
+
+        while(i < 20)
+        {
+                sleep(1);
+                add1(&i);
+        }
+
+        return 0;
+}
+]]></programlisting>
+libadd1.c中的内容如下：
+<programlisting><![CDATA[
+void add1(int *i)
+{
+        (*i)++;
+}
+]]></programlisting>
+编译使用的命令如下:
+<programlisting><![CDATA[
+gcc -c libadd1.c -o libadd1.o
+ld --share -o libadd1.so libadd1.o
+gcc -o test test.c libadd1.so -Wl,-rpath=./ -Wl,-T ld.lds
+]]></programlisting>
+-rpath指定应用程序加载动态库时所搜索的路径，-T则指定了使用的链接脚本，它的虚拟地址的分配通过cat /proc/$(pid)/maps得到，一个有意思的事实是，它确实被加载到了0地址处，并且运行的很好。
+<programlisting><![CDATA[
+# cat /proc/3442/maps 
+00000000-00001000 r-xp 00000000 fd:00 1313701    /home/red/software/test/lib/test
+00001000-00002000 rwxp 00000000 fd:00 1313701    /home/red/software/test/lib/test
+00110000-00111000 r-xp 00000000 fd:00 1313694    /home/red/software/test/lib/libadd1.so
+00111000-00112000 rwxp 00000000 fd:00 1313694    /home/red/software/test/lib/libadd1.so
+00bc0000-00bdb000 r-xp 00000000 fd:00 1180197    /lib/ld-2.7.so
+00bdb000-00bdc000 r-xp 0001a000 fd:00 1180197    /lib/ld-2.7.so
+00bdc000-00bdd000 rwxp 0001b000 fd:00 1180197    /lib/ld-2.7.so
+00bdf000-00d32000 r-xp 00000000 fd:00 1180198    /lib/libc-2.7.so
+00d32000-00d34000 r-xp 00153000 fd:00 1180198    /lib/libc-2.7.so
+00d34000-00d35000 rwxp 00155000 fd:00 1180198    /lib/libc-2.7.so
+00d35000-00d38000 rwxp 00d35000 00:00 0 
+b7ef0000-b7ef1000 rwxp b7ef0000 00:00 0 
+b7f03000-b7f04000 rwxp b7f03000 00:00 0 
+b7f04000-b7f05000 r-xp b7f04000 00:00 0          [vdso]
+bf818000-bf82d000 rw-p bffea000 00:00 0          [stack]
+]]></programlisting>
+<figure><title>ELF的基地址</title><graphic fileref="images/elf_addr.gif"/></figure>
+对于ELF的地址分配和内核镜像中的地址分配将在链接器和装载器中说明。
+</para>
+<para>
+“.bss”节的类型为SHT_NOBITS。尽管它在文件中不占据空间，却会占据段的内存映像的空间。通常，这些未初始化的数据位于段的末尾，所以p_memsz会比p_filesz大。
+</para>
+</sect2>
+</sect1>

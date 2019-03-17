@@ -1,0 +1,37 @@
+<sect1><title>附录</title>
+<sect2><title>参考书目</title>
+<para>
+<itemizedlist> 
+	<listitem>深入理解linux内核(第三版):Understanding the Linux Kernel, 3rd Edition(ULK)</listitem>
+	<listitem>深入Linux内核架构：Professional Linux Kernel Architecture(LKA)</listitem>
+	<listitem>Linux设备驱动 Edition 3(LDD3)</listitem>
+	<listitem>理解Linux虚拟内存管理：Understanding Linux Virtual Memory Manager</listitem>
+	<listitem>Essential Linux Device Drivers</listitem>
+	<listitem>深入分析Linux内核源码</listitem>
+	<listitem>Using the GNU Compiler Collection</listitem>
+	<listitem>Debugging with GDB</listitem>
+	<listitem>linkers and loaders</listitem>
+	<listitem>The GNU linker:Using ld</listitem>
+	<listitem>sun链接程序和库指南</listitem>
+	<listitem>ARM Technical Reference Manual</listitem>
+	<listitem>ARM Architecture Reference Manual</listitem>
+	<listitem>ARM1176JZF-S R0P7 Technical Reference Manual</listitem>
+	<listitem>PrimeCell Vectored Interrupt PL190</listitem>
+	<listitem>ARM和Thumb-2 指令集</listitem>
+	<listitem>S3C6410X User's Manual</listitem>
+</itemizedlist>
+</para>
+</sect2>
+<sect2><title>参考网络资源</title>
+<para>
+<itemizedlist> 
+	<listitem><ulink url="http://www.arm.com/zh/">ARM官方网站</ulink></listitem>
+	<listitem><ulink url="http://www.ibm.com/developerworks/">IBM developerWorks</ulink></listitem>
+	<listitem></listitem>
+	<listitem></listitem>
+</itemizedlist>
+</para>	
+<para>
+</para>	
+</sect2>
+</sect1>

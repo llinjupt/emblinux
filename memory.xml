@@ -1,0 +1,698 @@
+<sect1><title>内存管理</title>
+<sect2><title>引言</title>
+	<para>
+Linux对物理内存的描述机制有两种：UMA和NUMA。Linux把物理内存划分为三个层次来管理：存储节点（Node）、管理区（Zone）和页面（Page）。UMA对应一致存储结构，它只需要一个Node就可以描述当前系统中的物理内存，但是NUMA的出现打破了这种平静，此时需要多个Node，它们被统一定义为一个名为discontig_node_data的数组。为了和UMA兼容，就将描述UMA存储结构的描述符contig_page_data放到该数组的第一个元素中。内核配置选项CONFIG_NUMA决定了当前系统是否支持NUMA机制。此时无论UMA还是NUMA，它们都是对应到一个类型为pg_data_t的数组中，便于统一管理。</para>
+<figure><title>Node Zone和Page的关系</title><graphic fileref="images/mem_topo.gif"/></figure>
+<para>
+上图描述Linux管理物理内存的三个层次之间的拓扑关系。从图中可以看出一个存储节点由pg_data_t描述，一个UMA系统中只有一个Node，而在NUMA中则可以存在多个Node。它由CONFIG_NODES_SHIFT配置选项决定，它是CONFIG_NUMA的子选项，所以只有配置了CONFIG_NUMA，该选项才起作用。UMA情况下，NODES_SHIFT被定义为0，MAX_NUMNODES也即为1。
+<programlisting><![CDATA[
+include/linux/numa.h
+
+#ifdef CONFIG_NODES_SHIFT
+#define NODES_SHIFT     CONFIG_NODES_SHIFT
+#else
+#define NODES_SHIFT     0
+#endif
+
+#define MAX_NUMNODES    (1 << NODES_SHIFT)
+]]></programlisting>
+这里主要介绍UMA机制。contig_page_data被定义如下：
+<programlisting><![CDATA[
+mm/page_alloc.c
+struct pglist_data __refdata contig_page_data = { .bdata = &bootmem_node_data[0] };
+EXPORT_SYMBOL(contig_page_data);
+]]></programlisting>
+struct pglist_data即是pg_data_t的原型。了解pg_data_t中的结构成员对于了解内存管理是必经之路：
+<programlisting><![CDATA[
+enum zone_type {
+ZONE_DMA,
+ZONE_NORMAL,
+ZONE_MOVABLE,
+......
+__MAX_NR_ZONES
+};
+
+typedef struct pglist_data {
+        struct zone node_zones[MAX_NR_ZONES];
+        struct zonelist node_zonelists[MAX_ZONELISTS];
+        int nr_zones;
+#ifdef CONFIG_FLAT_NODE_MEM_MAP /* means !SPARSEMEM */
+        struct page *node_mem_map;
+#ifdef CONFIG_CGROUP_MEM_RES_CTLR
+        struct page_cgroup *node_page_cgroup;
+#endif
+#endif
+        struct bootmem_data *bdata;
+
+...... /* for CONFIG_MEMORY_HOTPLUG */
+
+        unsigned long node_start_pfn;
+        unsigned long node_present_pages; /* total number of physical pages */
+        unsigned long node_spanned_pages; /* total size of physical page
+                                             range, including holes */
+        int node_id;
+        wait_queue_head_t kswapd_wait;
+        struct task_struct *kswapd;
+        int kswapd_max_order;
+} pg_data_t;
+]]></programlisting>
+<itemizedlist>
+	<listitem>node_zones：当前节点中包含的最大管理区数。MAX_NR_ZONES在include/linux/bounds.h定义，该文件是在编译过程中根据管理区类型定义中的__MAX_NR_ZONES变量自动生成的。</listitem>
+	<listitem>node_zonelists：内存分配器所使用的管理区链表数组，MAX_ZONELISTS的值在配置CONFIG_NUMA时为2，否则为1。索引为0的链表表示后援(Fallback)链表，也即当该链表中的第一个不满足分配内存时，依次尝试链表的其他管理区。索引为1,的链表则用来针对GFP_THISNODE的内存申请，此时只能申请指定的该链表中的管理区。
+</listitem>
+<listitem>nr_zones：指定当前节点中的管理区数，也即node_zones中实际用到的管理区数。它的取值范围为[1, MAX_NR_ZONES]。对于UMA来说，它的值为1。</listitem>
+<listitem>node_mem_map：节点中页描述符数组首地址。</listitem>
+<listitem>node_page_cgroup：</listitem>
+<listitem>bdata：系统引导时用的Bootmem分配器。</listitem>
+<listitem>node_start_pfn：节点中第一个页框的下标。</listitem>
+<listitem>node_present_pages：节点中的页面数，不包含孔洞。</listitem>
+<listitem>node_spanned_pages：节点中的页面总数，包含孔洞。</listitem>
+<listitem>node_id：节点标识符，在节点数组中唯一存在。</listitem>
+<listitem>kswapd_wait：kswapd页换出守护进程使用的等待队列。</listitem>
+<listitem>kswapd: 指针指向kswaps内核线程的进程描述符。</listitem>
+<listitem>kswapd_max_order：kswapd将要创建的空闲块大小取对数的值。</listitem>
+</itemizedlist>
+注意到zonelist中的_zonerefs元素，它用来实现分配器分配内存时候的管理区后援功能。MAX_ZONES_PER_ZONELIST被定义为所有节点中包含的最多管理区的和并加上1，加1的目的是在后援链表中，可以检测是否遍历到最后一个节点了，如果是说明申请失败。
+<programlisting><![CDATA[
+/* Maximum number of zones on a zonelist */
+#define MAX_ZONES_PER_ZONELIST (MAX_NUMNODES * MAX_NR_ZONES)
+
+struct zonelist {
+        struct zonelist_cache *zlcache_ptr;                  // NULL or &zlcache
+        struct zoneref _zonerefs[MAX_ZONES_PER_ZONELIST + 1];
+#ifdef CONFIG_NUMA
+        struct zonelist_cache zlcache;                       // optional ...
+#endif
+};
+]]></programlisting>
+节点中的管理区都在free_area_init_core函数中初始化。调用关系如下所示：
+<programlisting><![CDATA[
+start_kernel->setup_arch->paging_init->bootmem_init->bootmem_free_node->free_area_init_node->free_area_init_core
+]]></programlisting>
+	</para>
+<para>
+在理想的计算机体系结构中，一个物理页框就是一个内存存储单元，可用于任何事情：存放内核数据和用户数据，磁盘缓冲数据等。热河中磊的数据页都可以存放在任何页框中，没有什么限制。但是，实际的计算机体系结构有硬件的制约，这制约页框可以使用的方式。尤其是Linux内核必须处理80x86体系结构的两种硬件约束：
+<itemizedlist>
+	<listitem>ISA总线的直接内存存取DMA访问控制器只能对RAM的低16MB寻址。</listitem>
+	<listitem>在具有大容量RAM的现代32位计算机中，由于线性地址空间的限制，CPU不能直接访问所有的物理内存。</listitem>
+</itemizedlist>	
+最后一种限制不仅存在于80x86，而存在于所有的体系结构中。为了应对这两种限制，Linux把每个内存节点的物理内存划分为多个（通常为3个）管理区（zone）。在80x86 UMA体系结构中的管理区为：
+<itemizedlist>
+	<listitem>ZONE_DMA，包含低于16MB的内存页框。</listitem>
+	<listitem>ZONE_NORMAL，包含高于16MB且低于896MB的内存页框。</listitem>
+	<listitem>ZONE_HIGHMEM，包含从896MB开始的内存页框。</listitem>
+</itemizedlist>
+对于ARM来说，ZONE_HIGHMEM被名为ZONE_MOVABLE的宏取代，而ZONE_DMA也不会仅限于最低的16MB，而可能对应所有的内存区域，此时只有内存节点ZONE_DMA有效，所以ZONE_DMA并不一定名副其实的用来作为DMA访问之用。
+</para>
+<para>
+ZONE_DMA和ZONE_NORMAL区包含内存的"常规"页框，通过把它们线性的映射到线性地址的第4个GB（0xc0000000-0xcfffffff），内核就可以直接访问。相反ZONE_HIGHMEM或者ZONE_MOVABLE区包含的内存页不能由内核直接访问，尽管它们也线性地映射到了线性地址空间的第4个GB。每个内存管理区都有自己的描述符struct zone。它用来保存管理区的跟踪信息：内存使用统计，空闲区，锁定区等。
+<programlisting><![CDATA[
+include/linux/mmzone.h
+struct zone {
+        /* Fields commonly accessed by the page allocator */
+        unsigned long           pages_min, pages_low, pages_high;
+
+        unsigned long           lowmem_reserve[MAX_NR_ZONES];
+        struct per_cpu_pageset  pageset[NR_CPUS];
+        
+        struct free_area        free_area[MAX_ORDER];
+
+        ZONE_PADDING(_pad1_)
+
+        /* Fields commonly accessed by the page reclaim scanner */
+        spinlock_t              lru_lock;
+        struct {
+                struct list_head list;
+                unsigned long nr_scan;
+        } lru[NR_LRU_LISTS];
+        
+        unsigned long           recent_rotated[2];
+        unsigned long           recent_scanned[2];
+
+        unsigned long           pages_scanned;     /* since last reclaim */
+        unsigned long           flags;             /* zone flags, see below */
+
+        /* Zone statistics */
+        atomic_long_t           vm_stat[NR_VM_ZONE_STAT_ITEMS];
+};
+]]></programlisting>
+<itemizedlist>
+	<listitem>pages_min，记录管理区中空闲页的数目。</listitem>
+	<listitem>pages_low，回收页框使用的下届，同时也被管理区分配器作为阈值使用。</listitem>
+	<listitem>pages_high，回收页框使用的上届，同时也被管理区分配器作为阈值使用。</listitem>
+	<listitem>lowmem_reserve，指明在处理内存不足的临界情况下每个管理区必须保留的页框数目。</listitem>
+	<listitem>pageset，单一页框的特殊告诉缓存。</listitem>
+	<listitem></listitem>
+</itemizedlist>
+在申请内存时，会遇到两种情况：如果有足够的空闲页可用，请求就会被立刻满足;否则，必须回收一些内存，并且将发出请求的内核控制路径阻塞，直到有内存被释放。不过有些内存请求不能被阻塞。这种情况发生在处理中断或在执行临界区内的代码时。在这些情况下，一条内核控制路径应使用原子内存分配请求(GFP_ATOMIC)。原子请求从不被阻塞；如果没有足够的空闲页，则仅仅是分配失败而已。</para>
+<para>
+内核为了尽可能保证一个原子内存分配请求成功，它为原子内存分配请求保留了一个页框池，只有在内存不足时才使用。保留内存的数量存放在min_free_kbytes变量中，单位为KB。
+<programlisting><![CDATA[
+mm/page_alloc.c
+
+int min_free_kbytes = 1024;
+.....
+
+/* min_free_kbytes = sqrt(lowmem_kbytes * 16); */
+lowmem_kbytes = nr_free_buffer_pages() * (PAGE_SIZE >> 10);
+min_free_kbytes = int_sqrt(lowmem_kbytes * 16);
+]]></programlisting>	
+min_free_kbytes由当前直接映射区的物理内存数量决定。也即ZONE_DMA和ZONE_NORMAL内存管理区的可用页框数决定，这可以通过nr_free_buffer_pages获取。尽管可以通过/proc/sys/vm/min_free_kbytes来修改该它的大小，但是min_free_kbytes的初始值范围必须是[128K, 64M]。管理区描述符中的pages_min成员存储了管理区内保留页框的数目。这个字段与pages_low和pages_high字段一起被用在内存分配和回收算法中。pages_low字段总是被设为pages_min的值的5/4，而pages_high则总是被设为pages_min的值的3/2。这些值在模块快初始化module_init调用的init_per_zone_pages_min中被设置。
+<table><title>页面分配控制</title>
+<tgroup cols="2">
+<thead><row><entry>名称</entry><entry>大小</entry></row></thead>
+<tbody>
+<row><entry>pages_min</entry><entry>min_free_kbytes >> (PAGE_SHIFT - 10)</entry></row>		
+<row><entry>pages_low</entry><entry>pages_min * 5 / 4</entry></row>	
+<row><entry>pages_high</entry><entry>pages_min * 3 / 2</entry></row>	
+</tbody>
+</tgroup>
+</table>
+</para>	
+	<para>
+free_area_init_core中对管理区初始化的代码部分如下，后续章节将对该函数进一步分析。
+<programlisting><![CDATA[
+		zone->spanned_pages = size;
+		zone->present_pages = realsize;
+
+		zone->name = zone_names[j];
+		spin_lock_init(&zone->lock);
+		spin_lock_init(&zone->lru_lock);
+		zone_seqlock_init(zone);
+		zone->zone_pgdat = pgdat;
+
+		zone->prev_priority = DEF_PRIORITY;
+
+		zone_pcp_init(zone);
+		for_each_lru(l) {
+			INIT_LIST_HEAD(&zone->lru[l].list);
+			zone->lru[l].nr_scan = 0;
+		}
+		zone->recent_rotated[0] = 0;
+		zone->recent_rotated[1] = 0;
+		zone->recent_scanned[0] = 0;
+		zone->recent_scanned[1] = 0;
+		zap_zone_vm_stats(zone);
+		zone->flags = 0;
+]]></programlisting>	
+	</para>
+</sect2>
+<sect2><title>page管理项</title>
+<programlisting><![CDATA[
+struct page {
+	unsigned long flags;		/* Atomic flags, some possibly
+					 * updated asynchronously */
+	atomic_t _count;		/* Usage count, see below. */
+	union {
+		atomic_t _mapcount;	/* Count of ptes mapped in mms,
+					 * to show when page is mapped
+					 * & limit reverse map searches.
+					 */
+		struct {		/* SLUB */
+			u16 inuse;
+			u16 objects;
+		};
+	};
+]]></programlisting>
+每一个物理页框都需要一个对应的page结构来进行管理：记录分配状态，分配和回收，互斥以及同步操作。对该结构成员的解释如下：
+<itemizedlist>
+	<listitem>flag域存放当前页框的页标志，它存储了体系结构无关的状态，专门供Linux内核自身使用。该标志可能的值定义在include/linux/page-flags.h中。</listitem>
+	<listitem>原子计数成员_count则指明了当前页框的引用计数，当该值为0时，就说明它没有被使用，此时在新分配内存时它就可以被使用。内核代码应该通过page_count来访问它，而非直接访问。</listitem>
+	<listitem>原子计数成员_mapcount表示在页表中有多少页指向该页框。在SLUB中它被inuse和objects代替。</listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+include/linux/page-flags.h
+enum pageflags {
+        PG_locked,              /* Page is locked. Don't touch. */
+        PG_error,
+        PG_referenced,
+        PG_uptodate,
+        PG_dirty,
+        PG_lru,
+        PG_active,
+        ......
+        __NR_PAGEFLAGS,
+        ......
+}
+]]></programlisting>
+以上是页标志位的可能取值，通常不应该直接使用这些标志位，而应该内核预定义好的宏，它们在相同的头文件中被定义，但是它们是被间接定义的，也即通过##连字符来统一对它们进行定义。
+<programlisting><![CDATA[
+#define TESTPAGEFLAG(uname, lname)					\
+static inline int Page##uname(struct page *page) 			\
+			{ return test_bit(PG_##lname, &page->flags); }
+......
+TESTPAGEFLAG(Locked, locked)
+PAGEFLAG(Error, error)
+PAGEFLAG(Referenced, referenced) TESTCLEARFLAG(Referenced, referenced)
+]]></programlisting>
+<table><title>页标志宏函数</title>
+<tgroup cols="2">
+<thead><row><entry>宏</entry><entry>扩展函数/宏</entry><entry>用途</entry></row></thead>
+<tbody>
+<row><entry>TESTPAGEFLAG(uname, lname)</entry><entry>Page##uname</entry><entry>测试PG_##lname位</entry></row>		
+<row><entry>SETPAGEFLAG(uname, lname)</entry><entry>SetPage##uname</entry><entry>设置PG_##lname位</entry></row>
+<row><entry>CLEARPAGEFLAG(uname, lname)<footnote><para>以上三个宏分别对应test_bit，set_bit和clear_bit，是原子操作，与它们对应的是有三个开头<?linebreak?>为下划线的同名函数__SETPAGEFLAG等与它们相对应，但不是原子操作，这里不再列出。</para></footnote></entry><entry>ClearPage##uname</entry><entry>清除PG_##lname位</entry></row>
+<row><entry>TESTSETFLAG(uname, lname)</entry><entry>TestSetPage##uname</entry><entry>测试并设置PG_##lname</entry></row>
+<row><entry>TESTCLEARFLAG(uname, lname)</entry><entry>TestClearPage##uname</entry><entry>测试并清除PG_##lname</entry></row>
+<row><entry>PAGEFLAG(uname, lname)<footnote><para>与此对应也有__PAGEFLAG的宏存在。</para></footnote></entry><entry> TESTPAGEFLAG<?linebreak?>SETPAGEFLAG<?linebreak?>CLEARPAGEFLAG</entry><entry>当于同时扩展了三个宏，也即三个函数</entry></row>
+<row><entry>PAGEFLAG_FALSE(uname)</entry><entry>Page##uname</entry><entry>永远返回0</entry></row>
+<row><entry>TESTSCFLAG(uname, lname)</entry><entry>TESTSETFLAG<?linebreak?>TESTCLEARFLAG</entry><entry>当于同时扩展了两个宏，也即两个函数</entry></row>
+<row><entry>SETPAGEFLAG_NOOP(uname)</entry><entry>SetPage##uname</entry><entry>空操作</entry></row>
+<row><entry>CLEARPAGEFLAG_NOOP(uname)</entry><entry>ClearPage##unam</entry><entry>空操作</entry></row>
+<row><entry>__CLEARPAGEFLAG_NOOP(uname)</entry><entry>__ClearPage##uname</entry><entry>空操作</entry></row>
+<row><entry>TESTCLEARFLAG_FALSE(uname)</entry><entry>TestClearPage##uname</entry><entry>永远返回0</entry></row>
+</tbody>
+</tgroup>
+</table>
+flags实际上为两部分：标志区(Flags Area)从最低处向上扩展到第__NR_PAGEFLAGS位;字段区(Fields Area)则从最高位向低位扩展。字段区用来实现管理区，内存节点和稀疏内存的映射。
+<programlisting><![CDATA[
+   | FIELD | ... | FLAGS |
+   N-1           ^       0
+                (__NR_PAGEFLAGS)
+]]></programlisting>
+_count引用计数不应被直接引用，内核提供了一系列的内联函数来操作它，通常它们被定义在include/linux/mm.h中。
+	<table><title>页引用计数函数</title>
+	<tgroup cols="2">
+	<thead><row><entry>函数名</entry><entry>用途</entry></row></thead>
+	<tbody>
+	<row><entry>page_count</entry><entry>读取引用计数</entry></row>		
+	<row><entry>get_page</entry><entry>引用计数加1</entry></row>
+	<row><entry>init_page_count</entry><entry>初始化引用计数为1</entry></row>
+	</tbody>
+	</tgroup>
+	</table>
+_mapcount与_count引用计数类似，不应被直接引用，内核提供了一系列的内联函数来操作它，它们也被定义在include/linux/mm.h中。
+	<table><title>页引用计数函数</title>
+	<tgroup cols="2">
+	<thead><row><entry>函数名</entry><entry>用途</entry></row></thead>
+	<tbody>
+	<row><entry>reset_page_mapcount</entry><entry>初始化引用计数为-1<footnote><para>
+	没有初始化为0是因为atomic_inc_and_test和atomic_add_negative的操作，对该引用计数的加减是由这两个函数完成的。</para></footnote></entry></row>
+	<row><entry>page_mapcount</entry><entry>读取引用计数并加1的值</entry></row>
+	<row><entry>page_mapped</entry><entry>该函数根据引用计数值是否大于等于0，判断该页框是否被映射。</entry></row>
+	</tbody>
+	</tgroup>
+	</table>
+<programlisting><![CDATA[
+	union {
+	    struct {
+		unsigned long private;		/* Mapping-private opaque data:
+					 	 * usually used for buffer_heads
+						 * if PagePrivate set; used for
+						 * swp_entry_t if PageSwapCache;
+						 * indicates order in the buddy
+						 * system if PG_buddy is set.
+						 */
+		struct address_space *mapping;	/* If low bit clear, points to
+						 * inode address_space, or NULL.
+						 * If page mapped as anonymous
+						 * memory, low bit is set, and
+						 * it points to anon_vma object:
+						 * see PAGE_MAPPING_ANON below.
+						 */
+	    };
+#if USE_SPLIT_PTLOCKS
+	    spinlock_t ptl;
+#endif
+	    struct kmem_cache *slab;	/* SLUB: Pointer to slab */
+	    struct page *first_page;	/* Compound tail pages */
+	};
+	union {
+		pgoff_t index;		/* Our offset within mapping. */
+		void *freelist;		/* SLUB: freelist req. slab lock */
+	};
+	struct list_head lru;		/* Pageout list, eg. active_list
+]]></programlisting>
+<para>
+由于内核引入了很多的分配机制，以往间简单的page结构变得越来越复杂。为了无缝引入slub分配器来分配小于1个页面的内存，这里使用共用体将slab指针和复合页的首页指针与private和mapping公用存储空间。private的用途与flags标志位息息相关。如果设置了PG_private，那么它被用于buffer_heads;如果设置了PG_swapcache，那么用于swp_entry_t;如果设置了PG_buddy，则用于伙伴系统中的阶(Order)。
+</para>
+<para>
+内核可以将多个相邻的页框合并为复合页(Compound Page)。分组中的第一个也成为首页(Head Page)，而所有其余各页叫做尾页(Tail Page)。所有尾页对应的管理page数据结构都将first_page指向首页。
+</para>
+<para>
+mapping指定了页框所在的地址空间。index是页框在mapping映射内部的偏移量。mapping指针通常是对齐到sizeof(long)的，这保证它的最低位为0，但是它并总是如此。可以有以下两种可能：
+<itemizedlist> 
+	<listitem>address_space的实例</listitem>
+	<listitem>当最低位为1时，指向anon_vma的实例，此时完成匿名页的逆向映射。</listitem>
+</itemizedlist>
+lru是一个表头，用于在各种量表上维护该页框，以便将它按不同类别分组，最重要的就是zone->lru_lock保护的活动页框(active_list)和不活动页框。
+</para>
+<programlisting><![CDATA[
+#if defined(WANT_PAGE_VIRTUAL)
+	void *virtual;			/* Kernel virtual address (NULL if
+					   not kmapped, ie. highmem) */
+#endif /* WANT_PAGE_VIRTUAL */
+};
+]]></programlisting>
+WANT_PAGE_VIRTUAL是由是否需要高端内存决定的，virtual用于寻址高端内存区域中的页框，存储该页的虚拟地址。有些时候高端内存并不映射到任何实际的物理地址页框上，此时它的值为NULL。
+</sect2>
+<sect2><title>bootmem_free_node</title>
+在bootmem_init_node函数中，根据struct meminfo参数来初始化内存节点对应的pg_data_t数据结构contig_page_data，并且申请Bootmem机制使用的bitmap。从该函数使用的参数来看，一个内存节点对应一个struct meminfo的内存块信息。所以一个内存节点有可能对应多个membank，而这些membank的物理地址可能是不连续的，这就是内存孔洞的存在的原因。contig_page_data成员中的bdata->node_min_pfn和bdata->node_low_pfn参数分别记录了所有内存块中的最低物理页框地址和最高物理页框地址。
+<programlisting><![CDATA[
+arch/arm/include/asm/setup.h
+struct membank {
+        unsigned long start;
+        unsigned long size;
+        int           node;
+};
+
+struct meminfo {
+        int nr_banks;
+        struct membank bank[NR_BANKS];
+};
+
+static unsigned long __init bootmem_init_node(int node, struct meminfo *mi);
+]]></programlisting>
+bootmem_free_node与bootmem_init_node参数类似，它用来初始化特定内存节点的管理区信息。
+<programlisting><![CDATA[
+arch/arm/mm/init.c
+static void __init bootmem_free_node(int node, struct meminfo *mi);
+]]></programlisting>
+<itemizedlist> 
+	<listitem>尽管局部zone_size和zhole_size声明为大小为MAX_NR_ZONES的数组，但是只用到了其中的第一个元素。这是由于ARM Linux采用了UMA方式的内存管理机制。</listitem>
+	<listitem>zone_size[0]被赋值为end_pfn - start_pfn，然后根据zone_size减去meminfo中每个membank中真正的size得到内存孔洞的大小zhole_size[0]。</listitem>
+	<listitem>通过arch_adjust_zones为特定架构的系统预留内存。通常用它来为特定的限制的DMA寻址预留内存，将这些DMA无法访问的内存放入zone[1]，而DMA对应zone[0]，通常DMA可以寻址所有内存。</listitem>
+	<listitem>最后调用free_area_init_node初始化节点对应的pg_data_t描述符信息，并且为每个页表分配struct page结构。</listitem>	
+</itemizedlist>
+<programlisting><![CDATA[
+#define arch_adjust_zones(node,size,holes) do { } while (0)
+]]></programlisting>
+<figure><title>bootmem_free_node调用流程</title><graphic fileref="images/pg_call1.gif"/></figure>
+</sect2>
+<sect2><title>free_area_init_node</title>
+<programlisting><![CDATA[
+mm/page_alloc.c
+void __paginginit free_area_init_node(int nid, unsigned long *zones_size,
+                unsigned long node_start_pfn, unsigned long *zholes_size)
+]]></programlisting>
+free_area_init_node的函数参数解释如下：
+<itemizedlist> 
+	<listitem>nid，节点ID号。</listitem>
+	<listitem>zones_size，大小为MAX_NR_ZONES的数组，用来记录当前内存节点中的内存页框数，包含孔洞。</listitem>
+	<listitem>node_start_pfn，当前内存节点中的起始内存页框。</listitem>
+	<listitem>zholes_size，大小为MAX_NR_ZONES的数组，用来记录当前内存节点中的内存孔洞页框数。</listitem>
+</itemizedlist>
+free_area_init_node完成以下功能：
+<itemizedlist> 
+	<listitem>根据参数nid，确定该节点对应的pgdat，并初始化成员node_id = nid。</listitem>
+	<listitem>pgdat->node_start_pfn = node_start_pfn。</listitem>
+	<listitem>通过calculate_node_totalpages函数，计算pgdat->node_spanned_pages(包含孔洞)和pgdat->node_present_pages(不含孔洞)。</listitem>
+	<listitem>每一个物理页框对应一个struct page结构，通过alloc_node_mem_map为所有的物理页面分配该结构体空间，并将起始页框地址保存在pgdat->node_mem_map中。</listitem>	
+	<listitem>调用free_area_init_core，用来初始化内存管理区zone。</listitem>
+</itemizedlist>
+</sect2>
+<sect2><title>free_area_init_core</title>
+<programlisting><![CDATA[
+mm/page_alloc.c
+/*
+ * Set up the zone data structures:
+ *   - mark all pages reserved
+ *   - mark all memory queues empty
+ *   - clear the memory bitmaps
+ */
+static void __paginginit free_area_init_core(struct pglist_data *pgdat,
+		unsigned long *zones_size, unsigned long *zholes_size);
+]]></programlisting>
+free_area_init_core的函数参数解释如下：
+<itemizedlist> 
+	<listitem>pgdat，内存节点对应的pgdat_t类型描述符。</listitem>
+	<listitem>zones_size，大小为MAX_NR_ZONES的数组，用来记录当前内存节点中的内存页框数，包含孔洞。</listitem>	
+	<listitem>zholes_size，大小为MAX_NR_ZONES的数组，用来记录当前内存节点中的内存孔洞页框数。</listitem>
+</itemizedlist>
+free_area_init_core针对单个内存节点内的所有管理区进行初始化，并计算管理内存页所用的struct page数组占用的memmap_pages。
+<itemizedlist> 
+	<listitem>通过pgdat_resize_init函数初始化pgdat自旋锁成员node_size_lock，它与CONFIG_MEMORY_HOTPLUG(内存热插拔)有关。</listitem>
+	<listitem>初始化pgdat->nr_zones为0。</listitem>
+	<listitem>通过init_waitqueue_head函数初始化pgdat->kswapd_wait，它是kswapd页换出守护进程使用的等待队列。</listitem>
+	<listitem>初始化pgdat->kswapd_max_order为0。</listitem>
+	<listitem>通过pgdat_page_cgroup_init函数初始化pgdat->node_page_cgroup为NULL，如果没有打开CONFIG_CGROUP_MEM_RES_CTLR选项，则为空函数。</listitem>
+</itemizedlist>
+接下来遍历内存节点中的所有管理区，完成以下工作：
+<itemizedlist>
+	<listitem>计算含有孔洞的页面总数存入size，同时zone->spanned_pages记录该值。</listitem>
+	<listitem>计算不含孔洞的页面总数存入realsize。</listitem>
+	<listitem>根据size变量计算页面数组所占用的页面数，存入memmap_pages。之所以不使用realsize，是因为在通过alloc_node_mem_map函数来分配页面管理数组时采用的含有孔洞的页面数，这是为了管理方便，但是在有大量孔洞的内存节点中，这样会浪费大量struct page页面管理结构，所以通常会使能内存的CONFIG_DISCONTIGMEM选项。</listitem>
+	<listitem>如果处理管理区是DMA区，那么将在realsize中再次为DMA预留内存。也即realsize再次减去dma_reserve。</listitem>
+	<listitem>将realsize减去页面映射使用的页面大小memmap_pages并存入zone->present_pages。</listitem>
+	<listitem>通过is_highmem_idx判断当前内存区是否为高端内存，如果不是，那么将realsize计入内核全局统计信息nr_kernel_pages，它描述了内核所有可以一一映射的页。</listitem>
+	<listitem>将realsize计入nr_all_pages，与nr_kernel_pages类似，它还记录了高端内存页。</listitem>		
+	<listitem>如果定义了CONFIG_NUMA，则初始化管理区中的node，min_unmapped_pages和min_slab_pages成员。</listitem>		
+	<listitem>为zone->name赋值，它指向zone_names数组中对应的当前管理区的值</listitem>		
+	<listitem>使用spin_lock_init初始化管理区中的lock和lru_lock自旋锁。</listitem>
+	<listitem>如果配置了CONFIG_MEMORY_HOTPLUG，那么初始化自旋锁span_seqlock。与lock和lru_lock不同，它通过seqlock_init函数完成初始化。</listitem>
+	<listitem>设置prev_priority为DEF_PRIORITY。</listitem>
+	<listitem>初始化管理区中的回调指针zone_pgdat，显然它指向该区所属的内存节点类型pgdat指针。</listitem>
+	<listitem>zone_pcp_init初始化管理区的per-CPU缓存。</listitem>
+	<listitem>初始化lru成员。</listitem>
+	<listitem>初始化recent_rotated和recent_scanned成0。</listitem>
+	<listitem>通过函数zap_zone_vm_stats初始化vm_stat成员为0。</listitem>
+	<listitem>初始化flags成员为0。 </listitem>
+	<listitem>如果打开了CONFIG_HUGETLB_PAGE_SIZE_VARIABLE选项，则通过pageblock_default_order函数获取默认值并设置给全局变量pageblock_order，否则默认值为MAX_ORDER-1。它被用在伙伴系统中。</listitem>
+	<listitem>setup_usemap设置pageblock_flags为NULL。如果该区包含的页框数满足要求，那么为pageblock_flags分配内存并初始化为0。pageblock_flags与伙伴系统的碎片迁移算法有关。</listitem>
+	<listitem>init_currently_empty_zone初始化伙伴系统的free_area列表。</listitem>
+	<listitem>最后通过memmap_init宏间接引用函数memmap_init_zone将属于该管理区的所有page数组都设置为初始默认值。</listitem>
+	<listitem>zone_start_pfn记录下一循环处理的管理区的开始页框地址。</listitem>
+</itemizedlist>
+</sect2>
+<sect2><title>memmap_init_zone</title>
+<para>
+memmap_init_zone函数初始化每个管理区中的页帧对应的page数组。
+<programlisting><![CDATA[
+mm/page_alloc.c
+#ifndef __HAVE_ARCH_MEMMAP_INIT
+#define memmap_init(size, nid, zone, start_pfn) \
+	memmap_init_zone((size), (nid), (zone), (start_pfn), MEMMAP_EARLY)
+#endif
+
+void __meminit memmap_init_zone(unsigned long size, int nid, unsigned long zone,
+		unsigned long start_pfn, enum memmap_context context);
+]]></programlisting>
+mem_init_zone通过memmap_init宏实现调用，由于一些特定的架构，系统公共的memmap初始化函数无法满足需求，比如IA64。此时在特定架构的代码中会定义memmap_init。memmap_init_zone顾名思义，它是针对单个管理区对应的page数组来初始化的。
+<itemizedlist> 
+	<listitem>size指明了管理区的页帧数，它包含孔洞。</listitem>
+	<listitem>nid是当前管理区所属的内存节点的编号。</listitem>
+	<listitem>zone指明了当前管理区在内存节点中node_zones数组下标。</listitem>
+	<listitem>zone_start_pfn则提供了当前管理区的第一个页帧的编号。</listitem>	
+	<listitem>context是为了指明当前是在系统初始化阶段，还是热插拔阶段对内存管理页的初始化。它只有两个值：MEMMAP_EARLY和MEMMAP_HOTPLUG。</listitem>
+</itemizedlist>
+memmap_init_zone依次完成了以下功能：
+<itemizedlist>
+	<listitem>通过end_pfn = start_pfn + size得到终止页帧，然后从start_pfn到end_pfn通过循环一次处理它们对应的struct page。</listitem>
+	<listitem>如果context指定的系统状态是MEMMAP_EARLY，则需要判断当前页帧是否存在，这是因为内存孔洞的存在。<footnote>
+	<para>尽管内核注释中提到这是因为内存孔洞的存在，但是笔者认为并非如此，early_pfn_valid宏只是检查该页框编号它是否能够对应到管理区中的页框中，并且这个页框范围包含了孔洞，这些代码在ARM上至少看来如此。</para>另外early_pfn_in_nid将同时检查它所属的管理区是否在当前节点内。
+	</footnote>
+	</listitem>
+	<listitem>根据公式page = pfn_to_page(pfn)，由页帧得到它对应的struct page管理项。</listitem>
+	<listitem>设置page中flags成员的Field Area，它由段区，管理区和节点区三部分组成，分别占用的位数由SECTIONS_WIDTH，ZONES_WIDTH和NODES_WIDTH分别表示。set_page_links函数的作用就是分别通过set_page_zone，set_page_node和set_page_section函数来设置这些字段区。以后就可以根据这些区域获取当前页帧的位置信息。</listitem>
+	<listitem>mminit_verify_page_links用来验证set_page_links设置的信息是否正确。</listitem>
+	<listitem>通过init_page_count将page->_count成员初始化为1。</listitem>
+	<listitem>通过reset_page_mapcount将page->_mapcount成员初始化为-1。</listitem>
+	<listitem>通过由宏定义展开后的函数SetPageReserved设置PG_reserved标记到page->flags中。</listitem>
+	<listitem>设置所有页面均为MIGRATE_MOVABLE的。</listitem>
+	<listitem>初始化page->lru。</listitem>				
+	<listitem>如果配置了WANT_PAGE_VIRTUAL，且不为高端内存则初始化virtual成员。比如SPARC系统。</listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+include/asm-generic/memory_model.h
+#if defined(CONFIG_FLATMEM)
+#ifndef ARCH_PFN_OFFSET
+#define ARCH_PFN_OFFSET         (0UL)
+#endif
+......
+#define __pfn_to_page(pfn)      (mem_map + ((pfn) - ARCH_PFN_OFFSET))
+#define __page_to_pfn(page)     ((unsigned long)((page) - mem_map) + \
+                                 ARCH_PFN_OFFSET)
+......
+#ifdef CONFIG_OUT_OF_LINE_PFN_TO_PAGE
+struct page;
+/* this is useful when inlined pfn_to_page is too big */
+extern struct page *pfn_to_page(unsigned long pfn);
+extern unsigned long page_to_pfn(struct page *page);
+#else
+#define page_to_pfn __page_to_pfn
+#define pfn_to_page __pfn_to_page
+#endif /* CONFIG_OUT_OF_LINE_PFN_TO_PAGE */
+]]></programlisting>
+在struct page管理数组是线性分布的时候，pfn_to_page被统一定义为__pfn_to_page。平坦内存中的ARCH_PFN_OFFSET被定义为0，而mem_map在alloc_node_mem_map中被赋值为node_mem_map，也即管理数组的首地址。
+</para>
+page中flags成员的Field Area由三部分组成，它们从高地址位该是依次分布。段区只有在配置了CONFIG_SPARSEMEM时才有可能存在。
+<programlisting><![CDATA[
+/* .....
+ *
+ * No sparsemem or sparsemem vmemmap: |       NODE     | ZONE | ... | FLAGS |
+ * classic sparse with space for node:| SECTION | NODE | ZONE | ... | FLAGS |
+ * classic sparse no space for node:  | SECTION |     ZONE    | ... | FLAGS |
+ */
+]]></programlisting>
+<para></para>
+<para></para>
+</sect2>
+<sect2><title>build_all_zonelists</title>
+<para>
+build_all_zonelists在init/main.c中的start_kernel中被调用，它用来初始化内存分配器使用的存储节点中的管理区链表。
+<programlisting><![CDATA[
+include/linux/kernel.h
+extern enum system_states {
+        SYSTEM_BOOTING,
+        SYSTEM_RUNNING,
+        SYSTEM_HALT,
+        SYSTEM_POWER_OFF,
+        SYSTEM_RESTART,
+        SYSTEM_SUSPEND_DISK,
+} system_state;
+
+mm/page_alloc.c
+
+void build_all_zonelists(void)
+{
+	set_zonelist_order();
+
+	if (system_state == SYSTEM_BOOTING) {
+		__build_all_zonelists(NULL);
+		mminit_verify_zonelist();
+		cpuset_init_current_mems_allowed();
+	} else {
+		/* we have to stop all cpus to guarantee there is no user
+		   of zonelist */
+		stop_machine(__build_all_zonelists, NULL, NULL);
+		/* cpuset refresh routine should be here */
+	}
+	vm_total_pages = nr_free_pagecache_pages();
+
+	if (vm_total_pages < (pageblock_nr_pages * MIGRATE_TYPES))
+		page_group_by_mobility_disabled = 1;
+	else
+		page_group_by_mobility_disabled = 0;
+
+	printk("Built %i zonelists in %s order, mobility grouping %s.  "
+		"Total pages: %ld\n",
+			num_online_nodes(),
+			zonelist_order_name[current_zonelist_order],
+			page_group_by_mobility_disabled ? "off" : "on",
+			vm_total_pages);
+}
+]]></programlisting>
+build_all_zonelists依次完成以下功能：
+<itemizedlist>
+	<listitem>根据system_state查看系统的运行状态，在内核启动阶段，它的值保持为0，也即SYSTEM_BOOTING，只有在start_kernel执行到最后一个函数rest_init后，才会进入SYSTEM_RUNNING阶段。如果为内核启动阶段，那么调用__build_all_zonelists初始化分配器管理区链表，否则挂起系统，显然内存管理功能初始化出现异常为致命错误。</listitem>
+	<listitem>nr_free_pagecache_pages直接调用nr_free_zone_pages来统计系统中所有内存节点中可用的内存页框数，通常就是对present_pages成员的叠加。</listitem>
+	<listitem>根据当前系统中的内存页框数目，决定是否启用流动分组(Mobility Grouping)机制，这种机制可以在分配大内存块时减少内存碎片。显然只有内存足够大时才会启用该功能，否则将得不偿失。pageblock_nr_pages实际上是一个宏，它表示伙伴系统中的最高阶页块所能包含的页面数。</listitem>
+</itemizedlist>
+pageblock_order在free_area_init_core中被初始化为伙伴系统中的最高阶，pageblock_nr_pages * MIGRATE_TYPES的用于在于可以确保当前内存可以满足最高阶链表中至少有一个可分配节点的存在。
+<programlisting><![CDATA[
+include/linux/pageblock-flags.h
+#define pageblock_nr_pages      (1UL << pageblock_order)
+]]></programlisting>
+一个拥有256MB的内存开发板上的管理区参考链表信息如下：
+<programlisting><![CDATA[
+Built 1 zonelists in Zone order, mobility grouping on.  Total pages: 65024
+]]></programlisting>
+build_all_zonelists调用了一些列函数，调用流程如下所示：
+<figure><title>内存管理区初始化流程图</title><graphic fileref="images/mem_flow.gif"/></figure>
+</para>
+</sect2>
+<sect2><title>__build_all_zonelists</title>
+<programlisting><![CDATA[
+/* return values int ....just for stop_machine() */
+static int __build_all_zonelists(void *dummy)
+{
+	int nid;
+
+	for_each_online_node(nid) {
+		pg_data_t *pgdat = NODE_DATA(nid);
+
+		build_zonelists(pgdat);
+		build_zonelist_cache(pgdat);
+	}
+	return 0;
+}
+]]></programlisting>
+__build_all_zonelists的dummy参数没有任何意义，并且返回值永远为0，这是为了方便stop_machine对其结果作为参数引用。build_zonelist_cache与CONFIG_NUMA相关，它用来设置zlcache相关的成员。
+<programlisting><![CDATA[
+static void build_zonelist_cache(pg_data_t *pgdat)
+{
+	pgdat->node_zonelists[0].zlcache_ptr = NULL;
+}
+]]></programlisting>
+</sect2>
+<sect2><title>build_zonelists</title>
+<programlisting><![CDATA[
+static void build_zonelists(pg_data_t *pgdat)
+{
+	int node, local_node;
+	enum zone_type j;
+	struct zonelist *zonelist;
+
+	local_node = pgdat->node_id;
+
+	zonelist = &pgdat->node_zonelists[0];	
+	j = build_zonelists_node(pgdat, zonelist, 0, MAX_NR_ZONES - 1);
+
+	for (node = local_node + 1; node < MAX_NUMNODES; node++) {
+		if (!node_online(node))
+			continue;
+		j = build_zonelists_node(NODE_DATA(node), zonelist, j,
+							MAX_NR_ZONES - 1);
+	}
+	for (node = 0; node < local_node; node++) {
+		if (!node_online(node))
+			continue;
+		j = build_zonelists_node(NODE_DATA(node), zonelist, j,
+							MAX_NR_ZONES - 1);
+	}
+
+	zonelist->_zonerefs[j].zone = NULL;
+	zonelist->_zonerefs[j].zone_idx = 0;
+}
+]]></programlisting>
+注意到最后一个_zonerefs元素的zone被设置为NULL，zone_idx为0，这是用来遍历时判断结尾。
+</sect2>
+<sect2><title>build_zonelists_node</title>
+<programlisting><![CDATA[
+static int build_zonelists_node(pg_data_t *pgdat, struct zonelist *zonelist,
+				int nr_zones, enum zone_type zone_type)
+{
+	struct zone *zone;
+
+	BUG_ON(zone_type >= MAX_NR_ZONES);
+	zone_type++;
+
+	do {
+		zone_type--;
+		zone = pgdat->node_zones + zone_type;
+		if (populated_zone(zone)) {
+			zoneref_set_zone(zone,
+				&zonelist->_zonerefs[nr_zones++]);
+			check_highest_zone(zone_type);
+		}
+
+	} while (zone_type);
+	return nr_zones;
+}
+]]></programlisting>
+build_zonelists_node针对单个存储节点初始化分配器的管理区列表。zone_type用来指明当前处理的管理区的个数，通常它就是MAX_NR_ZONES - 1。nr_zones则指明了将被填充的_zonerefs管理区备用链表的索引，通常该索引之前的成员已经按内存优先级进行了赋值。循环中zone_type一直递减，而nr_zones索引一直递减，所以在UMA系统中，编号越大的管理区类型优先级越高，将被最先挂载到备用链表。通常ZONE_HIGHMEM的优先级最高，而ZONE_DMA的优先级最低。所以分配器在分配内存的时候通常在ZONE_HIGHMEM中分配。populated_zone函数用来确保该区的可用内存页(present_pages)有效，也即大于0。在内存少于896MB的系统上，ZONE_HIGHMEM的有效内存页就为0，此时只有到ZONE_NORMAL或者ZONE_DMA区分配内存。
+<itemizedlist> 
+	<listitem>pgdat：当前存储节点对应的pg_data_t类型描述符。</listitem>
+	<listitem>zonelist：当前存储节点对应的管理区列表，通常它通过就是pgdat->node_zonelists + 0。</listitem>
+	<listitem>nr_zones：当前开始处理的管理区在存储节点中的编号，每处理一个管理区那么该值加1。</listitem>
+	<listitem>zone_type：指定处理几个管理区。通常为MAX_NR_ZONES - 1。</listitem>
+	<listitem>返回下一个未处理的管理区的索引值。</listitem>
+</itemizedlist>
+build_zonelists_node完成了以下功能，当未开启CONFIG_NUMA时，依次映射管理区到参考链表中。
+<itemizedlist> 
+	<listitem>判定提供的zone_type参数是否正确，它不应该超过一个管理节点所能包含的最大管理区的个数。</listitem>
+	<listitem>populated_zone是一个简单的宏：!!zone->present_pages，由于present_pages参数在free_area_init_core
+被初始化为该节点中可用的内存页数realsize，所以这里的意图就是保证当天节点是否已经被初始化。</listitem>
+	<listitem>zoneref_set_zone设置管理节点中的成员zoneref，它记录当前管理区的地址和在管理区数组node_zones中的索引。显然在循环中，所有的初始化过的zone都是依次从node_zones出来，放入_zonerefs的，这个顺序是倒序的。build_zonelists_node函数跟是否配置CONFIG_NUMA相关，启用该功能将使用另一个同名函数，此函数将根据Node的各个要素权衡它们在链表中的顺序。</listitem>
+	<listitem>check_highest_zone函数只在CONFIG_NUMA中有效。</listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+static void zoneref_set_zone(struct zone *zone, struct zoneref *zoneref)
+{
+	zoneref->zone = zone;
+	zoneref->zone_idx = zone_idx(zone);
+}
+]]></programlisting>
+注意：zoneref同时定义zone的地址和索引，看起来多此一举，这是因为在NUMA中，可能将另一个Node中的zone加入本Node中的参考链表中。
+</sect2>
+</sect1>

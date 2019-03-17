@@ -1,0 +1,49 @@
+<sect1><title>写在前面</title>
+<sect2><title>修订记录</title>
+<table><title>修订记录</title>
+	<tgroup cols="2">
+	<thead><row><entry>修订时间</entry><entry>修订内容</entry></row></thead>
+	<tbody>
+	<row><entry>2011-06</entry><entry>首次发布</entry></row>
+	<row><entry>2013-11</entry><entry>1.增加arm汇编章节内容：
+	                                  1.1 新增ARMv7, ARMv8; 1.2 pc寄存器章节.</entry></row>
+  <row><entry>2014-03</entry><entry>增加对ARM Cortex架构的说明.</entry></row>
+	</tbody>
+	</tgroup>
+	</table>
+</sect2>
+<sect2><title>它是什么？</title>
+<para>一个Linux及相关开源软件的爱好者，在学习，分析和研究Linux内核过程中，对相关知识的总结和记录。一些参考书籍是必须的，参考<ulink url="http://blog.chinaunix.net/uid-20608849-id-3029223.html">Linux内核探索之路——关于书</ulink>所提到的，本文中的部分内容参考了这里提到的书籍 (ULK和LKA尤甚)。</para>
+<para>
+一个基于ARM(当前阶段)的嵌入式验证平台。无论如何，用实际去验证猜想，才能保证学习，分析和研究结果的正确性。一个详细的平台信息如下所示：
+<programlisting><![CDATA[
+MainBoard:OK6410
+CPU: S3C6410(ARMv6)
+RAM: 256M 
+FLASH:1G K9GAG08U0D
+Kernel:Linux2.6.28
+BootLoader:Uboot1.1.6
+]]></programlisting>
+但是并不意味着本文中关于Linux内核部分与平台独立的代码和硬件平台相关。
+</para>
+<para>
+本文档遵循<ulink url="http://www.gnu.org/licenses/fdl.html">GNU Free Documentation License</ulink>发布。
+</para>
+<para>
+本文档适用Docbook自动生成，并在以后的很长一段时间内不断更新。当前对Bootloader的引导，ARM平台的汇编，Linux内核的引导和部分模块：时钟，中断，内存管理系统等进行了学习和总结，并辅助大量的示例图片，该文档是笔者学习和研究的记录，笔者欢迎任何对该文档的批评和建议：可以直接在<ulink url="http://blog.chinaunix.net/uid-20608849-id-3066172.html">该文章下</ulink>评论，并且任何希望对该文档做出贡献的人，可以向笔者发出文档的更新请求，格式为符合Docbook规范的xml文档，也可以索取当前文档的原始的Docbook开发文档。
+</para>	 
+<para>
+对于Linux中部分分析中，由于笔者关心的领域不同，所以某些点分析的很详细(大多数都是不好理解的地方)，有些只是贴上了实现代码，所以目前该文档还处于不断的更新之中。另外该文档的章节并没有严格遵循由浅入深的原则，所以部分章节并没有必然的联系，但是一个整体的过程是对Linux内核有基础了解，ARM平台的ATPCS原则，然后是在此基础上的学习和分析。
+</para>	
+</sect2>
+<sect2><title>它不是什么？</title>
+无论如何，笔者都要说明，它是一个笔记式的学习记录，不是一本教科书，笔者不能保证这里的内容都是正确无误的。笔者也不保证这里的分析针对特定的其他平台依然适用(尽管大多数时候应该是)。
+</sect2>
+<sect2><title>它的始末？</title>
+<para>应该是2007年，但是只是以零散的方式存在。如前所述，它的演化方式并不是以章节形式，而是以笔者的时间和兴趣为转移。大约是2011年时，整理了大部分的文档，一并转换为Docbook文档形式，直到今天的这个样子。
+</para>
+<para>
+有开始，就注定了要有结束，但是目前来看还会持续很长一段时间......
+</para>
+</sect2>
+</sect1>

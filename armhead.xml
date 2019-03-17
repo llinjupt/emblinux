@@ -1,0 +1,1287 @@
+<sect1><title>zImage的生成和加载</title>
+<sect2><title>相关的Makefile</title>
+zImage的生成过程可以由下图概括，该图来自http://freeelectrons.com/docs/kernelinit。
+<figure><title>zImage生成过程</title><graphic fileref="images/zimg.gif"/></figure>
+生成zImage文件的Makefile位于arch/arm下，它通过include $(srctree)/arch/$(SRCARCH)/Makefile被包含进主目录下的Makefie中。另外通过include $(srctree)/scripts/Kbuild.include一系列的通用编译器处理函数和变量被包含到主目录下的Makefile中。根目录下的Makefile：
+<programlisting><![CDATA[
+Makefile
+include $(srctree)/arch/$(SRCARCH)/Makefile
+......
+# We need some generic definitions (do not try to remake the file).
+$(srctree)/scripts/Kbuild.include: ;
+include $(srctree)/scripts/Kbuild.include
+]]></programlisting>
+用于生成zImage的Makefile中的依赖定义如下：
+<programlisting><![CDATA[
+arch/arm/Makefile
+# Default target when executing plain make
+ifeq ($(CONFIG_XIP_KERNEL),y)
+KBUILD_IMAGE := xipImage
+else
+KBUILD_IMAGE := zImage
+endif
+
+all:    $(KBUILD_IMAGE)
+......
+zImage Image xipImage bootpImage uImage: vmlinux
+        $(Q)$(MAKE) $(build)=$(boot) MACHINE=$(MACHINE) $(boot)/$@
+]]></programlisting>
+由此可以看出zImage依赖于vmlinux文件。当然其他格式的Image文件也无独有偶的源于vmlinux。
+</sect2>
+<sect2><title>vmlinux的格式</title>
+<programlisting><![CDATA[
+#file vmlinux
+vmlinux: ELF 32-bit LSB executable, ARM, version 1 (SYSV), statically linked, not stripped
+]]></programlisting>
+vmlinux是标准的Linux下的elf可执行文件。它与其他的可执行文件格式没有任何本质区别。随便写一个.c文件，然后使用静态方式编译它：
+<programlisting><![CDATA[
+#arm-linux-gcc -static test.c
+#file a.out           
+a.out: ELF 32-bit LSB executable, ARM, version 1 (SYSV), statically linked, for GNU/Linux 2.6.14, not stripped
+]]></programlisting>
+注意到普通应用程序有for GNU/Linux 2.6.14的提示，所以想在Linux上直接运行vmlinux是不行的，因为它需要运行在特权模式，ELF加载器无法加载它。使用arm-linux-readelf可以清晰的看到它的代码段起始地址位于内核空间：
+<programlisting><![CDATA[
+Entry point address:               0xc0008000
+]]></programlisting>
+而普通的可执行文件为：  
+<programlisting><![CDATA[
+Entry point address:               0x8110
+]]></programlisting>
+</sect2>
+<sect2><title>静默编译和V=1</title>
+注意到arch/arm/Makefile中定义的zImage的生成规则：
+<programlisting><![CDATA[
+$(Q)$(MAKE) $(build)=$(boot) MACHINE=$(MACHINE) $(boot)/$@
+]]></programlisting>
+细心的人会问怎么会多了一个$(Q)变量。位于主目录下的Makefile对Q变量进行了定义，它位于名为Beautify output的小节中，并说明了Q的历史来源。
+<programlisting><![CDATA[
+ifeq ($(KBUILD_VERBOSE),1)
+  quiet =
+  Q =
+else
+  quiet=quiet_
+  Q = @
+endif
+]]></programlisting>
+Q的命运由KBUILD_VERBOSE的值来决定，而螳螂捕蝉，黄雀在后。V最终决定了Q的命运，通过在make命令参数中提供V=1可以开启V，V是Verbose的缩写，打开了V，所有的编译信息都将打印出来，关闭V，将获得Beautify output。V选项对于分析内核的编译很有帮助。
+<programlisting><![CDATA[
+ifdef V
+  ifeq ("$(origin V)", "command line")
+    KBUILD_VERBOSE = $(V)
+  endif
+endif
+ifndef KBUILD_VERBOSE
+  KBUILD_VERBOSE = 0
+endif
+]]></programlisting>
+</sect2>
+<sect2><title>生成zImage的命令行</title>
+为了在编译期只输出关心的命令，移除生成zImage命令前的Q变量，并在主目录下执行make zImage。
+<programlisting><![CDATA[
+ $(MAKE) $(build)=$(boot) MACHINE=$(MACHINE) $(boot)/$@
+]]></programlisting>
+一个完整的生成zImage的命令行如下：
+<programlisting><![CDATA[
+make -f scripts/Makefile.build obj=arch/arm/boot MACHINE=arch/arm/mach-s3c6400/ arch/arm/boot/zImage
+]]></programlisting>
+查看make对于-f选项的解释如下：
+<programlisting><![CDATA[
+#man makefile
+       +-f file, --file=file, --makefile=FILE
+            Use file as a makefile.
+]]></programlisting>
+-f指定了实际使用的Makefile文件，obj和MACHINE则是传递给Makefile.build的参数，它们分别由变量$(boot)和$(MACHINE)决定。$@指参数zImage，它在Makefile语法中指代生成的目标。
+<para>
+$(build)=$(boot)被扩展为了scripts/Makefile.build obj=arch/arm/boot，这看起来有点不太专业。build是scripts/Kbuild.include中定义的变量：
+</para>
+<programlisting><![CDATA[
+# Shorthand for $(Q)$(MAKE) -f scripts/Makefile.build obj=
+# Usage:
+# $(Q)$(MAKE) $(build)=dir
+build := -f $(if $(KBUILD_SRC),$(srctree)/)scripts/Makefile.build obj
+]]></programlisting>
+boot := arch/arm/boot 直接指明该架构的boot文件生成路径，而MACHINE则是由用户配置来决定，毕竟一个ARM CPU可以和各类外设组成不同的机器架构。
+<programlisting><![CDATA[
+ifneq ($(machine-y),)
+MACHINE  := arch/arm/mach-$(word 1,$(machine-y))/
+else
+MACHINE  :=
+endif
+
+machine-$(CONFIG_ARCH_S3C64XX)    := s3c6400 s3c6410
+]]></programlisting>
+在内核配置文件.config可以找到CONFIG_ARCH_S3C64XX=y。
+</sect2>
+<sect2><title>Makefile.build和vmlinux压缩</title>
+scripts/Makefile.build文件，它包含arch/arm/boot/Makefile文件的方式有些特殊它是从命令行得到obj然后找到对应文件夹下的Makefile并执行。scripts/Makefile.build的开头，所以src的值为arch/arm/boot。
+<programlisting><![CDATA[
+src := $(obj)
+
+kbuild-dir := $(if $(filter /%,$(src)),$(src),$(srctree)/$(src))
+kbuild-file := $(if $(wildcard $(kbuild-dir)/Kbuild),$(kbuild-dir)/Kbuild,$(kbuild-dir)/Makefile)
+include $(kbuild-file)
+]]></programlisting>
+kbuild-file既是src指定路径下的Makefile文件，此时就是arch/arm/boot/Makefile，它包含了构建arch/arm/boot/zImage的规则。
+<programlisting><![CDATA[
+PHONY := __build
+……
+__build: $(if $(KBUILD_BUILTIN),$(builtin-target) $(lib-target) $(extra-y)) \
+         $(if $(KBUILD_MODULES),$(obj-m) $(modorder-target)) \
+         $(subdir-ym) $(always)
+        @:
+]]></programlisting>
+KBUILD_BUILTIN 在顶层Makefile 中被初始化为1，所以这个规则的依赖需要一个builtin-target 变量。这个变量在scripts/Makefile.build中定义。
+<programlisting><![CDATA[
+ifneq ($(strip $(obj-y) $(obj-m) $(obj-n) $(obj-) $(lib-target)),)
+builtin-target := $(obj)/built-in.o
+endif
+]]></programlisting>
+变量obj 就是vmlinux-dirs 变量指定的目录。所以这里会构建$(vmlinux-dirs)/built-in.o 目标，在scripts/Makefile.build 文件中有这个目标的规则及命令的定义：
+<programlisting><![CDATA[
+ifdef builtin-target
+quiet_cmd_link_o_target = LD      $@
+# If the list of objects to link is empty, just create an empty built-in.o
+cmd_link_o_target = $(if $(strip $(obj-y)),\
+                      $(LD) $(ld_flags) -r -o $@ $(filter $(obj-y), $^) \
+                      $(cmd_secanalysis),\
+                      rm -f $@; $(AR) rcs $@)
+
+$(builtin-target): $(obj-y) FORCE
+        $(call if_changed,link_o_target)
+
+targets += $(builtin-target)
+endif # builtin-target
+]]></programlisting>
+vmlinux-dirs将在后面解释，它包含了所有由变量$(xx)代表的需要编译处理的文件夹。所有的目标文件生成规则在scripts/Makefile.build中定义如下：
+<programlisting><![CDATA[
+# Built-in and composite module parts
+$(obj)/%.o: $(src)/%.c FORCE
+        $(call cmd,force_checksrc)
+        $(call if_changed_rule,cc_o_c)
+]]></programlisting>
+vmlinux在生成完毕后，接着会执行make -f scripts/Makefile.build obj=arch/arm/boot MACHINE=arch/arm/mach-s3c6400/ arch/arm/boot/zImage。arch/arm/boot/Makefile中定义了如下规则：
+<programlisting><![CDATA[
+$(obj)/zImage:  $(obj)/compressed/vmlinux FORCE
+        $(call if_changed,objcopy)
+        @echo '  Kernel: $@ is ready'
+]]></programlisting>
+变量obj的值即是arch/arm/boot。显然zImage此时又依赖于$(obj)/compressed/vmlinux。
+<programlisting><![CDATA[
+$(obj)/compressed/vmlinux: $(obj)/Image FORCE
+        $(Q)$(MAKE) $(build)=$(obj)/compressed $@
+]]></programlisting>
+扩展开的命令如下：
+<programlisting><![CDATA[
+make -f scripts/Makefile.build obj=arch/arm/boot/compressed 
+arch/arm/boot/compressed/vmlinux
+]]></programlisting>
+继续回到压缩vmlinux生成命令，make -f scripts/Makefile.build obj=arch/arm/boot/compressed 
+arch/arm/boot/compressed/vmlinux
+此时obj=arch/arm/boot/compressed，所以scripts/Makefile.build会自动包含arch/arm/boot/compressed /Makefile，该文件指明了arch/arm/boot/compressed/vmlinux的生成规则：
+<programlisting><![CDATA[
+$(obj)/vmlinux: $(obj)/vmlinux.lds $(obj)/$(HEAD) $(obj)/piggy.o \
+                $(addprefix $(obj)/, $(OBJS)) FORCE
+        $(call if_changed,ld)
+        @:
+
+$(obj)/piggy.gz: $(obj)/../Image FORCE
+        $(call if_changed,gzip) 
+
+$(obj)/piggy.o:  $(obj)/piggy.gz FORCE
+]]></programlisting>
+这两个规则的第一个就是把由vmlinux 进行objcopy生成的Image 进行压缩生成piggy.gz，然后生成piggy.o。cmd_ld 命令在scripts/Makefile.lib 文件定义：
+<programlisting><![CDATA[
+quiet_cmd_ld = LD $@
+cmd_ld = $(LD) $(LDFLAGS) $(EXTRA_LDFLAGS) $(LDFLAGS_$(@F)) \
+			$(filter-out FORCE,$^) -o $@
+]]></programlisting>
+这里根据链接脚本arch/arm/boot/compressed/vmlinux.lds 链接生成了arch/arm/boot/compressed/vmlinux 文件。然后在arch/arm/boot/Makefile规则中：
+<programlisting><![CDATA[
+$(obj)/zImage: $(obj)/compressed/vmlinux FORCE
+$(call if_changed,objcopy)
+@echo ' Kernel: $@ is ready'
+]]></programlisting>
+经过objcopy处理后便生成了最终的zImage。
+<programlisting><![CDATA[
+vmlinux->objcopy->Image->piggy.gz->piggy.o->compreassed/vmlinux->objcopy->zImage
+piggy.gz := gzip -f -9 < arch/arm/boot/compressed/../Image > arch/arm/boot/compressed/piggy.gz
+]]></programlisting>
+</sect2>
+<sect2><title>.cmd文件</title>
+搜索编译过的内核可以发现有很多.cmd文件，它们与目标文件相伴而生。比如目标文件名为xxx，那么相同目录下将可以找到对应的.xxx.cmd文件。比如init/main.o对应.main.o.cmd；arch/arm/boot/compressed/piggy.gz 对应.piggy.gz.cmd；arch/arm/boot/zImage 对应.zImage.cmd。.cmd文件是由名为make-cmd的子命令生成的，它定义在scripts/Kbuild.include：
+<programlisting><![CDATA[
+# >'< substitution is for echo to work,
+# >$< substitution to preserve $ when reloading .cmd file
+# note: when using inline perl scripts [perl -e '...$$t=1;...']
+# in $(cmd_xxx) double $$ your perl vars
+make-cmd = $(subst \#,\\\#,$(subst $$,$$$$,$(call escsq,$(cmd_$(1)))))
+]]></programlisting>
+escsq子命令定义如下：
+<programlisting><![CDATA[
+squote  := '
+# Escape single quote for use in echo statements
+escsq = $(subst $(squote),'\$(squote)',$1)
+]]></programlisting>
+接下来看一个实际的应用，这个应用是最终生成主目录下vmlinux的命令：
+<programlisting><![CDATA[
+vmlinux: $(vmlinux-lds) $(vmlinux-init) $(vmlinux-main) vmlinux.o $(kallsyms.o) FORCE
+	......
+	$(call if_changed_rule,vmlinux__)
+]]></programlisting>
+Makefile中的call函数是唯一一个可以用来创建新的参数化的函数。它的语法为：
+<programlisting><![CDATA[
+$(call <expression>;,<parm1>;,<parm2>;,<parm3>;...)
+]]></programlisting>
+当make执行这个函数时，expression表达式中的变量，如$(1)，$(2)，$(3)等，会被参数parm1，parm2， parm3等依次替代。而expression表达式的返回值就是call函数的返回值。所以这里会执行if_changed_rule表达式，并且vmlinux_将被传得给它。if_changed_rule子命令定义在scripts/Kbuild.include中，类似的还有if_changed和if_changed_dep.
+<programlisting><![CDATA[
+# Usage: $(call if_changed_rule,foo)
+# Will check if $(cmd_foo) or any of the prerequisites changed,
+# and if so will execute $(rule_foo).
+if_changed_rule = $(if $(strip $(any-prereq) $(arg-check) ),                 \
+        @set -e;                                                             \
+        $(rule_$(1)))
+]]></programlisting>
+if_changed_rule扩展参数后的表达式如下：
+<programlisting><![CDATA[
+$(if $(strip $(any-prereq) $(arg-check) ),@set -e;$(rule_vmlinux_))
+
+# Find any prerequisites that is newer than target or that does not exist.
+# PHONY targets skipped in both cases.
+any-prereq = $(filter-out $(PHONY),$?) $(filter-out $(PHONY) $(wildcard $^),$^)
+]]></programlisting>
+any-prereq用来收集目标文件的依赖文件，找出更新的依赖文件或者尙不存在需要编译时生成的依赖，
+自动化变量$?代表所有比目标还要新的依赖文件；$^ 则表示所有的依赖文件。filter-out反过滤函数将$?中的所有伪目标过滤掉。第二个反过滤函数过滤出所有依赖文件中已经存在的文件以及伪目标，有些依赖需要在编译时自动创建，比如vmlinux依赖的arch/arm/kernel/vmlinux.lds文件。
+<programlisting><![CDATA[
+ifneq ($(KBUILD_NOCMDDEP),1)
+# Check if both arguments has same arguments. Result is empty string if equal.
+# User may override this check using make KBUILD_NOCMDDEP=1
+arg-check = $(strip $(filter-out $(cmd_$(1)), $(cmd_$@)) \
+                    $(filter-out $(cmd_$@),   $(cmd_$(1))) )
+endif
+]]></programlisting>
+arg-check用来检测此次编译时所用命令及参数是否和上次所用参数一致。$@ 表示目标文件，也即vmlinux，所以cmd_$@即为cmd_vmlinux。再比如编译xxx.o，那么 $(cmd_$@) 就是表示 $(cmd_xxx.o)。在.vmlinux.cmd 文件中可以看到cmd_vmlinux用来保存着上次编译的参数。
+<programlisting><![CDATA[
+# cat  .vmlinux.cmd 
+cmd_vmlinux := /usr/local/arm/4.2.2-eabi/usr/bin/arm-linux-ld -EL  -p --no-undefined -X -o 
+vmlinux -T arch/arm/kernel/vmlinux.lds arch/arm/kernel/head.o arch/arm/kernel/init_task.o  
+init/built-in.o --start-group  usr/built-in.o  arch/arm/kernel/built-in.o  arch/arm/mm/built-in.o  
+arch/arm/common/built-in.o  arch/arm/mach-s3c6400/built-in.o  
+arch/arm/mach-s3c6410/built-in.o  arch/arm/plat-s3c64xx/built-in.o  
+arch/arm/plat-s3c/built-in.o  arch/arm/nwfpe/built-in.o  arch/arm/vfp/built-in.o  
+kernel/built-in.o  mm/built-in.o  fs/built-in.o  ipc/built-in.o  security/built-in.o  crypto/built-in.o  
+block/built-in.o  arch/arm/lib/lib.a  lib/lib.a  arch/arm/lib/built-in.o  lib/built-in.o  
+drivers/built-in.o  sound/built-in.o  firmware/built-in.o  net/built-in.o 
+--end-group .tmp_kallsyms2.o
+]]></programlisting>
+在 arg-check 中，首先使用 $(filter-out $(cmd_$(1)), $(cmd_$@)) 从上一次的编译命令和参数中滤除掉此次编译使用的命令和参数，再进行一次反过滤。正反过滤的原因是，filter-out 函数在过滤时，如果第 2 个命令和参数是第1个命令和参数的子集或者是相同，那么返回空；所以，在第1次过滤时如果返回为空，那么cmd_$@ 可能是等于 cmd_$(1) 的，也可能是它的子集，所以只有当再次反过来做过滤时发现返回为空，那么才能判断两次编译的参数是相等的，否则是不等的。如果返回结果不为空，说明编译参数发生了变化：1.参数增加，那么第二次过滤不为空；2.参数减少，那么第一次过滤不为空；3.参数顺序变化，第一次和第二次都不为空。
+<para>
+这里不得不提及每个文件夹下的.cmd文件是怎样被包含进Makefile的。它们在scripts/Makefile.build中被包含了进来，所有使用此Makefile.build编译为目标，它们的.cmd文件均被包含进来：
+</para>
+<programlisting><![CDATA[
+targets := $(wildcard $(sort $(targets)))
+cmd_files := $(wildcard $(foreach f,$(targets),$(dir $(f)).$(notdir $(f)).cmd))
+
+ifneq ($(cmd_files),)
+  include $(cmd_files)
+endif
+]]></programlisting>
+值得一提的是并不是所有的.cmd文件都有它包含进来，而是由使用此Makefile.build编译的目标文件的.cmd文件，那么其他的比如vmlinux就是使用主文件夹下的Makefile，所以它里面也有与scripts/Makefile.build相同的include $(cmd_files)定义。再回到if_changed_rule扩展参数后的表达式：
+<programlisting><![CDATA[
+$(if $(strip $(any-prereq) $(arg-check) ),@set -e;$(rule_vmlinux_))
+]]></programlisting>
+any-prereq完成了依赖的检查，arg-check完成了命令和参数的检查，只要有一种情况发生，那么if语句
+就返回真，@set -e;$(rule_vmlinux_)就得到执行。set –e迫使$(rule_vmlinux_)在返回非0值时立刻返回。rule_vmlinux_定义在主Makefile中，它通过调用cmd_ vmlinux__最终生成了vmlinux。
+<programlisting><![CDATA[
+define rule_vmlinux__
+        :
+        $(if $(CONFIG_KALLSYMS),,+$(call cmd,vmlinux_version))
+
+        $(call cmd,vmlinux__)
+        $(Q)echo 'cmd_$@ := $(cmd_vmlinux__)' > $(@D)/.$(@F).cmd
+
+        $(Q)$(if $($(quiet)cmd_sysmap),                                      \
+          echo '  $($(quiet)cmd_sysmap)  System.map' &&)                     \
+        $(cmd_sysmap) $@ System.map;                                         \
+        if [ $$? -ne 0 ]; then                                               \
+                rm -f $@;                                                    \
+                /bin/false;                                                  \
+        fi;
+        $(verify_kallsyms)
+endef
+]]></programlisting>
+注意到  $(Q)echo 'cmd_$@ := $(cmd_vmlinux__)' > $(@D)/.$(@F).cmd这句话，它生成了目标vmlinux对应的.vmlinux.cmd文件。
+<para>
+$(@D)表示"$@"的目录部分（不以斜杠作为结尾），如果"$@"值是"dir/foo.o"，那么"$(@D)"就是"dir"，而如果"$@"中没有包含斜杠的话，其值就是"."，也即当前目录。</para>
+<para>
+可以看到.cmd是有规则rule_vmlinux__来生成的，并不是所有的.cmd都是由它生成的，大多数的.cmd是由if_changed的调用产生：</para>
+<programlisting><![CDATA[
+if_changed = $(if $(strip $(any-prereq) $(arg-check)),                       \
+        @set -e;                                                             \
+        $(echo-cmd) $(cmd_$(1));                                             \
+        echo 'cmd_$@ := $(make-cmd)' > $(dot-target).cmd)
+]]></programlisting>
+诸多cmd_xxx形式的命令都调用了if_changed。if_changed_dep是另一个可能产生.cmd的调用，它调用了scripts/basic/fixdep来处理配置符号的依赖关系。.cmd对于分析内核的编译过程，至关重要，它提供了目标生成的命令和参数，以及相关的依赖文件。
+</sect2>
+<sect2><title>V=2</title>
+前面提到V=1，这里再续前缘: V=2。V=1像一个长舌妇一样向你唠叨个没完，将所有你关心不关心的编译信息都丢出来。而V=2则是一个训练有素的探员，它只告诉你发生了什么再加为什么？除了What和Why？你还需要知道什么呢？ 无非是How! 在编译过的源码init/main.c中添加一个空格，然后重新编译：
+<programlisting><![CDATA[
+#make V=2 |grep "due to"
+]]></programlisting>
+字符串"due to"是V=2时特有的信息，我们只关心这些信息，通过它们所有的文件变动和依赖关系都一目了然。
+<programlisting><![CDATA[
+  CALL    scripts/checksyscalls.sh - due to target is PHONY
+  CC      init/main.o - due to: init/main.c
+  LD      init/built-in.o - due to: init/main.o
+  GEN     .version - due to: init/built-in.o
+  CC      init/version.o - due to: include/linux/compile.h
+......
+  OBJCOPY arch/arm/boot/Image - due to: vmlinux
+  GZIP    arch/arm/boot/compressed/piggy.gz - due to: arch/arm/boot/compressed/../Image
+  AS      arch/arm/boot/compressed/piggy.o - due to: arch/arm/boot/compressed/piggy.gz
+  LD      arch/arm/boot/compressed/vmlinux - due to: arch/arm/boot/compressed/piggy.o
+  OBJCOPY arch/arm/boot/zImage - due to: arch/arm/boot/compressed/vmlinux
+  MODPOST 4 modules - due to target is PHONY
+]]></programlisting>
+scripts/Kbuild.include文件的末尾定义了V=2的实现，并给出了详细的对于输出信息的解释：
+<programlisting><![CDATA[
+###
+# 为什么？告诉我一个目标是因为什么而被(重新)创建，那就通过V=2参数吧！输出结果根据以下检查顺
+#序来输出：
+#          (1) –目标是PHONY的，也即伪目标，伪目标在任何时候都需要被更新
+#          (2) –目标文件不存在，可能被删除了，或者没有被编译过，反正它不在了
+#          (3) –目标文件依赖的头文件更新了   
+#          (4) –生成目标文件的命令或参数改变了
+#          (5) –记录上一次生成目标文件的.cmd文件不见了
+#          (6) –目标文件没有在 $(targets)参数中提供，看来它是默认要生成的了
+#    对于一个错误定义的kbuild file， 这是一个好的提示， 它会帮助你找到错误的原因。
+ifeq ($(KBUILD_VERBOSE),2)
+why =                                                                        \
+    $(if $(filter $@, $(PHONY)),- due to target is PHONY,                    \
+        $(if $(wildcard $@),                                                 \
+            $(if $(strip $(any-prereq)),- due to: $(any-prereq),             \
+                $(if $(arg-check),                                           \
+                    $(if $(cmd_$@),- due to command line change,             \
+                        $(if $(filter $@, $(targets)),                       \
+                            - due to missing .cmd file,                      \
+                            - due to $(notdir $@) not in $$(targets)         \
+                         )                                                   \
+                     )                                                       \
+                 )                                                           \
+             ),                                                              \
+             - due to target missing                                         \
+         )                                                                   \
+     )
+echo-why = $(call escsq, $(strip $(why)))
+endif
+]]></programlisting>
+echo-why被echo-cmd调用，而echo-cmd又被if_changed和if_changed_dep调用。另外rule_cc_o_c也调用了echo-cmd。另一些命令可能引用cmd，并间接调用到了echo-cmd。这些引用如天罗地网般的哨兵，最终被V=2探员进行调度。
+</sect2>
+<sect2><title>piggy.gz</title>
+不知是Russell King还是Linus Torvalds更喜欢小猪，反正piggy被引入到了ARM的引导代码中。据考piggy是从piggyback缩写而来的，中文意为“骑在肩上”，显然是指Linux的启动需要“骑在”piggy.gz的肩上了。好了，这里不再那么费事的分析arch/arm/boot/compressed/Makefile了， 既然说过了.cmd，那就直接看看.piggy.gz.cmd
+<programlisting><![CDATA[
+cmd_arch/arm/boot/compressed/piggy.gz := gzip -f -9 < 
+arch/arm/boot/compressed/../Image > arch/arm/boot/compressed/piggy.gz
+]]></programlisting>
+-f或--force 　强行压缩文件。不理会文件名称或硬连接是否存在以及该文件是否为符号连接。
+-1或--fast表示最快压缩方法（低压缩比），-9或--best表示最慢压缩方法（高压缩比）。使用最高压缩比将arch/arm/boot/compressed/../Image压缩为
+arch/arm/boot/compressed/piggy.gz，小猪诞生了。查看.piggy.o.cmd，发现这个命令行长大了，恩，小猪长大了！
+<programlisting><![CDATA[
+cmd_arch/arm/boot/compressed/piggy.o := /usr/local/arm/4.2.2-eabi/usr/bin/arm-linux-gcc 
+-Wp,-MD,arch/arm/boot/compressed/.piggy.o.d  -nostdinc –isystem
+ /usr/local/arm/4.2.2-eabi/usr/bin-ccache/../lib/gcc/arm-unknown-linux-gnueabi/4.2.2/include 
+-D__KERNEL__ -Iinclude  -I/home/red/forlinux/linux2.6.28/arch/arm/include -include 
+include/linux/autoconf.h -mlittle-endian -Iarch/arm/mach-s3c6400/include 
+-Iarch/arm/mach-s3c6410/include -Iarch/arm/plat-s3c64xx/include -Iarch/arm/plat-s3c/include 
+-D__ASSEMBLY__ -mabi=aapcs-linux -mno-thumb-interwork -D__LINUX_ARM_ARCH__=6 
+-march=armv6k -mtune=arm1136j-s -msoft-float -gdwarf-2  -Wa,-march=all   -c -o 
+arch/arm/boot/compressed/piggy.o arch/arm/boot/compressed/piggy.S
+]]></programlisting>
+命令行中没有提到任何piggy.gz的信息，但是生成的.o文件的大小几乎和.gz文件一致，而piggy.S
+则很小，问题出在哪呢？piggy.S的内容表明了一切：
+<programlisting><![CDATA[
+        .section .piggydata,#alloc
+        .globl  input_data
+input_data:
+        .incbin "arch/arm/boot/compressed/piggy.gz"
+        .globl  input_data_end
+input_data_end:
+]]></programlisting>
+定义了一个名为.piggydata的段，该段中的数据就是piggy.gz。input_data符号要被链接器用到，所以要标记它是一个.globl全局符号。.incbin指令在被汇编的文件内包含一个文件，该文件按原样包含，没有进行汇编。input_data_end符号也要被外部引用。input_data被外部引用时的值为piggy.gz文件在piggy.o的起始地址，input_data_end则是结束地址。这里给出证明（实证法^;^）：
+<programlisting><![CDATA[
+## ls -l piggy.gz 
+-rw-rw-rw- 1 root root 2469926 2011-08-19 17:52 piggy.gz
+#readelf piggy.o -S
+There are 9 section headers, starting at offset 0x25b0bc:
+
+Section Headers:
+[Nr] Name              Type            Addr     Off    Size   ES Flg Lk Inf Al
+[ 0]                   NULL            00000000 000000 000000 00      0   0  0
+[ 1] .text             PROGBITS        00000000 000034 000000 00  AX  0   0  1
+[ 2] .data             PROGBITS        00000000 000034 000000 00  WA  0   0  1
+[ 3] .bss              NOBITS          00000000 000034 000000 00  WA  0   0  1
+[ 4] .piggydata        PROGBITS        00000000 000034 25b026 00   A  0   0  1
+[ 5] .ARM.attributes   ARM_ATTRIBUTES  00000000 25b05a 000019 00      0   0  1
+[ 6] .shstrtab         STRTAB          00000000 25b073 000047 00      0   0  1
+[ 7] .symtab           SYMTAB          00000000 25b224 000080 10      8   6  4
+[ 8] .strtab           STRTAB          00000000 25b2a4 00001b 00      0   0  1
+Key to Flags:
+  W (write), A (alloc), X (execute), M (merge), S (strings)
+  I (info), L (link order), G (group), T (TLS), E (exclude), x (unknown)
+  O (extra OS processing required) o (OS specific), p (processor specific)
+]]></programlisting>
+注意到piggydata中的SIZE为25b026 00，转换为十进制就是2469926。并且input_data的值为0x34，
+input_data_end的值为0x25b05a。再看compreassed/vmlinux->objcopy->zImage的最终过程
+<programlisting><![CDATA[
+/usr/local/arm/4.2.2-eabi/usr/bin/arm-linux-ld -EL    --defsym zreladdr=0x50008000 --defsym 
+params_phys=0x50000100 -p --no-undefined –X
+/usr/local/arm/4.2.2-eabi/usr/bin-ccache/../lib/gcc/arm-unknown-linux-gnueabi/4.2.2/libgcc.a 
+-T arch/arm/boot/compressed/vmlinux.lds arch/arm/boot/compressed/head.o 
+arch/arm/boot/compressed/piggy.o arch/arm/boot/compressed/misc.o -o 
+arch/arm/boot/compressed/vmlinux
+]]></programlisting>
+<para>vmlinux依赖于小猪piggy.o，misc.o和head.o。misc.o和head.o对应misc.c和head.S文件。注意内核vmlinux用的是arch/arm/kernel/head.S。这里是arch/arm/boot/compressed/head.S。
+</para><para>
+再看看misc.c中decompress_kernel函数吧，它将调用gunzip()解压内核。gunzip()在lib/inflate.c中定义，它将调用NEXTBYTE()，进而调用get_byte()来获取压缩内核代码。</para>
+<programlisting><![CDATA[
+#define get_byte() (inptr < insize ? inbuf[inptr++] : fill_inbuf())
+]]></programlisting>
+查看fill_inbuf函数:
+<programlisting><![CDATA[
+int fill_inbuf(void)
+{
+	if (insize != 0)
+		error("ran out of input data");
+	inbuf = input_data;
+	insize = &input_data_end[0] - &input_data[0];
+	inptr = 1;
+	return inbuf[0];
+}
+]]></programlisting>
+发现什么没？这里的input_data不正是piggy.S里的input_data吗？这个时候应该明白内核是怎样确定piggy.gz在zImage中的位置了吧。
+</sect2>
+<sect2><title>vmlinux的生成命令</title>
+无论如何，无法忽略vmlinux的存在。它是主目录Makefile的最终目标，其他镜像文件的依赖。
+<programlisting><![CDATA[
+# The all: target is the default when no target is given on the
+# command line.
+# This allow a user to issue only 'make' to build a kernel including modules
+# Defaults vmlinux but it is usually overridden in the arch makefile
+all: vmlinux
+]]></programlisting>
+<para>在Build vmlinux小节的注释中，对vmlinux生成原理做了详尽的描述：vmlinux是由$(vmlinux-init) 和
+$(vmlinux-main)指定的目标文件最终链接生成的。通常它们是位于各个子目录下的built_int.o目标文件，一些特殊名字的.o文件由arch/$(ARCH)/Makefile生成。</para>
+<para>目标文件.o链接为vmlinux的顺序是非常重要的，$(vmlinux-init)指定的目标文件优先级最高，接着是$(vmlinux-main)，最后是kallsyms.o。于此同时System.map包含了内核所有的导出符号表。</para>
+<programlisting><![CDATA[
+# vmlinux
+#   ^
+#   |
+#   +-< $(vmlinux-init)
+#   |   +--< init/version.o + more
+#   |
+#   +--< $(vmlinux-main)
+#   |    +--< driver/built-in.o mm/built-in.o + more
+#   |
+#   +-< kallsyms.o (see description in CONFIG_KALLSYMS section)
+vmlinux-init := $(head-y) $(init-y)
+vmlinux-main := $(core-y) $(libs-y) $(drivers-y) $(net-y)
+vmlinux-all  := $(vmlinux-init) $(vmlinux-main)
+vmlinux-lds  := arch/$(SRCARCH)/kernel/vmlinux.lds
+export KBUILD_VMLINUX_OBJS := $(vmlinux-all)
+
+# vmlinux image - including updated kernel symbols
+vmlinux: $(vmlinux-lds) $(vmlinux-init) $(vmlinux-main) vmlinux.o $(kallsyms.o) FORCE
+ifdef CONFIG_HEADERS_CHECK
+        $(Q)$(MAKE) -f $(srctree)/Makefile headers_check
+endif
+ifdef CONFIG_SAMPLES
+        $(Q)$(MAKE) $(build)=samples
+endif
+ifdef CONFIG_BUILD_DOCSRC
+        $(Q)$(MAKE) $(build)=Documentation
+endif
+        $(call vmlinux-modpost)
+        $(call if_changed_rule,vmlinux__)
+        $(Q)rm -f .old_version
+]]></programlisting>
+如果使能CONFIG_HEADERS_CHECK将尝试对所有导出的.h进行有效性检查。它通过$(srctree)/scripts/headers.sh脚本完成。通过call调用了两个子函数vmlinux-modpost以及if_changed_rule,vmlinux__。scripts/ Kbuild.include中定义了if_changed_rule。
+<programlisting><![CDATA[
+# Usage: $(call if_changed_rule,foo)
+# Will check if $(cmd_foo) or any of the prerequisites changed,
+# and if so will execute $(rule_foo).
+if_changed_rule = $(if $(strip $(any-prereq) $(arg-check) ),                 \
+        @set -e;                                                             \
+        $(rule_$(1)))
+]]></programlisting>
+最重要的子命令是vmlinux__，它的定义如下，通过它最终生成了vmlinux。
+<programlisting><![CDATA[
+# Rule to link vmlinux - also used during CONFIG_KALLSYMS
+# May be overridden by arch/$(ARCH)/Makefile
+quiet_cmd_vmlinux__ ?= LD      $@
+      cmd_vmlinux__ ?= $(LD) $(LDFLAGS) $(LDFLAGS_vmlinux) -o $@ \
+      -T $(vmlinux-lds) $(vmlinux-init)                          \
+      --start-group $(vmlinux-main) --end-group                  \
+      $(filter-out $(vmlinux-lds) $(vmlinux-init) $(vmlinux-main) vmlinux.o FORCE ,$^)
+]]></programlisting>
+一个实际的$( cmd_vmlinux__)命令行如下：
+<programlisting><![CDATA[
+/usr/local/arm/4.2.2-eabi/usr/bin/arm-linux-ld -EL  -p --no-undefined -X -o vmlinux -T 
+arch/arm/kernel/vmlinux.lds arch/arm/kernel/head.o arch/arm/kernel/init_task.o  init/built-in.o 
+--start-group  usr/built-in.o  arch/arm/kernel/built-in.o  arch/arm/mm/built-in.o  
+arch/arm/common/built-in.o  arch/arm/mach-s3c6400/built-in.o  
+arch/arm/mach-s3c6410/built-in.o  arch/arm/plat-s3c64xx/built-in.o  
+arch/arm/plat-s3c/built-in.o  arch/arm/nwfpe/built-in.o  arch/arm/vfp/built-in.o  
+kernel/built-in.o  mm/built-in.o  fs/built-in.o  ipc/built-in.o  security/built-in.o  crypto/built-in.o  
+block/built-in.o  arch/arm/lib/lib.a  lib/lib.a  arch/arm/lib/built-in.o  lib/built-in.o  
+drivers/built-in.o  sound/built-in.o  firmware/built-in.o  net/built-in.o 
+--end-group .tmp_kallsyms2.o
+]]></programlisting>
+注意到其中的-T参数，它指定了链接使用的脚本。
+<programlisting><![CDATA[
+#man ld
+       -T scriptfile
+       Use scriptfile as the linker script.  This script replaces ld's default linker script 
+       (rather than adding to it), so commandfile must  specify everything necessary to describe
+       the output file.    If scriptfile does not exist in the current directory, "ld" looks 
+       for it in the directories specified by any preceding -L options.  Multiple -T options        
+       accumulate.
+]]></programlisting>
+所有的链接都由链接脚本来控制，ld中已经已经内嵌了一个默认脚本，可以通过如下命令查看该脚本：
+<programlisting><![CDATA[
+# ld  --verbose
+]]></programlisting>
+一个实际的$( vmlinux-modpost)命令行如下：
+<programlisting><![CDATA[
+/usr/local/arm/4.2.2-eabi/usr/bin/arm-linux-ld -EL -r -o vmlinux arch/arm/kernel/head.o arch/arm/kernel/init_task.o 
+init/built-in.o --start-group usr/built-in.o arch/arm/kernel/built-in.o arch/arm/mm/built-in.o 
+arch/arm/common/built-in.o arch/arm/mach-s3c6400/built-in.o arch/arm/mach-s3c6410/built-in.o 
+arch/arm/plat-s3c64xx/built-in.o arch/arm/plat-s3c/built-in.o arch/arm/nwfpe/built-in.o arch/arm/vfp/built-in.o 
+kernel/built-in.o mm/built-in.o fs/built-in.o ipc/built-in.o security/built-in.o crypto/built-in.o 
+block/built-in.o arch/arm/lib/lib.a lib/lib.a arch/arm/lib/built-in.o lib/built-in.o drivers/built-in.o 
+sound/built-in.o firmware/built-in.o net/built-in.o --end-group arch/arm/kernel/vmlinux.lds vmlinux.o 
+.tmp_kallsyms2.o
+]]></programlisting>
+注意到--start-group和--end-group参数，它们是为了解决静态库之间相互引用，所有的静态库应该放到它们之间。
+</sect2>
+<sect2><title>vmlinux-xxx</title>
+一个讨巧的输出这些变量的方法是：
+<programlisting><![CDATA[
+all: hoo vmlinux
+
+hoo:
+    echo $(vmlinux-init)
+		echo $( vmlinux-main)
+]]></programlisting>
+vmlinux-init 定义为$(head-y)和$(init-y)的合集。head-y定义于arch/arm/Makefile
+<programlisting><![CDATA[
+head-y          := arch/arm/kernel/head$(MMUEXT).o arch/arm/kernel/init_task.o
+]]></programlisting>
+init-y定义于主目录Makefile
+<programlisting><![CDATA[
+init-y          := init/
+]]></programlisting>
+一个实际的$(vmlinux-init)参数输出如下：
+<programlisting><![CDATA[
+arch/arm/kernel/head.o arch/arm/kernel/init_task.o  init/built-in.o
+]]></programlisting>
+vmlinux-main定义为$(core-y)，$(libs-y)， $(drivers-y) 和 $(net-y)的合集。它们定义于主目录Makefile：
+<programlisting><![CDATA[
+drivers-y       := drivers/ sound/ firmware/
+net-y           := net/
+libs-y          := lib/
+core-y          := usr/
+core-y          += kernel/ mm/ fs/ ipc/ security/ crypto/ block/
+
+init-y          := $(patsubst %/, %/built-in.o, $(init-y))
+core-y          := $(patsubst %/, %/built-in.o, $(core-y))
+drivers-y       := $(patsubst %/, %/built-in.o, $(drivers-y))
+net-y           := $(patsubst %/, %/built-in.o, $(net-y))
+libs-y1         := $(patsubst %/, %/lib.a, $(libs-y))
+libs-y2         := $(patsubst %/, %/built-in.o, $(libs-y))
+libs-y          := $(libs-y1) $(libs-y2)
+]]></programlisting>
+一个实际的$(vmlinux-main)参数输出如下：
+<programlisting><![CDATA[
+usr/built-in.o arch/arm/kernel/built-in.o arch/arm/mm/built-in.o arch/arm/common/built-in.o 
+arch/arm/mach-s3c6400/built-in.o arch/arm/mach-s3c6410/built-in.o 
+arch/arm/plat-s3c64xx/built-in.o arch/arm/plat-s3c/built-in.o arch/arm/nwfpe/built-in.o 
+arch/arm/vfp/built-in.o kernel/built-in.o mm/built-in.o fs/built-in.o ipc/built-in.o security/built-in.o 
+crypto/built-in.o block/built-in.o arch/arm/lib/lib.a lib/lib.a arch/arm/lib/built-in.o lib/built-in.o 
+drivers/built-in.o sound/built-in.o firmware/built-in.o net/built-in.o
+]]></programlisting>
+它包括了几乎所有的内核子系统，以及驱动程序。vmlinux-all  是 $(vmlinux-init)和 $(vmlinux-main)的合集。它最终会出现在生成vmlinux的命令行中。重新看一下一个实际的$( cmd_vmlinux__)命令行：
+<programlisting><![CDATA[
+/usr/local/arm/4.2.2-eabi/usr/bin/arm-linux-ld -EL  -p --no-undefined -X -o vmlinux -T 
+arch/arm/kernel/vmlinux.lds arch/arm/kernel/head.o arch/arm/kernel/init_task.o  init/built-in.o 
+--start-group  usr/built-in.o  arch/arm/kernel/built-in.o  arch/arm/mm/built-in.o  
+arch/arm/common/built-in.o  arch/arm/mach-s3c6400/built-in.o  
+arch/arm/mach-s3c6410/built-in.o  arch/arm/plat-s3c64xx/built-in.o  
+arch/arm/plat-s3c/built-in.o  arch/arm/nwfpe/built-in.o  arch/arm/vfp/built-in.o  
+kernel/built-in.o  mm/built-in.o  fs/built-in.o  ipc/built-in.o  security/built-in.o  crypto/built-in.o  
+block/built-in.o  arch/arm/lib/lib.a  lib/lib.a  arch/arm/lib/built-in.o  lib/built-in.o  
+drivers/built-in.o  sound/built-in.o  firmware/built-in.o  net/built-in.o 
+--end-group .tmp_kallsyms2.o
+]]></programlisting>
+
+<programlisting><![CDATA[
+vmlinux-lds  := arch/$(SRCARCH)/kernel/vmlinux.lds
+]]></programlisting>
+$(SRCARCH)定义于主目录的Makefile:
+<programlisting><![CDATA[
+ARCH            := arm
+SRCARCH         := $(ARCH)
+]]></programlisting>
+所以它位于arch/arm/kernel/vmlinux.lds，它既是生成vmlinux时使用的链接脚本。
+<programlisting><![CDATA[
+vmlinux-dirs    := $(patsubst %/,%,$(filter %/, $(init-y) $(init-m) \
+                     $(core-y) $(core-m) $(drivers-y) $(drivers-m) \
+                     $(net-y) $(net-m) $(libs-y) $(libs-m)))
+]]></programlisting>
+重量级人物vmlinux-dirs包含了所有由变量$(xx)代表的需要编译处理的文件夹，它的一个实际输出为：
+<programlisting><![CDATA[
+init usr arch/arm/kernel arch/arm/mm arch/arm/common arch/arm/mach-s3c6400 arch/arm/mach-s3c6410
+ arch/arm/plat-s3c64xx arch/arm/plat-s3c arch/arm/nwfpe arch/arm/vfp kernel mm fs ipc security 
+ crypto block drivers sound firmware net arch/arm/lib lib
+]]></programlisting>
+</sect2>
+<sect2><title>vmlinux.lds和vmlinux.lds.S</title>
+arch/arm/kernel/vmlinux.lds 是由arch/arm/kernel/vmlinux.lds.S 生成的，其生成规则在scripts/Makefile.build进行定义：
+<programlisting><![CDATA[
+# Linker scripts preprocessor (.lds.S -> .lds)
+# ---------------------------------------------------------------------------
+quiet_cmd_cpp_lds_S = LDS     $@
+      cmd_cpp_lds_S = $(CPP) $(cpp_flags) -D__ASSEMBLY__ -o $@ $<
+
+$(obj)/%.lds: $(src)/%.lds.S FORCE
+        $(call if_changed_dep,cpp_lds_S)
+]]></programlisting>
+扩展后的app_lds_S命令如下：
+<programlisting><![CDATA[
+/usr/local/arm/4.2.2-eabi/usr/bin/arm-linux-gcc -E -Wp,-MD,arch/arm/kernel/.vmlinux.lds.d 
+-nostdinc -isystem 
+/usr/local/arm/4.2.2-eabi/usr/bin-ccache/../lib/gcc/arm-unknown-linux-gnueabi/4.2.2/include 
+-D__KERNEL__ -Iinclude -I/home/red/forlinux/linux2.6.28/arch/arm/include -include 
+include/linux/autoconf.h -mlittle-endian -Iarch/arm/mach-s3c6400/include 
+-Iarch/arm/mach-s3c6410/include -Iarch/arm/plat-s3c64xx/include -Iarch/arm/plat-s3c/include 
+-DTEXT_OFFSET=0x00008000 -P -C -Uarm -D__ASSEMBLY__ -o arch/arm/kernel/vmlinux.lds 
+arch/arm/kernel/vmlinux.lds.S
+]]></programlisting>
+注意到生成命令中的参数-E，它并不编译，而只是进行预处理。它的格式与源文件格式是一致的。另外-DTEXT_OFFSET=0x00008000指定了脚本生成时TEXT_OFFSET参数。
+<programlisting><![CDATA[
+#man gcc
+       -E  Stop after the preprocessing stage; do not run the compiler proper.  The output is 
+       in the form of preprocessed source code, which is sent to the standard output.
+]]></programlisting>
+vmlinux.lds.S定义了代码段的开始：
+<programlisting><![CDATA[
+.......
+SECTIONS
+{
+#ifdef CONFIG_XIP_KERNEL
+        . = XIP_VIRT_ADDR(CONFIG_XIP_PHYS_ADDR);
+#else
+        . = PAGE_OFFSET + TEXT_OFFSET;
+#endif
+        .text.head : {
+......
+]]></programlisting>
+注意到它包含的头文件memory.h对PAGE_OFFSET做了如下定义：        
+<programlisting><![CDATA[
+arch/arm/include/asm/memory.h
+/*
+ * PAGE_OFFSET - the virtual address of the start of the kernel image
+ * TASK_SIZE - the maximum size of a user space task.
+ * TASK_UNMAPPED_BASE - the lower boundary of the mmap VM area
+ */
+#define PAGE_OFFSET             UL(CONFIG_PAGE_OFFSET)
+]]></programlisting>
+arch/arm/Makefile中定义了TEXT_OFFSET以及参数使用命令行的传递方式：
+<programlisting><![CDATA[
+# The byte offset of the kernel image in RAM from the start of RAM.
+TEXT_OFFSET := $(textofs-y)
+CPPFLAGS_vmlinux.lds = -DTEXT_OFFSET=$(TEXT_OFFSET)
+textofs-y       := 0x00008000
+]]></programlisting>
+可以看到最终TEXT_OFFSET的值为0x00008000，这与app_lds_S命令行中的参数是一致的。最终内核的代码段的开始地址如下：
+<programlisting><![CDATA[
+. = 0xC0000000 + 0x00008000;
+]]></programlisting>
+</sect2>
+<sect2><title>head.S</title>
+<para>
+这里的head.S并非kernel下的head.S，而是用来解压内核镜像zImage的head.S，它通常位于arch/arm/boot/compressed下。Uboot在通过命令bootm addr后，所执行的theKernel函数实际上就是指向该head.S第一条指令的指针。
+<programlisting><![CDATA[
+ theKernel(0, bd->bi_arch_number, bd->bi_boot_params);
+]]></programlisting>
+head.S的头部定义了一些调试用的宏指令。首先从第一条真正的汇编指令开始分析：
+<programlisting><![CDATA[
+.section ".start", #alloc, #execinstr
+
+                .align
+start:
+                .type   start,#function
+                .rept   8
+                mov     r0, r0
+                .endr
+
+                b       1f
+                .word   0x016f2818              @ Magic numbers to help the loader
+                .word   start                   @ absolute load/run zImage address
+                .word   _edata                  @ zImage end address
+1:              mov     r7, r1                  @ save architecture ID
+                mov     r8, r2                  @ save atags pointer
+]]></programlisting>	
+align伪指令确保指令4字节对齐。执行8次重复的nop（mov r0, r0）指令是为了和Uboot中的zImage魔术0x016f2818验证保证9个指令大小的偏移。实际上align伪指令在这里并没有意义，根据vmlinux.lds链接脚本，head.o的.start段总是被安排在开始的0地址处，所以.word start也将被填充为0。如果要确定_edata的值，就要看一下链接脚本了:
+<programlisting><![CDATA[
+OUTPUT_ARCH(arm)
+ENTRY(_start)
+SECTIONS
+{
+  . = 0;					// 从0地址开始安排数据
+  _text = .;
+
+  .text : {
+    _start = .;
+    *(.start)			// 总是将.head中的.start段安排在0地址处
+    *(.text)
+    *(.text.*)
+    *(.fixup)
+    *(.gnu.warning)
+    *(.rodata)
+    *(.rodata.*)
+    *(.glue_7)
+    *(.glue_7t)
+    *(.piggydata)
+    . = ALIGN(4);
+  }
+
+  _etext = .;
+
+  _got_start = .;
+  .got                  : { *(.got) }
+  _got_end = .;
+  .got.plt              : { *(.got.plt) }
+  .data                 : { *(.data) }
+  _edata = .;   //.代表了当前地址，由于地址从0开始，所以它就是以上所有段的大小
+
+  . = ALIGN(4);
+  __bss_start = .;
+  .bss                  : { *(.bss) }
+  _end = .;
+
+  .stack (NOLOAD)       : { *(.stack) }
+
+  .stab 0               : { *(.stab) }
+  .stabstr 0            : { *(.stabstr) }
+  .stab.excl 0          : { *(.stab.excl) }
+  .stab.exclstr 0       : { *(.stab.exclstr) }
+  .stab.index 0         : { *(.stab.index) }
+  .stab.indexstr 0      : { *(.stab.indexstr) }
+  .comment 0            : { *(.comment) }
+}
+]]></programlisting>
+_edata实际上就是zImage文件的大小。它包含内核镜像所需的所有代码段和数据段以及压缩后的vmlinux内核文件.piggydata数据段。下面的命令
+将证实这一点，为了查看_edata的值，那么反汇编arch/arm/boot/compressed下的vmlinux<footnote><para></para>这里之所以不直接反汇编zImage，是因为zImage是根据vmlinux生成的原始二进制文件，而不再是标准的ELF文件，此时objdump命令无法识别它。</footnote>，查看0地址开始处的代码：
+<programlisting><![CDATA[
+00000000 <start>:
+       0:       e1a00000        nop     (mov r0,r0)
+			......
+      20:       ea000002        b       30 <_text+0x30>
+      24:       016f2818        .word   0x016f2818
+      28:       00000000        .word   0x00000000
+      2c:       0025e50c        .word   0x0025e50c
+      30:       e1a07001        mov     r7, r1
+      34:       e1a08002        mov     r8, r2
+      38:       e10f2000        mrs     r2, CPSR
+      3c:       e3120003        tst     r2, #3  ; 0x3
+      40:       1a000001        bne     4c <not_angel>
+      44:       e3a00017        mov     r0, #23 ; 0x17
+      48:       ef123456        svc     0x00123456
+      ......
+]]></programlisting>
+第一个字数据是zImage的魔数，第二个则对应start，显然_edata的值为0x0025e50c。然后直接查看zImage的大小，2483468对应到十六进制就是0x0025e50c。
+<programlisting><![CDATA[
+# wc -c zImage 
+2483468 zImage
+]]></programlisting>
+mov r7, r1和mov r8, r2将Uboot传递来的arch ID和参数指针转移到r7h和r8备用，它们分别对应Uboot中的变量bi_arch_number和bi_boot_params。
+<programlisting><![CDATA[
+#ifndef __ARM_ARCH_2__
+                /*
+                 * Booting from Angel - need to enter SVC mode and disable
+                 * FIQs/IRQs (numeric definitions from angel arm.h source).
+                 * We only do this if we were in user mode on entry.
+                 */
+                mrs     r2, cpsr                @ get current mode
+                tst     r2, #3                  @ not user?
+                bne     not_angel
+                mov     r0, #0x17               @ angel_SWIreason_EnterSVC
+                swi     0x123456                @ angel_SWI_ARM
+not_angel:
+                mrs     r2, cpsr                @ turn off interrupts to
+                orr     r2, r2, #0xc0           @ prevent angel from running
+                msr     cpsr_c, r2
+#else
+                teqp    pc, #0x0c000003         @ turn off interrupts
+#endif
+]]></programlisting>
+当前的ARM架构为ARM11，所以不会定义__ARM_ARCH_2__，另外我们是从Uboot启动，而非
+Angel，Angel可以从用户模式启动内核，是ARM 的调试协议。通常的Bootloader都工作于SVC模式，这样可以直接调用内核镜像中的指令。可以参考文档Documentation/arm/Booting：
+<programlisting><![CDATA[
+......
+- CPU mode
+  All forms of interrupts must be disabled (IRQs and FIQs)
+  The CPU must be in SVC mode.  (A special exception exists for Angel)
+......
+]]></programlisting>
+not_angel标签中的指令将CPSR寄存器的I和F位为置为1，也即关中断和快速中断。
+<programlisting><![CDATA[
+      /*
+       * some architecture specific code can be inserted
+       * by the linker here, but it should preserve r7, r8, and r9.
+       */
+]]></programlisting>
+这里的注释说明链接器可能会把一些处理器相关的代码链接到这个位置，也就是arch/arm/boot/compressed/head-xxx.S文件中的代码。插入的文件根据CONFIG_ARCH_XXX来确定，这里的.config配置的是CONFIG_ARCH_S3C64XX，它没有对应的额外head代码。
+如果需要在这里插入代码，那么需要保证r7，r8和r9寄存器在调用前后保持不变。
+<programlisting><![CDATA[
+              .text
+              adr     r0, LC0
+              ldmia   r0, {r1, r2, r3, r4, r5, r6, ip, sp}
+              subs    r0, r0, r1              @ calculate the delta offset
+
+                                              @ if delta is zero, we are
+              beq     not_relocated           @ running at the address we
+                                              @ were linked at.
+]]></programlisting>
+这里开始进入真正的代码段。adr伪指令将计算LC0标签所代表的地址相对于pc的偏移，并调节r0的值指向pc偏移后的值。ldmia批数据装载指令分别将r0，r0+4...等的值装载到r1, r2...。如果要彻底了解它们的作用，则要看看LC0到底代表了什么：
+<programlisting><![CDATA[
+                .type   LC0, #object
+LC0:            .word   LC0                     @ r1
+                .word   __bss_start             @ r2
+                .word   _end                    @ r3
+                .word   zreladdr                @ r4
+                .word   _start                  @ r5
+                .word   _got_start              @ r6
+                .word   _got_end                @ ip
+                .word   user_stack+4096         @ sp
+LC1:            .word   reloc_end - reloc_start
+                .size   LC0, . - LC0
+]]></programlisting>
+通过反汇编vmlinux可以看到它们实际代表的地址：
+<programlisting><![CDATA[
+00000138 <LC0>:
+     138:       00000138        .word   0x00000138 // LC0 				@ r1
+     13c:       0025e970        .word   0x0025e970 // __bss_start @ r2
+     140:       00266db8        .word   0x00266db8 // _end        @ r3
+     144:       50008000        .word   0x50008000 // zreladdr    @ r4
+     148:       00000000        .word   0x00000000 // _start      @ r5
+     14c:       0025e8f4        .word   0x0025e8f4 // _got_start  @ r6
+     150:       0025e964        .word   0x0025e964 // _got_end    @ ip
+     154:       00267db8        .word   0x00267db8 // user_stack + 4096 @ sp
+]]></programlisting>
+LC0指向了一个结构体，结构体的成员有__bss_start，_end等，并且结构体中的成员均占一个字，所以通过ldmia指令可以将它们分别对应到各寄存器。user_stack是一个标签，它位于head.S的最后：user_stack: .space  4096。.space伪指令分配连续4k字节的存储单元并初始化为0，显然这里的sp指向栈顶，栈的大小为4k。另外一个令人迷惑的地方是subs和beq的用意，adr总是使用相对于当前pc的偏移来计算地址，计算的过程发生在编译后的链接中，.word   LC0也是在链接中计算好的，什么时候才会出现subs不等0的情况呢？答案就是zImage的镜像开始于非0地址时，adr指令中由于使用的是相对地址，它总是可以保证地址指向pc + offset，此时的pc值为0x00000138 + 0x50008000，但是.word LC0是据对地址，它在链接时确定的是相对于0的值0x00000138，代码被拷贝到0x50008000后，它还是0x00000138。所以subs r0, r0, r1后，r0的值就是镜像被拷贝的RAM中的物理地址0x50008000。那么这里的重定位是在何处发生的呢？回忆如下的Uboot命令：
+<programlisting><![CDATA[
+bootcmd=nand read 0xc0008000 0x100000 0x300000;bootm 0xc0008000
+]]></programlisting>
+可以看到3M大小的zImage被读取到了虚拟地址0xc0008000，该地址在Uboot中根据virt_to_phys被转化为了物理实地址0x50008000。其实这条命令与nand read 0x50008000 0x100000 0x300000;bootm 0x50008000效果是一致的。由于此时工作在实模式，pc中存储的都是指令的物理地址，由于Uboot通常都是在加载RAM的最低端，在执行Uboot中的指令时，pc中的值是Uboot指令所在的地址，所以它看起来总是从0x57e00000开始的地址，它在Uboot中通过CFG_PHY_UBOOT_BASE宏定义在include/configs/smdk6410.h中：
+<programlisting><![CDATA[
+#define MEMORY_BASE_ADDRESS     0x50000000
+#define CFG_PHY_UBOOT_BASE      MEMORY_BASE_ADDRESS + 0x7e00000
+]]></programlisting>
+pc值在Uboot调用theKernel时发生了变化，由于theKernel指向的地址就是zImage加载的地址0x50008000，所以此时pc的值看起来总是大于0x50008000附近的地址，下图解释了发生的一切：
+<figure><title>zImage加载时地址变化</title><graphic fileref="images/boot_addr.gif"/></figure>
+由于此MMU功能未打开，所以下面通过汇编指令直接进行重定位。
+<programlisting><![CDATA[
+		  /*
+		   * We're running at a different address.  We need to fix
+		   * up various pointers:
+		   *   r5 - zImage base address
+		   *   r6 - GOT start
+		   *   ip - GOT end
+		   */
+		  add     r5, r5, r0
+		  add     r6, r6, r0
+		  add     ip, ip, r0
+]]></programlisting>
+上面进行重定位的代码很简单，由于r5，r6和ip对应的_start，_got_start和_got_end均是绝对地址（相对于地址0的地址），所以需要调节它们。如果没有定义CONFIG_ZBOOT_ROM从ROM启动，那么当前运行的就是位置无关代码（PIC， Position Indepedence Code）。位置无关代码中是不能有任何绝对地址的，它们整体被拷贝到任何位置无需重定位即可运行。为了保持相对地址正确，
+需要将bss段以及堆栈的地址都进行调整。
+<programlisting><![CDATA[
+#ifndef CONFIG_ZBOOT_ROM
+                /*
+                 * If we're running fully PIC === CONFIG_ZBOOT_ROM = n,
+                 * we need to fix up pointers into the BSS region.
+                 *   r2 - BSS start
+                 *   r3 - BSS end
+                 *   sp - stack pointer
+                 */
+                add     r2, r2, r0
+                add     r3, r3, r0
+                add     sp, sp, r0
+]]></programlisting>
+r3指向bss区的开始__bss_start，而r3指向bss区的结束_end。它们均在vmlinx.lds脚本中定义。zreladdr指的是内核将要解压的内存物理地址，它是在编译时通过Makefile中的$(ZRELADDR)传递而来，它又是从arch/arm/boot下的Makefile定义ZRELADDR    := $(zreladdr-y)
+而来，最终zreladdr-y := 0x50008000定义在/arch/arm/mach-s3c6400/Makefile.boot中。在解压前将会检测该地址是否和当前的zImage镜像所在的地址发生冲突，如果冲突将会调节。
+
+根据vmlinux反汇编的地址值结合下面各区地址的分配情况可以如下地址分配图：
+<figure><title>绝对地址分配图</title><graphic fileref="images/boot_file.gif"/></figure>
+全局偏移表GOT的地址也需要更改，GOT表中包含了引用外部全局符号的绝对地址，每一表项占用1个字。程序使用与位置无关的地址来引用GOT 并转换为绝对地址。此方法可将与位置无关的调用重定向到绝对地址。
+<programlisting><![CDATA[
+                /*
+                 * Relocate all entries in the GOT table.
+                 */
+1:              ldr     r1, [r6, #0]            @ relocate entries in the GOT
+                add     r1, r1, r0              @ table.  This fixes up the
+                str     r1, [r6], #4            @ C references.
+                cmp     r6, ip
+                blo     1b
+#else
+                /*
+                 * Relocate entries in the GOT table.  We only relocate
+                 * the entries that are outside the (relocated) BSS region.
+                 */
+1:              ldr     r1, [r6, #0]            @ relocate entries in the GOT
+                cmp     r1, r2                  @ entry < bss_start ||
+                cmphs   r3, r1                  @ _end < entry
+                addlo   r1, r1, r0              @ table.  This fixes up the
+                str     r1, [r6], #4            @ C references.
+                cmp     r6, ip
+                blo     1b
+#endif
+]]></programlisting>
+若定义了CONFIG_ZBOOT_ROM，只对got表中在bss段以外的符号进行重定位。下面的代码将bss区清零。
+<programlisting><![CDATA[
+not_relocated:  mov     r0, #0
+1:              str     r0, [r2], #4            @ clear bss
+                str     r0, [r2], #4
+                str     r0, [r2], #4
+                str     r0, [r2], #4
+                cmp     r2, r3								// 未到r3(_end)则继续
+                blo     1b
+]]></programlisting>
+接下来将为运行c代码准备环境，首先打开I/D缓存，然后准备malloc使用的缓冲区，它位于栈区之上，占据64k空间。经过重定位后内存地址分配如下图所示：
+<figure><title>重定位前后地址对照</title><graphic fileref="images/boot_map.gif"/></figure>
+<programlisting><![CDATA[
+                /*
+                 * The C runtime environment should now be setup
+                 * sufficiently.  Turn the cache on, set up some
+                 * pointers, and start decompressing.
+                 */
+                bl      cache_on
+
+                mov     r1, sp                  @ malloc space above stack
+                add     r2, sp, #0x10000        @ 64k max
+]]></programlisting>
+S3C6410采用ARM1176JZF架构，ARM1176系列CPU架构的内部指令总线和数据总线分开，也即典型的哈佛架构。Cache通过某种策略预测CPU即将要访问的内存地址，预先读取大块内存供CPU访问，来家少后续的聂存总线上的读写操作，以提高速度。指令总线和数据总线被分别连接到ICache和DCache，再通过AMBA总线接口连接到ASB总线上去访问内存。Cache由Line组成，Line是Cache进行块读取和替换的单位。Write Buffer是与DCache作用相反的缓冲区，通过减少Memeory Bus的访问来提高性能。MMU(Memory Managenment Unit)内存管理单元被用来管理Cache并控制虚拟地址和物理地址的转换。协处理器CP15是外部控制MMU/Cache的唯一途径。内核在内存中维护一张或几张页表，然后通过CP15指定该表的位置，硬件会自动将该表的部分表项读取到TLB（Translation Lookaside Buffer）中。TLB是MMU的一部分，它被用来缓存刚刚使用过的页表，以提高地址转换速度。
+<programlisting><![CDATA[
+                .align  5
+cache_on:       mov     r3, #8                  @ cache_on function
+                b       call_cache_fn
+]]></programlisting>
+8被放入r3，将在call_cache_fn调用中作为参数使用。这个函数定义如下：
+<programlisting><![CDATA[
+call_cache_fn:  adr     r12, proc_types
+#ifdef CONFIG_CPU_CP15
+                mrc     p15, 0, r6, c0, c0      @ get processor ID
+#else
+                ldr     r6, =CONFIG_PROCESSOR_ID
+#endif
+1:              ldr     r1, [r12, #0]           @ get value
+                ldr     r2, [r12, #4]           @ get mask
+                eor     r1, r1, r6              @ (real ^ match)
+                tst     r1, r2                  @       & mask
+                addeq   pc, r12, r3             @ call cache function
+                add     r12, r12, #4*5
+                b       1b
+]]></programlisting>
+CONFIG_CPU_CP15在内核的配置文件.config中定义。proc_types是一个标签，它指向了一张放有Processor Types的表，这张表的每一项由CPU ID，ID掩码，开/关Cache和清Cache指令组成。call_cache_fn的作用就是使用协处理器中获取的处理器ID与表中的ID相匹配，然后调用相应的Cache操作指令。addeq pc, r12, r3指令将当前pc指向了匹配后的表项的操作指令地址，r3的值为8，所以pc与r12（指向当前处理器ID表项的开头）的偏移为8字节。
+<programlisting><![CDATA[
+/*
+ * Table for cache operations.  This is basically:
+ *   - CPU ID match
+ *   - CPU ID mask
+ *   - 'cache on' method instruction
+ *   - 'cache off' method instruction
+ *   - 'cache flush' method instruction
+ *
+ * We match an entry using: ((real_id ^ match) & mask) == 0
+ *
+ */
+                .type   proc_types,#object
+proc_types:
+                .word   0x41560600              @ ARM6/610  // CPU ID
+                .word   0xffffffe0                          // 掩码
+                b       __arm6_mmu_cache_off    @ works, but slow //Off 指令
+                b       __arm6_mmu_cache_off
+                mov     pc, lr
+......
+                .word   0x000f0000              @ new CPU Id
+                .word   0x000f0000
+                b       __armv7_mmu_cache_on
+                b       __armv7_mmu_cache_off
+                b       __armv7_mmu_cache_flush
+......                
+__armv7_mmu_cache_on:
+                mov     r12, lr
+                mrc     p15, 0, r11, c0, c1, 4  @ read ID_MMFR0
+                tst     r11, #0xf               @ VMSA
+                blne    __setup_mmu
+                mov     r0, #0
+                mcr     p15, 0, r0, c7, c10, 4  @ drain write buffer
+                tst     r11, #0xf               @ VMSA
+                mcrne   p15, 0, r0, c8, c7, 0   @ flush I,D TLBs
+                mrc     p15, 0, r0, c1, c0, 0   @ read control reg
+                orr     r0, r0, #0x5000         @ I-cache enable, RR cache replacement
+                orr     r0, r0, #0x003c         @ write buffer
+                orrne   r0, r0, #1              @ MMU enabled
+                movne   r1, #-1
+                mcrne   p15, 0, r3, c2, c0, 0   @ load page table pointer
+                mcrne   p15, 0, r1, c3, c0, 0   @ load domain access control
+                mcr     p15, 0, r0, c1, c0, 0   @ load control register
+                mrc     p15, 0, r0, c1, c0, 0   @ and read it back
+                mov     r0, #0
+                mcr     p15, 0, r0, c7, c5, 4   @ ISB
+                mov     pc, r12
+......                
+]]></programlisting>
+尽管ARM1176采用ARM11架构，但是CPU ID是ARMv7的修订版本，所以这里会匹配__armv7_mmu_cache_on，r12偏移8的地址也即是此调用。
+首先保存返回地址，接下来的bl指令会覆盖原来的lr，为保证程序正确返回，需要保存当前lr的值。此函数首先执行__setup_mmu，然后清空Write Buffer、I/Dcache、TLB接着打开ICache，设置为循环替换模式(Round-Robin Replacement)。接着打开
+Write Buffer和MMU。把页表基地址和域访问控制写入协处理器寄存器c2、c3。c2是转换表基地址(TTB)寄存器（Translation Table Base Register），c3则是域访问控制寄存器（Domain Access Control Register），它用来控制访问权限。 mov pc, r12返回到开始保存的lr处。重点来看一下__setup_mmu这个函数：
+<programlisting><![CDATA[
+__setup_mmu:    sub     r3, r4, #16384          @ Page directory size
+                bic     r3, r3, #0xff           @ Align the pointer
+                bic     r3, r3, #0x3f00
+]]></programlisting>
+r4中存放着地址zreladdr，它是zImage所在的RAM中的物理地址。将16K的一级页表放在此地址下面的16K（16384）空间里，首先通过
+sub r3, r4, #16384 获得16K空间后，又将页表的起始地址进行16K对齐放在r3中。即TTB的低14位清零。
+<programlisting><![CDATA[
+                mov     r0, r3
+                mov     r9, r0, lsr #18
+                mov     r9, r9, lsl #18         @ start of RAM
+                add     r10, r9, #0x10000000    @ a reasonable RAM size
+]]></programlisting>	
+初始化页表，并在RAM空间里打开高速缓存(cacheable)和缓冲位(bufferable)位。把一级页表的起始地址保存在r0中，并通过r0获得一个ram起始地址（每个页面大小为1M）然后映射256M ram空间，并把对应的描述符的C和B位均置1。
+要完全理解下面的页面映射过程，需要了解ARM MMU的工作机制，以及此时zImage文件在内存中的映像地址分配情况：
+<figure><title>含页表重定位前后地址对照</title><graphic fileref="images/boot_pmap.gif"/></figure>
+注意图中r0,r3,r9和r10的值均是物理地址。MMU支持基于节或页的地址转换：
+<itemizedlist> 
+	<listitem>段页（Section） 构成1MB 的存储器块</listitem>
+	<listitem>支持3 中不同的页尺寸：<?linebreak?>
+		微页（Tiny page） 构成1KB 的存储器块<?linebreak?>
+		小页（Small page） 构成4KB 的存储器块<?linebreak?>
+		大页（Large page） 构成64KB 的存储器块<?linebreak?>
+	</listitem>
+</itemizedlist>
+段页和大页是支持允许只用一个TLB 入口去映射大的存储器区间。小页和大页有附加的访问控制：小页分成1KB 的子页，和大页分成16KB 的子页。微页没有子页，对微页的访问控制是对整个页。
+<figure><title>ARM 段页地址页表项</title><graphic fileref="images/boot_table.gif"/></figure>
+<programlisting><![CDATA[                 
+                mov     r1, #0x12
+                orr     r1, r1, #3 << 10
+                add     r2, r3, #16384
+1:              cmp     r1, r9                  @ if virt > start of RAM
+                orrhs   r1, r1, #0x0c           @ set cacheable, bufferable
+                cmp     r1, r10                 @ if virt > end of RAM
+                bichs   r1, r1, #0x0c           @ clear cacheable, bufferable
+                str     r1, [r0], #4            @ 1:1 mapping
+                add     r1, r1, #1048576        @ 0x100000
+                teq     r0, r2
+                bne     1b
+]]></programlisting>
+一级页表项的bit[1:0]为10，参考上图，表示这是一个section描述符，也即分页方式为段式分页，所以这里只需要一级页表。其中访问权限AP（Access Permission）bit[11:10]为11，P为0，即是只读的。一级页表的结束地址存放在r2中，也即r3 + 16384，示例中它的值为0x50004000 + 0x4000 = 0x50008000。r1的值就是当前处理的页表项，它的内容需要与上图相匹配，段页表项基址（Section Base Address）从0开始，所以它的初始值为0x0612。继而进入循环处理，直到r1与r2相等。因为打开Cache前必须打开MMU，所以这里先对页表进行初始化。首先比较这个页表项所描述的地址是否在当前的256M的物理空间中，如果在则这个描述符对应的内存区域是Cacheable和Bufferable。如果不在则Noncacheable和Nonbufferable。然后将描述符写入一个一级页表项，并将索引地址加4，指向下一个1M 段页的基地址。最终的页表地址如下图所示：
+<figure><title>ARM 段页地址页表项</title><graphic fileref="images/boot_pagetable.gif"/></figure>
+页表大小为16K，每个描述符4字节，刚好可以容纳4096个描述符，每个描述符映射1M，那么就映射了4096*1M = 4G的空间，因此16K的页大小完全可以把256M地址空间全部映射。注意到图中以e结尾的页表项，它们使能了Cacheable和Bufferable。
+<figure><title>虚拟地址转物理地址</title><graphic fileref="images/boot_tlb.gif"/></figure>
+这里的虚拟地址转换物理地址的过程完全由MMU硬件单位完成，可以看到此时的虚拟地址和物理地址还是完全相同的，是一种平坦地址转换，这里开启MMU的作用主要是用到它的Cache功能，否则每次都要到内存中取指令和数据，效率很低，这一点可以将指令bl cache_on删除来验证。
+<programlisting><![CDATA[
+/*
+ * If ever we are running from Flash, then we surely want the cache
+ * to be enabled also for our execution instance...  We map 2MB of it
+ * so there is no map overlap problem for up to 1 MB compressed kernel.
+ * If the execution is in RAM then we would only be duplicating the above.
+ */
+                mov     r1, #0x1e
+                orr     r1, r1, #3 << 10
+                mov     r2, pc, lsr #20
+                orr     r1, r1, r2, lsl #20
+                add     r0, r3, r2, lsl #2
+                str     r1, [r0], #4
+                add     r1, r1, #1048576
+                str     r1, [r0]
+                mov     pc, lr
+ENDPROC(__setup_mmu)
+]]></programlisting>
+上述指令首先置r1为0x61e，然后将当前pc地址与1M对齐，并与r1中的内容结合形成一个描述当前指令所在section的描述符。r3为刚才建立的一级页表的起始地址。通过将当前pc地址的高12位左移两位(形成14位索引)与r3中的地址(低14位为0)相加形成一个4字节对齐的地址，这个地址也在16K的一级页表内。str将上面形成的描述符及其连续的下一个section描述写入上面4字节对齐地址处（一级页表中索引为r2左移2位），它的目的是将当前和未来可能运行的代码所在的页表地址中Cacheable和Bufferable使能。mov pc, lr返回到__armv7_mmu_cache_on并继续执行。__armv7_mmu_cache_on最后调用mov pc, r12返回到bl cache_on的下一条指令：
+<programlisting><![CDATA[
+                mov     r1, sp                  @ malloc space above stack
+                add     r2, sp, #0x10000        @ 64k max
+]]></programlisting>
+上面的指令将r1指向缓冲区的起始地址，r2指向缓冲区的结束地址，大小为64K（0x10000），这个缓冲区是为内核解压函数gnuzip作为缓冲之用。接下来判断当前zImage镜像和缓冲区是否和将要解压的内核地址相冲突，也即代码空间重叠，如果重叠则需调整。r4保存有编译时指定的内核解压地址zreladdr：0x50008000；r5则是zImage镜像地址的起始地址，r2是缓冲区的结束地址，它们已经经过了重定位，分别为0x50008000和0x50287db8。
+<programlisting><![CDATA[
+/*
+ * Check to see if we will overwrite ourselves.
+ *   r4 = final kernel address
+ *   r5 = start of this image
+ *   r2 = end of malloc space (and therefore this image)
+ * We basically want:
+ *   r4 >= r2 -> OK
+ *   r4 + image length <= r5 -> OK
+ */
+                cmp     r4, r2
+                bhs     wont_overwrite
+                sub     r3, sp, r5              @ > compressed kernel size
+                add     r0, r4, r3, lsl #2      @ allow for 4x expansion
+                cmp     r0, r5
+                bls     wont_overwrite
+]]></programlisting>
+cmp r4, r2比较指定的解压地址和缓冲区的结束地址，如果大于，则说明解压过程中不会和当前zImage镜像和缓冲区发生冲突，可以直接解压，如果大于就跳到wont_overwrite执行。否则检查解压后内核的结束地址，是否小于现在未解压内核映像的起始地址，这里的sub r3, sp, r5用来当前的内核映像和栈区的大小之和，add r0, r4, r3, lsl #2中的lsl运算只是用当前的映像和栈区的大小的4倍大小来估计解压开后内核的大小，然后加上r4就成了估计的解压后内核的结束地址，接着与当前zImage镜像的起始地址比较。小于则说明不会重叠，会跳到wont_owerwrite执行。如两这两个条件都不满足，则继续往下执行。
+<programlisting><![CDATA[
+                mov     r5, r2                  @ decompress after malloc space
+                mov     r0, r5
+                mov     r3, r7
+                bl      decompress_kernel
+]]></programlisting>
+<figure><title>解压内核的地址分配</title><graphic fileref="images/boot_decomp.gif"/></figure>
+r2->r5->r0,所以r0为缓冲区结束地址。r1依然为缓冲区开始地址，处理器ID（开始时保存在r7中）保存到r3中，它们就是传递给decompress_kernel函数的所有参数，然后开始解压内核。它在arch/arm/boot/compressed/misc.c中定义。解压的过程为先把解压代码放到缓冲区，然后从缓冲区再拷贝到最终执行空间。
+<programlisting><![CDATA[
+ulg
+decompress_kernel(ulg output_start, ulg free_mem_ptr_p, ulg free_mem_ptr_end_p,
+		  int arch_id)
+{
+	output_data		= (uch *)output_start;	/* Points to kernel start */
+	free_mem_ptr		= free_mem_ptr_p;
+	free_mem_end_ptr	= free_mem_ptr_end_p;
+	__machine_arch_type	= arch_id;
+
+	arch_decomp_setup();
+
+	makecrc();
+	putstr("Uncompressing Linux...");
+	gunzip();
+	putstr(" done, booting the kernel.\n");
+	
+	return output_ptr;
+}
+]]></programlisting>
+output_start是解压后的内核的起始地址，它从r0传递而来，所以是缓冲区结束地址，继而被传递给了output_data；free_mem_ptr_p和free_mem_ptr_end_p则是从r1和r2传递而来，所以分别指向缓冲区的开始和结束，继而又被传递给了free_mem_ptr和free_mem_end_ptr。以上两个参数被gunzip使用缓冲区时调用。__machine_arch_type则在arm/kernel/setup.c中定义，而在arm/kernel/head-common.S中被使用。gunzip函数通过在misc.c中直接包含inflate.c而来。
+<programlisting><![CDATA[
+#include "../../../../lib/inflate.c"
+]]></programlisting>	
+gzip压缩文件时总是在前32K字节的范围内寻找重复的字符串进行编码，在解压时需要一个至少为32K字节的解压缓冲区，它定义为window[WSIZE]。inflate.c使用get_byte()读取输入文件，它被定义成宏来提高效率。输入缓冲区指针必须定义为inptr，inflate.c中对之有减量操作。inflate.c调用flush_window()来输出window缓冲区中的解压出的字节串，每次输出长度用outcnt变量表示。在flush_window()中，还必须对输出字节串计算CRC并且刷新crc变量，并且通过output_data参数输出到实际的RAM中，它们均被定义在misc.c中。在调用gunzip()开始解压之前，调用makecrc()初始化CRC计算表。最后gunzip()返回0表示解压成功。
+<programlisting><![CDATA[
+#define WSIZE 0x8000            /* Window size must be at least 32k, */
+                                /* and a power of two */
+
+static uch *inbuf;              /* input buffer */
+static uch window[WSIZE];       /* Sliding window buffer */
+
+static unsigned insize;         /* valid bytes in inbuf */
+static unsigned inptr;          /* index of next byte to be processed in inbuf */
+static unsigned outcnt;         /* bytes in output buffer */
+......
+]]></programlisting>
+一个有意思的函数是inflate.c的malloc和free函数，它给出了一种最简单的堆区的使用方式：连续对齐分配。
+<programlisting><![CDATA[
+static void *malloc(int size)
+{
+       void *p;
+
+       if (size < 0)
+                error("Malloc error");
+       if (!malloc_ptr)
+                malloc_ptr = free_mem_ptr;
+
+       malloc_ptr = (malloc_ptr + 3) & ~3;     /* Align */
+
+       p = (void *)malloc_ptr;
+       malloc_ptr += size;
+
+       if (free_mem_end_ptr && malloc_ptr >= free_mem_end_ptr)
+                error("Out of memory");
+
+       malloc_count++;
+       return p;
+}
+
+static void free(void *where)
+{
+       malloc_count--;
+       if (!malloc_count)
+                malloc_ptr = free_mem_ptr;
+}
+]]></programlisting>
+	</para>	
+</sect2>
+<sect2><title>重定位内核</title>
+虽然内核已经被解压到了内存中，但是还需要进行重定位才能运行。
+<para>
+<programlisting><![CDATA[
+                add     r0, r0, #127 + 128      @ alignment + stack
+                bic     r0, r0, #127            @ align the kernel length 
+]]></programlisting>	
+r0是decompress_kernel的返回值，注意到它的最后一行代码return output_ptr，而output_ptr返回的正是解压后内核的长度。以上两行代码在内核末尾空出128字节的栈空间，并且使其长度128字节对齐。
+<programlisting><![CDATA[
+/*
+ * r0     = decompressed kernel length
+ * r1-r3  = unused
+ * r4     = kernel execution address
+ * r5     = decompressed kernel start
+ * r6     = processor ID
+ * r7     = architecture ID
+ * r8     = atags pointer
+ * r9-r14 = corrupted
+ */
+		add	r1, r5, r0		@ end of decompressed kernel
+		adr	r2, reloc_start
+		ldr	r3, LC1
+		add	r3, r2, r3
+1:		ldmia	r2!, {r9 - r14}		@ copy relocation code
+		stmia	r1!, {r9 - r14}
+		ldmia	r2!, {r9 - r14}
+		stmia	r1!, {r9 - r14}
+		cmp	r2, r3
+		blo	1b
+		add	sp, r1, #128		@ relocate the stack
+]]></programlisting>
+计算内核末尾地址并存放于r1寄存器，需要搬移代码原来地址放在r2，需要搬移的长度放在r3。然后执行搬移，并设置好sp指针指向新的栈，此时原来的栈会被内核覆盖掉。此时的内核地址分配如下图：
+<figure><title>内核地址分配</title><graphic fileref="images/boot_kernel.gif"/></figure>
+<programlisting><![CDATA[
+call_kernel:	bl	cache_clean_flush
+		bl	cache_off
+		mov	r0, #0			@ must be zero
+		mov	r1, r7			@ restore architecture number
+		mov	r2, r8			@ restore atags pointer
+		mov	pc, r4			@ call kernel
+]]></programlisting>
+搬移完成后刷新cache，因为代码地址变化了不能让cache再命中被内核覆盖的老地址。然后跳转到新的地址继续执行。传递给第一个内核函数的参数为r0为0，r1为架构编号，r2以及Uboot传递给内核参数链表的首地址。至此，开始正式跳到内核代码执行！
+
+问题3：解压函数是如何确定代码中压缩内核位置的？首先看看piggy.o是如何生成的，在arch/arm/boot/compressed/Makefie中
+<programlisting><![CDATA[
+$(obj)/piggy.$(suffix_y): $(obj)/../Image FORCE
+Piggy.gzip.o是由piggy.gzip.S生成的，咱们看看piggy.gzip.S的内容：
+.section .piggydata,#alloc
+.globl input_data
+input_data:
+.incbin "arch/arm/boot/compressed/piggy.gzip"
+.globl input_data_end
+input_data_end:
+再看看misc.c中decompress_kernel函数吧，它将调用gunzip()解压内核。
+gunzip()在lib/inflate.c中定义，它将调用NEXTBYTE()，进而调用get_byte()来获取压缩内核代码。
+
+在misc.c中
+#define get_byte() (inptr < insize ? inbuf[inptr++] : fill_inbuf())
+
+查看fill_inbuf函数
+int fill_inbuf(void)
+{
+if (insize != 0)
+error("ran out of input data");
+inbuf = input_data;
+insize = &input_data_end[0] - &input_data[0];
+inptr = 1;
+return inbuf[0];
+}
+]]></programlisting>	
+发现什么没？这里的input_data不正是piggy.gzip.S里的input_data吗？这个时候应该
+明白内核是怎样确定piggy.gz在zImage中的位置了吧。
+
+</para>
+
+</sect2>
+</sect1>

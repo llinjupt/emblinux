@@ -1,0 +1,753 @@
+<sect1><title>内核加载</title>
+<sect2><title>head.S</title>
+	<para>
+这里的head.S是真正内核启动的代码，如果是通过Image而非压缩过的zImage，那么它就被安排在Image的零地址处。head.S位于arch/arm/kernel/下。如果要了解内核文件是如何组织的。它是由vmlinux ELF文件经过objcopy去掉ELF头等信息的原始二进制文件。而vmlinux文件又是根据arch/arm/kernel/vmlinux.lds脚本链接而成：
+<programlisting><![CDATA[
+OUTPUT_ARCH(arm)
+ENTRY(stext)
+jiffies = jiffies_64;
+SECTIONS
+{
+ . = 0xC0000000 + 0x00008000;
+ .text.head : {
+  _stext = .;
+  _sinittext = .;
+  *(.text.head)
+ }
+ .init : { /* Init code and data                */
+   *(.init.text) *(.cpuinit.text) *(.meminit.text)
+......
+]]></programlisting>	
+可以看到内核的起始地址位于0xC0000000 + 0x00008000，也即通常的3G虚拟地址的0x8000偏移处。ENTRY(stext)指明了程序的入口点子程序名，开始的段名为.text.head，而head.S中就有名为.text.head的段，并且在链接中与它对应的目标文件.o被安排在第一个，并且它位于ENTRY(stext)子程序中。
+<programlisting><![CDATA[
+	.section ".text.head", "ax"
+ENTRY(stext)
+	msr	cpsr_c, #PSR_F_BIT | PSR_I_BIT | SVC_MODE @ ensure svc mode
+						@ and irqs disabled
+	mrc	p15, 0, r9, c0, c0		@ get processor id
+	bl	__lookup_processor_type		@ r5=procinfo r9=cpuid
+	movs	r10, r5				@ invalid processor (r5=0)?
+	beq	__error_p			@ yes, error 'p'
+	bl	__lookup_machine_type		@ r5=machinfo
+	movs	r8, r5				@ invalid machine (r5=0)?
+	beq	__error_a			@ yes, error 'a'
+	bl	__vet_atags
+	bl	__create_page_tables	
+]]></programlisting>
+在zImage解压后的最后跳转指令安排了三个参数，并跳转到此处.text.hea段的第一行代码进行执行。注意此时工作在实模式，并且起始地址为0x50008000。首先msr指令确保进入特权模式并关中断。
+接着通过协处理器CP15获取处理器ID存入r9，并通过__lookup_processor_type寻找CPU类型查找机器信息。
+</para>
+</sect2>
+<sect2><title>检查处理器类型</title>
+<para>
+__lookup_processor_type被定义在head-common.S中。
+<programlisting><![CDATA[
+/*	r9 = cpuid
+ * Returns:
+ *	r3, r4, r6 corrupted
+ *	r5 = proc_info pointer in physical address space
+ *	r9 = cpuid (preserved)
+ */
+__lookup_processor_type:
+	adr	r3, 3f
+	ldmda	r3, {r5 - r7}
+	sub	r3, r3, r7			@ get offset between virt&phys
+	add	r5, r5, r3			@ convert virt addresses to
+	add	r6, r6, r3			@ physical address space
+1:	ldmia	r5, {r3, r4}			@ value, mask
+	and	r4, r4, r9			@ mask wanted bits
+	teq	r3, r4
+	beq	2f
+	add	r5, r5, #PROC_INFO_SZ		@ sizeof(proc_info_list)
+	cmp	r5, r6
+	blo	1b
+	mov	r5, #0				@ unknown processor
+2:	mov	pc, lr
+ENDPROC(__lookup_processor_type)
+......
+	.long	__proc_info_begin
+	.long	__proc_info_end
+3:	.long	.
+	.long	__arch_info_begin
+	.long	__arch_info_end
+]]></programlisting>
+子程序处理前，r9中存放了从协处理器CP15获取的寄存器C0的值，其中包含了处理器ID，通过掩码可以计算出ID。处理过程中将占用r3,r4和r6寄存器。__lookup_processor_type 函数主要是根据从cpu中获得的CPU ID和系统中的proc_info进行匹配，将匹配到的proc_info_list的基地址存到r5中, 0表示没有找到对应的CPU类型。
+由于当前MMU关闭，运行在实模式，所以不能使用绝对地址来直接操作proc_info_list链表，需要进行地址的调整。adr r3,3f是将后面标签为3的地址存储到r3。对应的反汇编代码如下：
+<programlisting><![CDATA[
+......
+c0008344:       c0021e88        .word   0xc0021e88
+c0008348:       c0021ebc        .word   0xc0021ebc
+c000834c:       c000834c        .word   0xc000834c
+c0008350:       c0021ebc        .word   0xc0021ebc
+c0008354:       c0021ef0        .word   0xc0021ef0
+]]></programlisting>
+显然标签3对应c000834c地址，接下来的ldmda将0xc0021e88，0xc0021ebc和0xc0008344对应的值分别加载到r5-r7，也即此时r7为0xc000834c，r5和r6分别对应了__proc_info_begin和__proc_info_end代表的地址。sub	r3, r3, r7是非常关键的一句，r3此时存储的是实际的物理地址，而r7则是标签3所在虚拟地址0xc000834c。sub得到了虚拟地址与物理地址之间的差值，然后使用它来调整所有r5和r6的虚拟地址到物理地址。也即调整后r5和r6分别对应了__proc_info_begin和__proc_info_end的实际加载地址。为了理解ldmia语句，要首先分析一下__proc_info_begin和__proc_info_end包含的内容。
+<programlisting><![CDATA[
+  __proc_info_begin = .;
+   *(.proc.info.init)
+  __proc_info_end = .;
+]]></programlisting>
+所有的CPU类型均被__proc_info_begin和__proc_info_end符号引用到vmlinux中，它们在vmlinux.lds中定义。显然所有的.proc.info.init段被引用到这里，它们均在arch/arm/mm/proc-xxx.S中定义。而xxx是由内核.config中的CONFIG_CPU_XXX决定的。查看该文件夹下的Makefile可以得到：
+<programlisting><![CDATA[
+......
+obj-$(CONFIG_CPU_V6)            += proc-v6.o
+obj-$(CONFIG_CPU_V7)            += proc-v7.o
+......
+]]></programlisting>
+S3C6410定义了CONFIG_CPU_V6，所以查看proc-v6.S中的.proc.info.init段的定义：
+<programlisting><![CDATA[
+        .section ".proc.info.init", #alloc, #execinstr
+
+        /*
+         * Match any ARMv6 processor core.
+         */
+        .type   __v6_proc_info, #object
+__v6_proc_info:
+        .long   0x0007b000
+        .long   0x0007f000
+        .long   PMD_TYPE_SECT | \
+                PMD_SECT_BUFFERABLE | \
+                PMD_SECT_CACHEABLE | \
+                PMD_SECT_AP_WRITE | \
+                PMD_SECT_AP_READ
+        ......
+        .size   __v6_proc_info, . - __v6_proc_info
+]]></programlisting>
+它对应到结构体struct proc_info_list，定义在arch/arm/include/asm/procinfo.h中：
+<programlisting><![CDATA[
+struct proc_info_list {
+        unsigned int            cpu_val;
+        unsigned int            cpu_mask;
+        unsigned long           __cpu_mm_mmu_flags;     /* used by head.S */
+        unsigned long           __cpu_io_mmu_flags;     /* used by head.S */
+        unsigned long           __cpu_flush;            /* used by head.S */
+        const char              *arch_name;
+        const char              *elf_name;
+        unsigned int            elf_hwcap;
+        const char              *cpu_name;
+        struct processor        *proc;
+        struct cpu_tlb_fns      *tlb;
+        struct cpu_user_fns     *user;
+        struct cpu_cache_fns    *cache;
+};
+]]></programlisting>
+到了这里ldmia	r5, {r3, r4}这句就是将__v6_proc_info中的0x0007b000和0x0007f000分别加载到r3和r4，分别代表了ID和掩码。and	r4, r4, r9用掩码来计算出ID，并通过teq	r3, r4进行比较。一旦匹配就通过beq	2f跳转到后面的标签2，这里是一个返回语句mov	pc, lr。如果没有找到，那么r5中的值置0。返回后的指令为movs	r10, r5	和beq	__error_p判断r5是否为0，如果是说明是无效的processor type，跳转到__error_p进行出错处理。
+</para>
+</sect2>
+<sect2 id="mach_type"><title>检查机器类型</title>
+<para>
+__lookup_machine_type利用bootloader传进来的参数依次查询结构表项struct machine_desc xxx，
+这个表项是在编译阶段将#define MACHINE_START(_type,_name)宏定义的结构体struct machine_desc位于__arch_info_begin和__arch_info_end包含的.arch.info.init段。
+<programlisting><![CDATA[
+  __arch_info_begin = .;
+   *(.arch.info.init)
+  __arch_info_end = .;
+]]></programlisting>
+对应的.arch.info.init段定义在arch/arm/include/asm/mach/arch.h中。
+<programlisting><![CDATA[
+/*
+ * Set of macros to define architecture features.  This is built into
+ * a table by the linker.
+ */
+#define MACHINE_START(_type,_name)                      \
+static const struct machine_desc __mach_desc_##_type    \
+ __used                                                 \
+ __attribute__((__section__(".arch.info.init"))) = {    \
+        .nr             = MACH_TYPE_##_type,            \
+        .name           = _name,
+#define MACHINE_END                             \
+};
+]]></programlisting>	
+struct machine_desc则被定义在相同文件中:
+<programlisting><![CDATA[
+struct machine_desc {
+        /*
+         * Note! The first four elements are used
+         * by assembler code in head.S, head-common.S
+         */
+        unsigned int            nr;             /* architecture number  */
+        unsigned int            phys_io;        /* start of physical io */
+        unsigned int            io_pg_offst;    /* byte offset for io 
+                                                * page tabe entry      */
+        const char              *name;          /* architecture name    */
+        unsigned long           boot_params;    /* tagged list          */
+				......
+};
+]]></programlisting>
+实际的机器架构则位于arch/arm/mach-xxx/mach-smdkxxx.c中，对于s3c6410位于arch/arm/mach-s3c6410/mach-smdk6410.c中：
+<programlisting><![CDATA[
+MACHINE_START(SMDK6410, "SMDK6410")
+        /* Maintainer: Ben Dooks <ben@fluff.org> */
+        .phys_io        = S3C_PA_UART & 0xfff00000,
+        .io_pg_offst    = (((u32)S3C_VA_UART) >> 18) & 0xfffc,
+        .boot_params    = S3C64XX_PA_SDRAM + 0x100, 
+
+        .init_irq       = s3c6410_init_irq,
+        .map_io         = smdk6410_map_io,
+        .init_machine   = smdk6410_machine_init,
+        .timer          = &s3c64xx_timer,
+MACHINE_END 
+]]></programlisting>
+扩展开后的机器架构结构体如下，它描述了基本的机器参数：物理io，启动参数，初始化函数和时钟等。
+<programlisting><![CDATA[
+static const struct machine_desc __mach_desc_SMDK6410
+	__used
+	__attribute__((__section__("arch.info.init"))) = 
+	{
+		/* include/asm-arm/mach-types.h: 
+		#define MACH_TYPE_SMDK6410             1626 */
+			.nr = MACH_TYPE_SMDK6410,
+			.name = "SMDK6410",
+	
+		/* Maintainer: Ben Dooks <ben@fluff.org> */
+		.phys_io        = S3C_PA_UART & 0xfff00000,
+		.io_pg_offst    = (((u32)S3C_VA_UART) >> 18) & 0xfffc,
+		.boot_params    = S3C64XX_PA_SDRAM + 0x100, 
+		
+		.init_irq       = s3c6410_init_irq,
+		.map_io         = smdk6410_map_io,
+		.init_machine   = smdk6410_machine_init,
+		.timer          = &s3c64xx_timer,		
+  }
+};
+]]></programlisting>
+__lookup_processor_type的查询的结构为struct proc_info_list
+机器类型确定后即开始解析（__vet_atags）内核参数列表，判断第一个参数类型是不是ATAG_CORE。内核参数列表一般放在内核前面16K地址空间处。列表的表项由struct tag构成，每个struct tag有常见的以下类型：ATAG_CORE、ATAG_MEM、ATAG_CMDLINE、ATAG_RAMDISK、ATAG_INITRD等。
+<programlisting><![CDATA[
+3:    .long       .
+       .long       __arch_info_begin
+       .long       __arch_info_end
+
+       .type       __lookup_machine_type, %function
+__lookup_machine_type:
+       adr  r3, 3b
+       ldmia      r3, {r4, r5, r6}
+       sub  r3, r3, r4                    
+       add r5, r5, r3                     
+       add r6, r6, r3                     
+1:     ldr   r3, [r5, #MACHINFO_TYPE] 
+       teq  r3, r1                          
+       beq 2f                         
+       add r5, r5, #SIZEOF_MACHINE_DESC
+       cmp r5, r6
+       blo  1b
+       mov r5, #0                      
+2:    mov pc, lr//返回
+]]></programlisting>
+adr  r3, 3b将低地址处标签3的地址加载到r3，然后通过ldmia分别将__arch_info_begin和__arch_info_end的地址加载到r5和r6，r4则加载了标签3对应的虚拟地址，接下来调整r5和r6的虚拟地址到物理地址。MACHINFO_TYPE在arch/arm/kernel/asm-offset.c中定义：
+<programlisting><![CDATA[
+  DEFINE(MACHINFO_TYPE,         offsetof(struct machine_desc, nr));
+]]></programlisting>
+ldr r3,[r5, #MACHINFO_TYPE]取出struct machine_desc中的nr(architecture number)装载到r3中。在zImage解压后的最后跳转指令安排了三个参数，其中r1记录了Bootloader传递来的架构编号，它在Bootloader中的
+include/configs/smdk6410.h定义：
+<programlisting><![CDATA[
+#define MACH_TYPE		1626
+]]></programlisting>
+显然这里的MACH_TYPE和MACH_TYPE_SMDK6410是一致的。 teq  r3, r1和beq 2f将匹配成功，若查找完整个__arch_inf表项均未匹配，r5将被置0，mov pc, lr返回到调用函数的下一条指令，__error_a进行出错操作。
+</para>
+</sect2>
+<sect2><title>创建内核段页表</title>
+<para>
+通过前面的两步,我们已经确定了processor type 和 machine type.
+此时,一些特定寄存器的值如下所示:
+<programlisting><![CDATA[
+r8 = machine info       (struct machine_desc的基地址)
+r9 = cpu id             (通过cp15协处理器获得的cpu id)
+r10 = procinfo          (struct proc_info_list的基地址)
+]]></programlisting>
+接下来调用__create_page_tables创建页表。因为要使能MMU进行虚拟内存管理，因此必须创建映射用的页表。页表就是一个地址转换器，保证访问虚拟地址时能从物理地址里取到正确代码。与Bootloader类似，这里使用的是arm的L1主页表，L1主页表也称为段页表(section page table)
+L1 主页表将4 GB 的地址空间分成若干个1 MB的段(section),因此L1页表包含4096个页表项(section entry). 每个页表项是32 bits(4 bytes)。__create_page_tables是一个比较复杂的函数，接下来一一分析：
+<programlisting><![CDATA[
+	/*
+	#define KERNEL_RAM_PADDR	(PHYS_OFFSET + TEXT_OFFSET)
+	.macro	pgtbl, rd
+	ldr	\rd, =(KERNEL_RAM_PADDR - 0x4000)
+	.endm */
+	
+	pgtbl	r4				@ page table address
+]]></programlisting>
+pgtbl宏用来确定页表的起始位置，即在内核所在空间的前16K处。PHYS_OFFSET定义在arch/arm/mach-s3c6400/include/mach/memory.h中，并通过.config中定义CONFIG_ARCH_S3C64XX在编译时包含进来。
+<programlisting><![CDATA[
+#define PHYS_OFFSET     	UL(0x50000000)
+]]></programlisting>
+TEXT_OFFSET则通过arch/arm/Makefile定义。代码段的偏移总是位于内核镜像开始的32K处。
+<programlisting><![CDATA[
+textofs-y       := 0x00008000
+# The byte offset of the kernel image in RAM from the start of RAM.
+TEXT_OFFSET := $(textofs-y)
+]]></programlisting>
+KERNEL_RAM_PADDR定义了内核镜像所在的物理地址，也即0x50000000 + 0x00008000，这与RAM的I/O地址0x50008000是一致的。页表的地址位于内核镜像地址的低地址偏移的16K（0x4000）空间内。
+<programlisting><![CDATA[
+       mov r0, r4
+       mov r3, #0
+       add r6, r0, #0x4000
+1:    str   r3, [r0], #4
+       str   r3, [r0], #4
+       str   r3, [r0], #4
+       str   r3, [r0], #4
+       teq  r0, r6
+       bne  1b
+]]></programlisting>
+r0从r4得到页表的开始地址0x50004000，r6则是页表结束地址0x50008000。接下来的str命令清空页表项，页表项共有16K/4 = 4K项，每项四个字节。页表所在的物理地址空间为[0x50004000, 0x50008000)。以上指令初始化页表为0。
+<programlisting><![CDATA[
+	/*
+	arch/arm/kernel/asm-offsets.c
+	DEFINE(PROCINFO_MM_MMUFLAGS,	offsetof(struct proc_info_list, __cpu_mm_mmu_flags));
+	*/
+	/*
+	 // __cpu_mm_mmu_flags
+  .long   PMD_TYPE_SECT | \
+        PMD_SECT_BUFFERABLE | \
+        PMD_SECT_CACHEABLE | \
+        PMD_SECT_AP_WRITE | \
+        PMD_SECT_AP_READ
+	*/
+	ldr	r7, [r10, #PROCINFO_MM_MMUFLAGS] @ mm_mmuflags
+]]></programlisting>
+上面的指令从proc_info_list结构中的__cpu_mm_mmu_flags处获取MMU的FLAGS信息，注意到PMD开头的宏均定义在arm/include/asm/pgtable-hwdef.h中，可以得到__cpu_mm_mmu_flags的值对应<![CDATA[(2 << 0) | (1 << 2) | (1 << 3) | (1 << 10) | (1 << 11)]]>，这里为0xc0e，注意到bootloader中为0xc1e，实际上bit4在段分页中不起作用。
+<programlisting><![CDATA[
+/*
+ * Hardware page table definitions.
+ *
+ * + Level 1 descriptor (PMD)
+ *   - common
+ */
+#define PMD_TYPE_MASK           (3 << 0)
+#define PMD_TYPE_FAULT          (0 << 0)
+#define PMD_TYPE_TABLE          (1 << 0)
+#define PMD_TYPE_SECT           (2 << 0)
+#define PMD_BIT4                (1 << 4)
+#define PMD_DOMAIN(x)           ((x) << 5)
+#define PMD_PROTECTION          (1 << 9)        /* v5 */
+
+/* - section */
+#define PMD_SECT_BUFFERABLE     (1 << 2)
+#define PMD_SECT_CACHEABLE      (1 << 3)
+#define PMD_SECT_AP_WRITE       (1 << 10)
+#define PMD_SECT_AP_READ        (1 << 11)
+]]></programlisting>
+接下来的指令填充当前内核使用的虚拟地址对应的页表。mov和orr指令是为了得到当前指令的物理地址在1M处的基地址，显然这里应该为0x50000000，orr指令还将该值与r7或运算，是为了加上__cpu_mm_mmu_flags，此时r3的值为0x50000c0e。str指令则是将该表项存储到以r4为起始地址的页表中。索引值为r6 * 4，也即0x500 * 4，这里为0x1400，这里乘以4的原因是由于内存地址编码是按字节为单位，而页表项为4字节。最终的结果是RAM[r4 + r6 * 4] = r3，也即页表中索引为0x1400的页表项的值为0x50000c0e。看起来如下图所示：
+<programlisting><![CDATA[
+       mov r6, pc, lsr #20        
+       orr r3, r7, r6, lsl #20 
+       str r3, [r4, r6, lsl #2]
+]]></programlisting>	
+为内核创建1M的映射空间，这里是按照1：1一致映射，即代码的基地址(高12bit)对应相同的物理块地址。这种映射关系只是在启动阶段使用,它与bootloader中的head.S的段页表实现类似，在跳进start_kernel后会被paging_init()移除。这种映射可以直接利用当前地址的高12bit作为基地址，这种方式很巧妙，因为当前的pc依然在1M空间内，因此高12bit(段基地址)在1M空间内都是相同的。
+<programlisting><![CDATA[
+#define KERNEL_RAM_VADDR	(PAGE_OFFSET + TEXT_OFFSET) // head.S
+#define PAGE_OFFSET       UL(CONFIG_PAGE_OFFSET)			// .config CONFIG_PAGE_OFFSET=0xc0000000
+]]></programlisting>
+<programlisting><![CDATA[
+#define KERNEL_START	KERNEL_RAM_VADDR
+#define KERNEL_END	_end
+	/*
+	 * Now setup the pagetables for our kernel direct
+	 * mapped region.
+	 */
+	add	r0, r4,  #(KERNEL_START & 0xff000000) >> 18
+	str	r3, [r0, #(KERNEL_START & 0x00f00000) >> 18]!
+	ldr	r6, =(KERNEL_END - 1)
+	add	r0, r0, #4
+	add	r6, r4, r6, lsr #18
+]]></programlisting>
+根据KERNEL_START和KERNEL_END计算内核虚拟地址空间对应的页表的开始地址和结束地址并分别存入r3和r6。KERNEL_START的值为0xc0008000，
+<![CDATA[(KERNEL_START & 0xff000000) >> 18]]>的结果为KERNEL_START所在1M内存区域对应的页索引，相当于右移20位然后乘以4，结果为0x3000。<![CDATA[(KERNEL_START & 0x00f00000) >> 18]]>的结果为0，str语句将r3的指0x50000c0e存储到RAM[r4 + 0x3000]处，也即虚拟地址0xc0008000开始的1M地址将通过页表r4 + 0x3000来进行转换。内核的结束地址位为_end - 1, 这里减1的原因是因为_end是location counter，它的地址是内核镜像后面的一个byte的地址。r6的值从pc中取到，所以是物理地址。add	r0, r0, #4调节到下一页表项的地址，接下来的add将r6装入内核镜像结束地址所在的1M空间所对应的页表像对应的地址。接下来的代码将填充所有的页表。并以是否填充到r6作为结束条件。
+<programlisting><![CDATA[	
+1:	cmp	r0, r6
+	add	r3, r3, #1 << 20
+	strls	r3, [r0], #4
+	bls	1b
+]]></programlisting>
+紧接着将r0设置为RAM第1M虚拟地址的页表项地址，也即0x50004000 + (0xc0000000 >> 18)为0x50007000。 r7中存储的是mmu flags，逻辑或上RAM的起始物理地址0x50000000，得到RAM第1MB页表项的值0x50000c0e存入r6，接着将该值存入0x50007000。
+<programlisting><![CDATA[
+	/*
+	 * Then map first 1MB of ram in case it contains our boot params.
+	 */
+	add	r0, r4, #PAGE_OFFSET >> 18
+	orr	r6, r7, #(PHYS_OFFSET & 0xff000000)
+	.if	(PHYS_OFFSET & 0x00f00000)
+	orr	r6, r6, #(PHYS_OFFSET & 0x00f00000)
+	.endif
+	str	r6, [r0]
+	......	
+	mov	pc, lr
+ENDPROC(__create_page_tables)	
+]]></programlisting>	
+最终的页表看起来如下所示：
+<figure><title>内核启动阶段的段页表</title><graphic fileref="images/page_table.gif"/></figure>	
+
+</para>
+</sect2>
+<sect2><title>使能MMU</title>
+<para>
+接下来看stext子程序的后半部分。
+<programlisting><![CDATA[
+	/*
+	 * The following calls CPU specific code in a position independent
+	 * manner.  See arch/arm/mm/proc-*.S for details.  r10 = base of
+	 * xxx_proc_info structure selected by __lookup_machine_type
+	 * above.  On return, the CPU will be ready for the MMU to be
+	 * turned on, and r0 will hold the CPU control register value.
+	 */
+	ldr	r13, __switch_data		@ address to jump to after
+						@ mmu has been enabled
+	adr	lr, __enable_mmu		@ return (PIC) address
+	add	pc, r10, #PROCINFO_INITFUNC
+ENDPROC(stext)
+]]></programlisting>
+当 __create_page_tables 返回之后，此时一些特定寄存器的值如下所示:
+<programlisting><![CDATA[
+r4 = pgtbl              (page table 的物理基地址)
+r8 = machine info       (struct machine_desc的基地址)
+r9 = cpu id             (通过cp15协处理器获得的cpu id)
+r10 = procinfo          (struct proc_info_list的基地址)
+]]></programlisting>
+__switch_data被用来在使能MMU后的跳转地址，lr设置为__enable_mmu的地址。r10存储的是procinfo的基地址, PROCINFO_INITFUNC是在 arch/arm/kernel/asm-offset.c中定义：
+<programlisting><![CDATA[
+ DEFINE(PROCINFO_INITFUNC,     offsetof(struct proc_info_list, __cpu_flush));
+]]></programlisting>	
+__cpu_flush在proc-v6.S中被定义为__v6_setup，所以这里add pc, r10, #PROCINFO_INITFUNC将跳转到__v6_setup函数。
+<programlisting><![CDATA[
+__v6_proc_info:
+        ......
+        .long   PMD_TYPE_SECT | \
+                PMD_SECT_XN | \
+                PMD_SECT_AP_WRITE | \
+                PMD_SECT_AP_READ
+        b       __v6_setup
+        .long   cpu_arch_name
+        .long   cpu_elf_name
+        .long   HWCAP_SWP|HWCAP_HALF|HWCAP_THUMB|HWCAP_FAST_MULT|HWCAP_EDSP|HWCAP_JAVA
+        .long   cpu_v6_name
+        .long   v6_processor_functions
+        .long   v6wbi_tlb_fns
+        .long   v6_user_fns
+        .long   v6_cache_fns
+        .size   __v6_proc_info, . - __v6_proc_info
+]]></programlisting>	
+首先清除(invalidate)Instruction Cache 和 Data Cache，然后清除Write Buffer。如果有配置了MMU,则需要清除Instruction TLB 和Data TLB（Translation lookaside buffer<footnote><para>页表的实现对虚拟内存系统效率是极为关键的。例如把一个寄存器的内容复制到另一个寄存器中的一条指令，在不使用分页时，只需访问内存一次取指令，而在使用分页时需要额外的内存访问去读取页表。而系统的运行速度一般是被cpu从内存中取得指令和数据的速率限制的，如果在每次访问内存时都要访问两次内存会使系统性能降低三分之二。对这个问题的解决，有人提出了一个解决方案，这个方案基于这样的观察：大部分程序倾向于对较少的页面进行大量的访问。因此，只有一小部分页表项经常被用到，其它的很少被使用。采取的解决办法是为计算机装备一个不需要经过页表就能把虚拟地址映射成物理地址的小的硬件设备，这个设备叫做TLB(翻译后援存储器，Translation Lookside Buffer), 有时也叫做相联存储器(associative memory)，它通常在MMU内部。</para></footnote>）。c2是的是页表的基地址(Translation Table Base)，即一级映射描述符表的物理地址，将其清0。将r4中存储的是页表的基地址0x50004000或上TTB_FLAGS存入基址寄存器c2。
+<programlisting><![CDATA[
+__v6_setup:
+				......
+        mov     r0, #0
+        mcr     p15, 0, r0, c7, c14, 0          @ clean+invalidate D cache
+        mcr     p15, 0, r0, c7, c5, 0           @ invalidate I cache
+        mcr     p15, 0, r0, c7, c15, 0          @ clean+invalidate cache
+        mcr     p15, 0, r0, c7, c10, 4          @ drain write buffer
+#ifdef CONFIG_MMU
+        mcr     p15, 0, r0, c8, c7, 0           @ invalidate I + D TLBs
+        mcr     p15, 0, r0, c2, c0, 2           @ TTB control register
+        orr     r4, r4, #TTB_FLAGS
+        mcr     p15, 0, r4, c2, c0, 1           @ load TTB1
+#endif /* CONFIG_MMU */
+]]></programlisting>
+接着将v6_crval装入r5，这里用的都是相对于pc的地址。ldmia将clear=0x01e0fb7f和mmuset=0x00c0387d分别装入r5和r6。然后根据控制寄存器c1中的值首先清除clear指定那些位，然后再或上mmuset指定的位并作为返回值放入r0寄存器。
+<programlisting><![CDATA[
+        adr     r5, v6_crval
+        ldmia   r5, {r5, r6}
+        mrc     p15, 0, r0, c1, c0, 0           @ read control register
+        bic     r0, r0, r5                      @ clear bits them
+        orr     r0, r0, r6                      @ set them
+        mov     pc, lr                          @ return to head.S:__ret
+
+        /*
+         *         V X F   I D LR
+         * .... ...E PUI. .T.T 4RVI ZFRS BLDP WCAM
+         * rrrr rrrx xxx0 0101 xxxx xxxx x111 xxxx < forced
+         *         0 110       0011 1.00 .111 1101 < we want
+         */
+        .type   v6_crval, #object
+v6_crval:
+        crval   clear=0x01e0fb7f, mmuset=0x00c0387d, ucset=0x00c0187c
+]]></programlisting>
+由于此时lr中是__enable_mmu的入口地址，所以接着调用__enable_mmu。如果在.config中配置了CONFIG_ALIGNMENT_TRAP那么将通过设置CP15协处理器的控制寄存器c1中的bit1来使能地址对齐检查。这些标志位在arch/arm/include/asm/system.h中被定义：
+<programlisting><![CDATA[
+/*
+ * CR1 bits (CP#15 CR1)
+ */
+#define CR_M    (1 << 0)        /* MMU enable                           */
+#define CR_A    (1 << 1)        /* Alignment abort enable               */
+#define CR_C    (1 << 2)        /* Dcache enable                        */
+#define CR_W    (1 << 3)        /* Write buffer enable                  */
+#define CR_P    (1 << 4)        /* 32-bit exception handler             */
+......
+]]></programlisting>
+接下来根据CONFIG_CPU_DCACHE_DISABLE，CONFIG_CPU_ICACHE_DISABLE和CONFIG_CPU_BPREDICT_DISABLE配置来禁止D/I Cache和禁止跳转预测功能。
+<programlisting><![CDATA[
+__enable_mmu:
+#ifdef CONFIG_ALIGNMENT_TRAP
+	orr	r0, r0, #CR_A
+#else
+	bic	r0, r0, #CR_A
+#endif
+#ifdef CONFIG_CPU_DCACHE_DISABLE
+	bic	r0, r0, #CR_C
+#endif
+#ifdef CONFIG_CPU_BPREDICT_DISABLE
+	bic	r0, r0, #CR_Z
+#endif
+#ifdef CONFIG_CPU_ICACHE_DISABLE
+	bic	r0, r0, #CR_I
+#endif
+]]></programlisting>	
+CP15中的寄存器c3定义了ARM处理器的16个域的访问权限。设置domain参数到r5，并存储到c3。它用来进行访问控制。c3用来控制对某个域的访问权限，它可以同时提供16个域的权限检查，每个域的权限使用2位表示，当前支持DOMAIN_NOACCESS:禁止访问，DOMAIN_CLIENT访问时检查TLB项的P位，DOMAIN_MANAGER：访问是不检查P位。DOMAIN_KERNEL和DOMAIN_TABLE这里为0，而DOMAIN_USER和DOMAIN_IO为2，所以它们分别使用了第0和2个域权限位。注意到mcr p15, 0, r4, c2, c0, 2 与__v6_setup中的mcr p15, 0, r4, c2, c0, 1的不同。最后的操作数指明了当前操作的是Translation Table Base Register 0还是1。只是Register 0为普通进程所用，而Register 1则为操作系统和I/O地址访问所用。
+<programlisting><![CDATA[
+/*
+	From arch/arm/include/asm/domain.h
+	#ifndef CONFIG_IO_36
+	#define DOMAIN_KERNEL   0
+	#define DOMAIN_TABLE    0
+	#define DOMAIN_USER     1
+	#define DOMAIN_IO       2
+	#else
+	#define DOMAIN_KERNEL   2
+	#define DOMAIN_TABLE    2
+	#define DOMAIN_USER     1
+	#define DOMAIN_IO       0
+	#endif
+	
+	// Domain types	 
+	#define DOMAIN_NOACCESS 0
+	#define DOMAIN_CLIENT   1
+	#define DOMAIN_MANAGER  3
+	
+	#define domain_val(dom,type)    ((type) << (2*(dom)))
+*/
+	mov	r5, #(domain_val(DOMAIN_USER, DOMAIN_MANAGER) | \
+		      domain_val(DOMAIN_KERNEL, DOMAIN_MANAGER) | \
+		      domain_val(DOMAIN_TABLE, DOMAIN_MANAGER) | \
+		      domain_val(DOMAIN_IO, DOMAIN_CLIENT))
+	mcr	p15, 0, r5, c3, c0, 0		@ load domain access register
+	mcr	p15, 0, r4, c2, c0, 0		@ load page table pointer
+	b	__turn_mmu_on
+ENDPROC(__enable_mmu)
+]]></programlisting>
+在一些列的准备工作以后，__enable_mmu真正使能MMU。首先.align 5确保指令对齐于32。r0是cp15控制寄存器的内容, r13存储了MMU使能后需要跳转的虚拟地址(因为完成后mmu已经打开了,均为虚拟地址了)，也即__switch_data。写cp15的控制寄存器c1, 打开mmu，同时会打开cache等(根据r0相应的配置)。读取id寄存器。两个mov	r3, r3的nop操作是非常重要的,因为在打开mmu后,要等到3个cycle之后才会生效，这和arm的流水线有关系。因而,在打开mmu操作之后的加了两个nop操作。第一个mov	r0, r0也是相同的道理。
+<programlisting><![CDATA[
+	.align	5
+__turn_mmu_on:
+	mov	r0, r0
+	mcr	p15, 0, r0, c1, c0, 0		@ write control reg
+	mrc	p15, 0, r3, c0, c0, 0		@ read id reg
+	mov	r3, r3
+	mov	r3, r3
+	mov	pc, r13
+ENDPROC(__turn_mmu_on)
+]]></programlisting>	
+在arch/arm/kernel/head-common.S中定义了__switch_data。首先定义了一些地址参数。其中__mmap_switched是一个标签，将跳转到它直接执行。
+<programlisting><![CDATA[
+	.type	__switch_data, %object
+__switch_data:
+	.long	__mmap_switched
+	.long	__data_loc			 @ r4
+	.long	__data_start		 @ r5
+	.long	__bss_start			 @ r6
+	.long	_end				     @ r7
+	.long	processor_id		 @ r4
+	.long	__machine_arch_type	@ r5
+	.long	__atags_pointer			@ r6
+	.long	cr_alignment			  @ r7
+	.long	init_thread_union + THREAD_START_SP @ sp
+]]></programlisting>
+此处的代码均在MMU开启的状态下执行，可以使用绝对地址，所以是不是位置无关代码(PIC)。__switch_data + 4的地址是__data_loc所在的地址。ldmia指令将从r3地址开始分别取出__data_loc等到r4-r7。这几个符号均在arch/arm/kernel/vmlinux.lds.S 中定义。__data_loc 是数据存放的位置,__data_start 是数据开始的位置，通常它们相等；__bss_start 是bss开始的位置； _end 是bss结束的位置, 也是内核结束的位置。反汇编的结果如下所示：
+<programlisting><![CDATA[
+c0008124 <__switch_data>:
+c0008124:       c000814c        .word   0xc000814c @__mmap_switched
+c0008128:       c04ac000        .word   0xc04ac000 @ r4
+c000812c:       c04ac000        .word   0xc04ac000 @ r5
+c0008130:       c04e1c20        .word   0xc04e1c20 @ r6
+c0008134:       c052fc2e        .word   0xc052fc2e @ r7
+c0008138:       c04e2148        .word   0xc04e2148 @ r4
+c000813c:       c04e2114        .word   0xc04e2114 @ r5
+c0008140:       c00241bc        .word   0xc00241bc @ r6
+c0008144:       c04b0760        .word   0xc04b0760 @ r7
+c0008148:       c04adff8        .word   0xc04adff8 @ sp(r13)
+]]></programlisting>
+接着比较比较__data_loc和__data_start的值，如果不相等,则需要搬运数据从__data_loc将数据搬到__data_start。其中__bss_start是bss的开始的位置，同时它指明了data 结束的位置,因而用其作为判断数据是否搬运完成。出现不等的情况需要了解vmlinux.lds中的.data 段后面的AT(__data_loc) 的意思。AT(__data_loc)说明这部分的内容是在__data_loc中存储的(要注意,储存的位置和链接的位置是可以不相同的).
+<programlisting><![CDATA[
+/*
+ * The following fragment of code is executed with the MMU on in MMU mode,
+ * and uses absolute addresses; this is not position independent.
+ *
+ *  r0  = cp#15 control register
+ *  r1  = machine ID
+ *  r2  = atags pointer
+ *  r9  = processor ID
+ */
+__mmap_switched:
+	adr	r3, __switch_data + 4
+
+	ldmia	r3!, {r4, r5, r6, r7}
+	cmp	r4, r5				@ Copy data segment if needed
+1:	cmpne	r5, r6
+	ldrne	fp, [r4], #4
+	strne	fp, [r5], #4
+	bne	1b
+]]></programlisting>	
+清除 bss 段的内容,将其都置成0，这里使用 _end 来判断 bss 的结束位置。
+<programlisting><![CDATA[
+	mov	fp, #0				@ Clear BSS (and zero fp)
+1:	cmp	r6, r7
+	strcc	fp, [r6],#4
+	bcc	1b
+]]></programlisting>	
+注意到上面的ldmia指令中的"!"号，所以r3已经指向了processor_id所在的地址。这里的ldmia将processor_id等分别加载到r4-r7和sp中。
+<programlisting><![CDATA[
+	ldmia	r3, {r4, r5, r6, r7, sp}
+	str	r9, [r4]			@ Save processor ID
+	str	r1, [r5]			@ Save machine type
+	str	r2, [r6]			@ Save atags pointer
+	bic	r4, r0, #CR_A			@ Clear 'A' bit
+	stmia	r7, {r0, r4}		@ Save control register values
+	b	start_kernel
+ENDPROC(__mmap_switched)
+]]></programlisting>	
+processor_id 和 __machine_arch_type 这两个变量是在 arch/arm/kernel/setup.c 中定义的。将r9中存放的 processor id赋值给变量 processor_id，将r1中存放的 machine type赋值给变量 __machine_arch_type。zImage解压完毕后通过r2传递Uboot传递给内核参数链表的首地址，这里被赋值给了__atags_pointer。接下来清除r0中的CR_A 位并将值存到r4中，并将它们分别保存到cr_alignment和cr_no_alignment中，它是在 arch/arm/kernel/entry-armv.S 中定义的。
+<programlisting><![CDATA[
+......
+cr_alignment:
+        .space  4
+cr_no_alignment:
+        .space  4
+......  
+]]></programlisting>
+到这里就开始跳转到内核的C语言代码start_kernel函数中去执行了，进入了Linux系统的新纪元。
+</para>
+</sect2>
+<sect2><title id="zero_task">0号进程</title>
+<para>
+init_thread_union是init进程的基地址，在arch/arm/kernel/init_task.c中定义。
+<programlisting><![CDATA[
+include/linux/shed.h 
+union thread_union {
+     struct thread_info thread_union;
+     unsigned long stack[THREAD_SIZE/sizeof(long)];
+};
+]]></programlisting>
+进程栈通常和thread_info结构一同保存在一个名为thread_union的联合体中，由于struct thread_info结构体大小小于THREAD_SIZE(8K)，所以它的大小就是8K。thread_info保存了特定于体系架构的汇编语言代码需要访问的那部分进程数据。尽管该结构的定义因不同的处理器而不同，但是它们的功能类似，ARM架构代码如下：
+<programlisting><![CDATA[
+arch/arm/include/asm/thread_info.h
+struct thread_info {
+        unsigned long           flags;          /* low level flags */
+        int                     preempt_count;  /* 0 => preemptable, <0 => bug */
+        mm_segment_t            addr_limit;     /* address limit */
+        struct task_struct      *task;          /* main task structure */
+        struct exec_domain      *exec_domain;   /* execution domain */
+        __u32                   cpu;            /* cpu */
+        __u32                   cpu_domain;     /* cpu domain */
+        struct cpu_context_save cpu_context;    /* cpu context */
+        __u32                   syscall;        /* syscall number */
+        __u8                    used_cp[16];    /* thread used copro */
+        unsigned long           tp_value;
+        struct crunch_state     crunchstate;
+        union fp_state          fpstate __attribute__((aligned(8)));
+        union vfp_state         vfpstate;
+#ifdef CONFIG_ARM_THUMBEE
+        unsigned long           thumbee_state;  /* ThumbEE Handler Base register */
+#endif
+        struct restart_block    restart_block;
+};
+]]></programlisting>
+<itemizedlist>
+<listitem>task是指向进程task_struct的指针。</listitem>
+<listitem>flags保存各种特定于进程的标志，比如TIF_SIGPENDING，TIF_NEED_RESCHED。</listitem>
+<listitem>cpu说明了进程正在其上执行的CPU数目。</listitem>
+<listitem>preempt_count是实现内核抢占所需的计数器。</listitem>
+<listitem>restart_block用于实现信号机制。</listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+arch/arm/include/asm/thread_info.h
+#define INIT_THREAD_INFO(tsk)                                           \
+{                                                                       \
+        .task           = &tsk,                                         \
+        .exec_domain    = &default_exec_domain,                         \
+        .flags          = 0,                                            \
+        .preempt_count  = 1,                                            \
+        .addr_limit     = KERNEL_DS,                                    \
+        .cpu_domain     = domain_val(DOMAIN_USER, DOMAIN_MANAGER) |     \
+                          domain_val(DOMAIN_KERNEL, DOMAIN_MANAGER) |   \
+                          domain_val(DOMAIN_IO, DOMAIN_CLIENT),         \
+        .restart_block  = {                                             \
+                .fn     = do_no_restart_syscall,                        \
+        },                                                              \
+}
+
+union thread_union init_thread_union
+        __attribute__((__section__(".data.init_task"))) =
+                { INIT_THREAD_INFO(init_task) };
+
+/*
+ * Initial task structure.
+ * All other task structs will be allocated on slabs in fork.c
+ */
+struct task_struct init_task = INIT_TASK(init_task);
+]]></programlisting>
+INIT_TASK宏用来定义第一个task_struct进程结构init_task。它被命名为swapper，当时却无法从用户空间看到它，因为0号进程在proc系统下是看不到的，但是对于进程1等进程可以通过/proc/1/comm查看进程名。
+<programlisting><![CDATA[
+include/linux/init_task.h
+#define INIT_TASK(tsk)  \
+{                                                                       \
+        .state          = 0,                                            \
+        .stack          = &init_thread_info,                            \
+        .usage          = ATOMIC_INIT(2),                               \
+        .flags          = PF_KTHREAD,                                   \
+        .lock_depth     = -1,                                           \
+        .prio           = MAX_PRIO-20,                                  \
+        .static_prio    = MAX_PRIO-20,                                  \
+        .normal_prio    = MAX_PRIO-20,                                  \
+        .policy         = SCHED_NORMAL,                                 \
+        .cpus_allowed   = CPU_MASK_ALL,                                 \
+        .mm             = NULL,                                         \
+        .active_mm      = &init_mm,    																	\
+......
+        .comm           = "swapper",                                    \
+......
+]]></programlisting>
+对照 vmlnux.lds.S，可以知道init_task是存放在.data段的开始8k, 并且是THREAD_SIZE(8k)对齐的。
+<programlisting><![CDATA[
+......
+. = ALIGN(8192);
+ __data_loc = .;
+ .data : AT(__data_loc) {
+  __data_start = .; /* address in memory */
+  /*
+                 * first, the init task union, aligned
+                 * to an 8192 byte boundary.
+                 */
+  *(.data.init_task)
+......
+]]></programlisting>
+内核在从汇编语言跳到c语言代码中时，其栈的栈顶就是在arch/arm/kernel/head-common.S中定义的__switch_data设置。显然sp的值为init_thread_union + THREAD_START_SP。THREAD_START_SP定义在arch/arm/include/asm/thread_info.h中。
+<figure><title>内核栈和thread_info布局</title><graphic fileref="images/init_task.gif"/></figure>
+<programlisting><![CDATA[
+#define THREAD_SIZE_ORDER       1
+#define THREAD_SIZE             8192
+#define THREAD_START_SP         (THREAD_SIZE - 8)
+]]></programlisting>
+INIT_TASK宏定义在include/linux/init_task.h中，而init_task就是0号进程，它从运行当前head.S中的第一条指令开始就存在了，只是现在把它当做一个内核线程，以便将来的调度。它具有以下特点：
+<itemizedlist>
+<listitem>进程0是所有其他进程的祖先, 也称作idle进程或swapper进程.</listitem>
+<listitem>进程0是在系统初始化时由kernel自身从无到有创建.</listitem>
+<listitem>进程0的数据成员大部分是静态定义的，即由预先定义好的INIT_TASK, INIT_MM等宏初始化.init_mm等结构体定义在include/linux/init_task.h内，为init_task成员的初始值,分别由对应的初始化宏如INIT_MM等初始化。</listitem>
+</itemizedlist>
+这个vmlinux可执行ELF文件的段分配如下所示，其中栈位于.data开始的8K区域内，而SP则指向0xc04adff8，在压栈的过程中它不断向低地址处增长。
+<programlisting><![CDATA[
+Section Headers:
+  [Nr] Name              Type            Addr     Off    Size   ES Flg Lk Inf Al
+  [ 0]                   NULL            00000000 000000 000000 00      0   0  0
+  [ 1] .text.head        PROGBITS        c0008000 008000 000240 00  AX  0   0 32
+  [ 2] .init             PROGBITS        c0008240 008240 024dc0 00 WAX  0   0 32
+  [ 3] .text             PROGBITS        c002d000 02d000 465d00 00  AX  0   0 32
+  [ 4] .text.init        PROGBITS        c0492d00 492d00 000080 00  AX  0   0  4
+  [ 5] .builtin_fw       PROGBITS        c0493000 493000 000018 00   A  0   0  4
+  [ 6] __ksymtab         PROGBITS        c0493018 493018 0055a8 00   A  0   0  4
+  [ 7] __ksymtab_gpl     PROGBITS        c04985c0 4985c0 002300 00   A  0   0  4
+  [ 8] __ksymtab_strings PROGBITS        c049a8c0 49a8c0 010877 00   A  0   0  1
+  [ 9] __param           PROGBITS        c04ab138 4ab138 000ec8 00   A  0   0  4
+  [10] .data             PROGBITS        c04ac000 4ac000 035a60 00  WA  0   0 32
+  [11] .init.rodata      PROGBITS        c04e1a60 4e1a60 000100 00  WA  0   0  4
+  [12] .bss              NOBITS          c04e1b60 4e1b60 04e48e 00  WA  0   0 32
+]]></programlisting>
+</para>	
+</sect2>
+</sect1>

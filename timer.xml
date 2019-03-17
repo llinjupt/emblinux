@@ -1,0 +1,1348 @@
+<sect1><title>时钟管理</title>
+<sect2><title>基本概念</title>
+<para>驱动数字电路运转是的时钟信号，它就像人的心脏一样，只有时钟的跳动，时序电路才会被驱动，完成计时，同步，计数等，而这些基本的电路跳变动作又被进一步组成更为复杂的计算电路：CPU。ARM CPU核是用时序信号来驱动的，而核心外的大多数子模块：内存控制电路，中断控制器等等同样是由时序信号来驱动的；另外大多数的外部设备也需要时序驱动：内存，磁盘控制器等等。只是它们的不同在于时序信号的频率。</para>
+<para>
+在S3C6410 中生成所需的系统时钟信号，用于CPU 的ARMCLK, AXI/AHB 总线外设的HCLK和APB总线外设的PCLK。所以在S3C6410 中有三个PLL(锁相环电路)。为了进一步了解PLL的原理，先从最原始的时钟发生器晶振说起。
+</para>
+<sect3><title>外部时钟：晶振</title>
+可以说是时钟信号的源头，晶振这种外部器件可以产生稳定的电流波形。晶振是一块特定尺寸的高纯度石英晶体加一些电路的小器材，但是它只需要输入很小的电流就能持续输出稳定的时钟波形。下图中的晶振输出32.768KHz的时钟信号：
+<figure><title>实时时钟电路中的晶振</title><graphic fileref="images/flap.gif"/></figure>
+石英晶体有一个奇特的特性，如果给它施加电压，它就会产生机械振荡；反之，如果给它机械力，它又会产生电流，这种特性叫压电效应。更奇妙的是如在极板间所加的是交变电压，就会产生机械变形振动，同时机械变形振动又会产生交变电场。一般来说，这种机械振动的振幅是比较小的，其振动频率却是很稳定的。当外加交变电压的频率与晶片的固有频率（决定于晶片的尺寸）相等时，机械振动的幅度将急剧增加，这种现象称为压电谐振，因此石英晶振又称为石英晶体谐振器。其特点是频率稳定度很高。石英钟就是使用这个原理制而成。
+<para>
+当晶片产生谐振，就会产生一个稳定的波幅显著的波形，只要持续的供电，这种电能到机械能再到电能的转换就会让波形不断生成。在要求得到高稳定频率的电路中，必须使用石英晶体振荡电路。石英晶体具有高品质因数，振荡电路采用了恒温、 压等方式以后，振荡频率稳定度可以达到 10^(-9)至10^(-11)。可被广泛应用在通讯、时钟、手表、计算机需要高稳定信号的场合。
+</para>
+<para>
+晶振在数字电路的作用就是提供一个基准时间，或者是基本时序信号。数字电路都是按时序的进行工作的，在某个时刻专门完成特定的任务,因此几乎每个电路都有会接收外部时钟信号的管脚，也即电路之间的处理需要同步的时序。如果这个时序信号发生混乱，整个电路就工作不正常了。 在一个整体设备里，如开发板,或 PC 主板，所有电路通常共享一个晶振，便于各部分保持同步。有些通讯系统的基频和射频使用不同的晶振，而通过电子调整频率的方法保持同步。
+</para>
+</sect3>
+<sect3><title>内部时钟：系统主频</title>
+<para>
+一般晶振称为外部时钟，它需要把信号引入数字电路给CPU和其它模块使用，局限于材料的物理特性一般的晶振的频率并不是太高，如S3C2440/S3C6410上的晶振的频率一般是12MHz/20MHz，而对的应的CPU需要使用的时钟信号高达400MHz/600MHz，或者更高。此时，需要把较低的外部时钟信号增加频率到CPU可以接受的频率。这称为<emphasis>倍频</emphasis>。S3C6410的主频最高可到667Mhz.
+</para>
+<para>
+倍频的功能是由一种特殊电路——锁相环电路来完成的。 PLL锁相环电路(Phase-Locked Loop)基本上是一个闭环的反馈控制系统，它可以使PLL 的输出与一个参考信号保持固定的相位关系。PLL在电路中的作用之一是起到倍频的作用：即可以输出系统时钟的固定倍数频率。所以这里它起到倍频器的作用。
+</para>
+<para>
+因为在ARM   CPU启动后，最开始必须做的事情是配置倍频的比率。这样当外部时钟频率一定的情况下，按照倍频的比例,就可以得到CPU的频率，一个系统出于不同目的可能会以不同频率运行，低频运算速度慢但是省电，高频速度快但能耗大。所以可以调节倍频器的倍数来调节CPU的工作频率。但是CPU本身是有一个最高可以支持的频率，如果强行配置成高于该频率的速度运行，就是人们称的超频。有可能带加速CPU老化，运行时散热增加的问题。对于S3C6410来说，这个频率就是ARMCLK。
+</para>
+</sect3>
+<sect3><title>设备频率</title>
+<para>
+在SOC的CPU上，除了CPU内核以外，在一个物理芯片上,还有一些其它模块。以S3C6410为例,它带了I2C,UART,USB HOST等多个模块，这一些模块通过AHB总线与CPU内核相连。它们同样需要时钟信号来驱动。但是ARM的主频信号ARMCLK相对这一些模块来说，显得过高。这个时候CPU内核会提供两种较低频率的时钟信号：HCLK和PCLK两种时钟信号给设备使用。
+</para>
+<para>
+但是对一些低频模块，PCLK的频率仍然显得过高，这时需要模块自己使用<emphasis>分频器</emphasis>(divider)来把频率进一步降低。降到多少值一般取决于软件的需求，因此各个模块的分频参数一般都是可以调整的。因此初始化相关模块时，软件做一件重要事件就是设置分频参数。
+</para>
+<para>
+ 在有一些模块，如果需要编程来设定分频的比率，通常是用Prescaler即预分频因子这个参数来设定分频后的值，假设输入频率是Fin,分频后输出的频率是Fout, 而三者有如下关系
+<programlisting><![CDATA[
+Fout = Fin /(Prescaler + 1 )
+]]></programlisting>	
+在某一些模块里，分频后的频率仍然是太高，可能需要再次分频，这时分频的参数一般称为divider value。这样公式变成
+<programlisting><![CDATA[
+Fout = Fin /(Prescaler + 1 )/divider 
+]]></programlisting>
+倍频和分频的关系就像供电系统：晶振就是发电站，它通过PLL倍频后变成高压电，给CPU传输使用，而模块又使用分频器把高压电降下来给自己使用。
+</para>
+</sect3>
+</sect2>
+<sect2><title>S3C6410 PLL</title>
+<para>S3C6410提供三种PLL:APLL(ARM PLL)，MPLL(Main PLL)和EPLL(Extra PLL)。它们提高不同倍数来给不同模块来使用。理论上PLL可以倍频到1.6GHz.
+<figure id="pll"><title>从PLL 输出时钟发生器</title><graphic fileref="images/time_pll.gif"/></figure>
+S3C6410的时钟源可以使用外部晶振（XXTIpll），也可以使用外部时钟（XEXTCLK）两种方式输入时钟信号。它由跳线OM[0]决定，这一位为0，选择XXTIpll，否则选择XEXTCLK。通常会选择外部晶振。
+</para>
+<para>
+S3C6410的三个PLL：
+<itemizedlist> 
+	<listitem>APLL 用于ARM CPU核心时钟，也即常说的CPU主频。</listitem>
+	<listitem>MPLL 产生主系统时钟，用于操作AXI，AHB 和APB 总线操作。</listitem>
+	<listitem>EPLL 产生的时钟主要用于外设IPs，例如，UART，IIS 和IIC 等等。</listitem>
+</itemizedlist>
+图中的MUX为数据选择器（Multiplexer），指从多路输入信号中有选择性的选中某一路信号送到输出端的组合逻辑电路。图中均为为2选1数据选择器。CLK_SRC 寄存器的最低三位通过控制三组选择器来选择时钟源。当位为0时，则输入时钟绕过PLL电路。APLL的原理图如下所示，MPLL和EPLL原理与此类似。
+<figure><title>APLL发生器原理图</title><graphic fileref="images/pll.gif"/></figure>
+<itemizedlist> 
+	<listitem>预分频器(Pre-Divider)用来对输入的频率Fin进行预先分频，通常这个输入通过晶振XXTIpll来输入。</listitem>
+	<listitem>相位频率检测器(Phase Frequency Detector)用来检测输入时钟信号的相位和频率，它用来控制电荷泵产生对应的电压。</listitem>
+	<listitem>电荷泵(Cahre Pump)用来将输入频率和相位的变化转化为电压的变化。</listitem>
+	<listitem>压控振荡器VOC(Voltage Controlled Oscillator)用来实现电压到频率的转化。</listitem>
+	<listitem>主分频器(Main Divider)用来将输出的频率进行分频，并反馈到相位频率检测器的输入中，所以它起到了倍频的作用。</listitem>
+	<listitem>定位器(Scaler)将VOC输出的频率Fvco再次分频后输出Fout。</listitem>
+</itemizedlist>
+不同的分频器由不同的寄存器或者寄存器位来控制分频的除数，S3C6410提供了34个特殊功能寄存器SFR(Special Functional Register)来控制PLL，时钟发生器，电源管理部分和其他系统的参数。对于PLL来说有七个寄存器来配置它们：
+<programlisting><![CDATA[
+寄存器       地址     读/写       描述                   复位值
+APLL_LOCK 0x7E00_F000 读/写 控制PLL 锁定期APLL。    0x0000_FFFF
+MPLL_LOCK 0x7E00_F004 读/写 控制PLL 锁定期MPLL。    0x0000_FFFF
+EPLL_LOCK 0x7E00_F008 读/写 控制PLL 锁定期EPLL。    0x0000_FFFF
+APLL_CON  0x7E00_F00C 读/写 控制PLL 输出频率 APLL。 0x0190_0302
+MPLL_CON  0x7E00_F00C 读/写 控制PLL 输出频率 MPLL。 0x0214_0603
+EPLL_CON0 0x7E00_F00C 读/写 控制PLL 输出频率 EPLL。 0x0020_0102
+EPLL_CON1 0x7E00_F00C 读/写 控制PLL 输出频率 EPLL。 0x0000_9111
+]]></programlisting>
+从命名可以得知它们分别对应到APLL，MPLL和EPLL。对于APLL和MPLL，PDIV，MDIV和SDIV参数与Fin和Fout的关系有以下公式确定，而对于EPLL则还有其他分频器需要配置。
+<programlisting><![CDATA[
+Fout = MDIV * Fin / (PDIV * 2SDIV)
+这里，用于APLL 和MPLL 的 MDIV，PDIV，SDIV 必须符合以下条件：
+MDIV: 56 ≤ MDIV ≤ 1023
+PDIV: 1 ≤ PDIV ≤ 63
+SDIV: 0 ≤ SDIV ≤ 5
+FVCO (=MDIV X FIN / PDIV): 1000MHz ≤ FVCO ≤ 1600MHz
+FOUT: 31.25MHz ≤ FVCO ≤ 1600MHz
+]]></programlisting>
+APLL和MPLL的控制寄存器对应的各控制比特位是一致的，如下所示：
+<programlisting><![CDATA[
+APLL_CON/MPLL_CON 位       描述                            初始状态
+ENABLE           [31]    PLL 使能控制（0：禁用，1：使能）。 0
+RESERVED        [30:26]      保留。                         0x00
+MDIV            [25:16]  PLL 的M 分频值。                   0x190 / 0x214
+RESERVED        [15:14]      保留。                         0x0
+PDIV            [13:8]   PLL 的P 分频值。                   0x3 / 0x6
+RESERVED        [7:3]        保留。                         0x00
+SDIV            [2:0]    PLL 的S 分频值。                   0x2 / 0x3
+]]></programlisting>
+如果输入时钟频率是12MHz，则APLL_CON / MPLL_CON 的复位值分别产生400MHz 和133MHz 的输出时钟。S3C6410 CPU可以支持最高频率666MHz。对于APLL，MPLL和EPLL的分频值不是在Linux中设定的，而是在系统引导时的Bootloader中设定的，如果不设定，系统将使用复位值。ENABLE位用来使能该PLL，一旦使能，则经历过APLL_LOCK/MPLL_LOCK个周期后APLL/EPLL则输出新时钟信号。
+</para>
+<para>
+<programlisting><![CDATA[
+include/configs/smdk6410.h
+//#define CONFIG_CLK_800_133_66
+//#define CONFIG_CLK_666_133_66
+#define CONFIG_CLK_532_133_66
+......
+//#define CONFIG_CLK_OTHERS
+]]></programlisting>
+Uboot中提供了几类系统时钟的设定，比如设定ARMCLK为532，666等。如果选择了CONFIG_CLK_532_133_66，则意味着配置ARMCLK为532MHz，HCLK为133MHz，PCLK为66MHz。
+<programlisting><![CDATA[
+/* input clock of PLL */
+#define CONFIG_SYS_CLK_FREQ  12000000 /* the SMDK6400 has 12MHz input clock */
+
+#elif defined(CONFIG_CLK_532_133_66) /* FIN 12MHz, Fout 532MHz */
+#define APLL_MDIV       266
+#define APLL_PDIV       3
+#define APLL_SDIV       1
+#define CONFIG_SYNC_MODE
+]]></programlisting>
+这里的分频参数要根据提供的Fin频率和需求的Fout频率来划分。这里依据输入12MHz，输出532MHz来设定这些参数。
+<programlisting><![CDATA[
+#define set_pll(mdiv, pdiv, sdiv)       (1<<31 | mdiv<<16 | pdiv<<8 | sdiv)
+#define APLL_VAL        set_pll(APLL_MDIV, APLL_PDIV, APLL_SDIV)
+]]></programlisting>
+set_pll宏用来生成APLL_CON寄存器所需要的值APLL_VAL，然后在Uboot中对该寄存器设定。
+<programlisting><![CDATA[
+board/samsung/smdk6410/lowlevel_init.S
+  ldr     r1, =APLL_VAL
+  str     r1, [r0, #APLL_CON_OFFSET]
+  ldr     r1, =MPLL_VAL
+  str     r1, [r0, #MPLL_CON_OFFSET]
+]]></programlisting>
+在Uboot的初始化代码中，通过ldr和str指令来设置这些值，对于MPLL_VAL来说如下所示：
+<programlisting><![CDATA[
+/* fixed MPLL 533MHz */
+#define MPLL_MDIV       266
+#define MPLL_PDIV       3
+#define MPLL_SDIV       1
+
+#define MPLL_VAL        set_pll(MPLL_MDIV, MPLL_PDIV, MPLL_SDIV)
+]]></programlisting>
+被推荐APLL/MPLL参数值如下图所示：
+<figure><title>APLL/MPLL参考值</title><graphic fileref="images/time_apll.gif"/></figure>
+EPLL的寄存器控制要复杂一些，它有两个控制寄存器EPLL_CON0和EPLL_CON1，EPLL_CON0和APLL_CON寄存器的功能类似：
+<programlisting><![CDATA[
+EPLL_CON0       位               描述                         初始状态
+ENABLE         [31]        PLL 使能控制（0：禁用，1：使能）。    0
+RESERVED       [30:24]     保留。                                0x00
+MDIV           [23:16]     PLL 的M 分频值。                      0x20
+RESERVED       [15:14]     保留。                                0x0
+PDIV           [13:8]      PLL 的P 分频值。                      0x1
+RESERVED       [7:3]       保留。                                0x00
+SDIV           [2:0]       PLL 的S 分频值。                      0x2
+]]></programlisting>
+<programlisting><![CDATA[
+EPLL_CON1    位     描述             初始状态
+RESERVED  [31:16]  保留。            0x0000
+KDIV      [15:0]   PLL 的K 分频值。  0x9111
+]]></programlisting>
+对于EPLL，PDIV，MDIV，SDIV和KDIV参数与Fin和Fout的关系有以下公式确定：
+<programlisting><![CDATA[
+Fout = (MDIV + KDIV / 2^16) * Fin / (PDIV * 2^SDIV)
+这里，用于APLL 和MPLL 的 MDIV，PDIV，SDIV 必须符合以下条件：
+MDIV: 13 ≤ MDIV ≤ 255
+PDIV: 1 ≤ PDIV ≤ 63
+KDIV: 0 ≤ KDIV ≤ 65535
+SDIV: 0 ≤ SDIV ≤ 5
+Fvco (= (MDIV + KDIV / 2^16) × Fin / PDIV) : 250MHz ≤ Fvco ≤ 600MHz
+Fout : 16MHz ≤ Fout ≤ 600MHz
+]]></programlisting>
+如果设定MDIV为32，PDIV为2，SDIV为1，KDIV为0，则EPLL输出Fout为(32 + 0/2^16) * 12MHz /(2 * 2^1) = 96MHz。对应的汇编代码如下：
+<programlisting><![CDATA[
+ldr     r1, =0x80200203                 /* FOUT of EPLL is 96MHz */
+str     r1, [r0, #EPLL_CON0_OFFSET]
+ldr     r1, =0x0
+str     r1, [r0, #EPLL_CON1_OFFSET]
+]]></programlisting>
+被推荐EPLL参数值如下图所示：
+<figure><title>EPLL参考值</title><graphic fileref="images/time_epll.gif"/></figure>
+当输入频率被改变或是分频值被改变时，PLL要求锁周期。PLL_LOCK寄存器指定这个锁周期。在这个周期内，各个子系统的时钟信号被锁定为0。
+<figure><title>PLL锁定周期示意图</title><graphic fileref="images/time_lock.gif"/></figure>
+<programlisting><![CDATA[
+APLL_LOCK/MPLL_LOCK/EPLL_LOCK    位    描述                                初始状态 
+RESERVED                      [31:16]  保留。                              0x0000
+PLL_LOCKTIME                  [15:0]  在规定期间后产生一个稳定的时钟输出。 0xFFFF
+]]></programlisting>
+PLL_LOCK寄存器指定的锁周期是根据Fin来确定的，锁定周期有一个最小锁定时间，也即设定值必须大于该时间，PLL才有稳定的输出。
+<figure><title>锁定周期</title><graphic fileref="images/time_period.gif"/></figure>
+如图所示，如果Fin为12MHz，则锁定周期数为300 / (1 * 10 ^ 6 / (12 * 10 ^ 6)) = 3600，十六进制表示为0xE10，由于要保证稳定输出，所以给出的最小设定值为0xE11。在Uboot中它们被设置成了最大值0xffff：
+<programlisting><![CDATA[
+include/s3c6410.h
+/* Clock & Power Controller for mDirac3*/
+#define APLL_LOCK_OFFSET        0x00
+#define MPLL_LOCK_OFFSET        0x04
+#define EPLL_LOCK_OFFSET        0x08
+
+board/samsung/smdk6410/lowlevel_init.S
+system_clock_init:
+  ldr     r0, =ELFIN_CLOCK_POWER_BASE     @0x7e00f000
+......
+  mov     r1, #0xff00
+  orr     r1, r1, #0xff
+  str     r1, [r0, #APLL_LOCK_OFFSET]
+  str     r1, [r0, #MPLL_LOCK_OFFSET]
+  str     r1, [r0, #EPLL_LOCK_OFFSET]
+]]></programlisting>
+显然这里的偏移分别对应到APLL_LOCK，MPLL_LOCK和EPLL_LOCK寄存器。这一锁周期对LCD显示器设备有明显影响。
+</para>
+</sect2>
+<sect2><title>S3C6410 CLK</title>
+<para>
+PLL的存在可以获取比输入高数倍的稳定时钟信号，但是ARM CPU的各个子系统IPs和外围设备无法直接使用如此高频率的时钟信号，所以必须进行分频，不同的分频参数将获得不同的时钟信号。而一个PLL的输出可以通过不同的分频器获取多个时钟信号。
+<figure id="gate"><title>ARM 和总线时钟发生器</title><graphic fileref="images/time_clk.gif"/></figure>
+以下的叙述中均假设CLK_SRC均选通PLL时钟信号。
+<itemizedlist> 
+	<listitem>ARMCLK，前面提到S3C6410的APLL用于ARM CPU核心时钟，从图中可以看出，APLL的输出还要经过DIVarm分频器才会得到ARMCLK。</listitem>
+	<listitem>MPLL 产生主系统时钟，用于操作AXI，AHB 和APB 总线操作。所以HCLK，PCLK均有它生成，另外它还负责多媒体解码器CLKJPEG等子系统的时钟信号。MPLL的HCLKX2 时钟提供给两个DDR 控制器，DDR0 和DDR1使用。操作速度可以达到最高266MHz，通过DDR 控制器发送和接收数据。当操作没有被请求时，每个HCLKX2 时钟可独立地屏蔽，以减少多余的功率耗散在时钟分配网络上。</listitem>
+	<listitem>注意其中的XXX_GATE寄存器，它们用于屏蔽或者使能该时钟信号。HCLKX2的分频器为DIVHCLKX2，HCLK和PCLK等的时钟源也取自该分频器的输出，并且有各自的分频器DIVHCLK和DIVPCLK等相对应。它们分别对应AXI/AHB和APB总线时钟。</listitem>	
+</itemizedlist>
+连接到APB总线的外设均从PCLK时钟来再次分频得到对应的所需时钟，比如Camera I/F 时钟发生器，OneNAND 时钟发生器等。
+</para>
+<para>
+EPLL 产生的时钟主要用于非APB总线外设。它产生SCLK信号，但是由于诸多外设对时钟的要求各异，导致大多数外设都需要对SCLK信号再次分频。比如多格式编解码器(MFC)，UART，SPI 和MMC 的时钟发生器等。有些设备可能需要多路时钟信号，此时可能从HCLK和SCLK取多路分频时钟。MFC 在除了HCLK 和 PCLK 外，就还需要一个特殊时钟。
+<figure><title>MFC的特殊时钟信号</title><graphic fileref="images/time_mfc.gif"/></figure>
+显然位数众多的分频器满足了各类总线和设备的需求，但是对这些分频器提供参数设定却需要谨慎从事。好在S3C6410将这些分频器的参数设定统一放在CLK_DIV0，CLK_DIV1 和CLK_DIV2 三个寄存器中进行统一控制。通常这些参数被命名为XXX_RATIO。
+</para>
+<para>
+CLK_DIV0 主要控制系统时钟和多媒体IP 的特殊时钟。APLL 和MPLL 的输出频率是通过ARM_RATIO 和
+MPLL_RATIO 进行分频的。HCLKX2，通过HCLKX2_RATIO 进行分频。由于该时钟是其他操作系统时钟的基础时钟，所以有操作频率的局限性。HCLKX2，HCLK 和PCLK 的最大操作频率分别为266MHz，133MHz 和66MHz。NAND，SECUR
+和JPEG 的时钟操作不能超过66MHz。MFC 和CAM 时钟操作不能操过133MHz。此时钟操作的条件必须满足
+CLK_DIV0 的配置。
+<programlisting><![CDATA[
+CLK_DIV0             位                         描述                         初始状态
+MFC_RATIO          [31:28]                MFC时钟分频器的比例。
+                                    CLKMFC = CLKMFCIN / (MFC_RATIO + 1)        0x0
+JPEG_RATIO         [27:24]     JPEG时钟分频器的比例，必须是奇数值。
+                               换句话说，S3C6410仅支持偶数分频比例。
+                                CLKJPEG = HCLKX2 / (JPEG_RATIO + 1)            0x1
+CAM_RATIO          [23:20]         CAM时钟分频器的比例。
+                                   CLKCAM = HCLKX2 / (CAM_RATIO + 1)           0x0
+SECUR_RATIO        [19:18]       安全时钟分频器的比例，必须是0x1或0x3。 
+                                 CLKSECUR = HCLKX2 / (SECUR_RATIO + 1)         0x1
+ONENAND_RATIO      [17:16]          OneNAND时钟分频器的比例。 
+                               CLKONENAND = HCLKX2 / (ONENAND_RATIO + 1)       0x1
+PCLK_RATIO         [15:12] PCLK 时钟分频器的比例, 它必须是奇数值。换句话说，
+                             S3C6410 仅支持偶数分频比例。PCLK = HCLKX2 /
+                                  (PCLK_RATIO + 1)                             0x1
+HCLKX2_RATIO       [11:9]          HCLKX2时钟分频器的比例。
+                               HCLKX2 = HCLKX2IN / (HCLKX2_RATIO + 1)          0x0
+HCLK_RATIO         [8]             HCLK时钟分频器的比例。
+                               HCLK = HCLKX2 / (HCLK_RATIO + 1)                0
+RESERVED           [7:5]                         保留。                        0x0
+MPLL_RATIO         [4]               DIVMPLL 时钟分频器的比例。
+                               DOUTMPLL = MOUTMPLL / (MPLL_RATIO + 1)          0
+RESERVED           [3]                        保留。                           0
+ARM_RATIO          [2:0]            DIVARM 时钟分频器的比例。 
+                              ARMCLK = DOUTAPLL / (ARM_RATIO + 1)              0x0
+]]></programlisting>
+CLK_DIV1 控制MMC，LCD，TV 定标器和UHOST 时钟。CLK_DIV2 控制SPI，AUDIO，UART和IrDA 时钟。对于这两个寄存器标志的详细描述请参考相关文档。
+</para>
+<para>
+在Uboot中仅仅对当前阶段需要使用的或者需要改变时钟分频参数的寄存器位进行了设置，包括ARM_RATIO，MPLL_RATIO，ONENAND_RATIO，SECUR_RATIO和MFC_RATIO，特殊设备的时钟将由对应的驱动在Linux内核中对其初始化或者再次调整。
+<programlisting><![CDATA[
+include/configs/smdk6410.h
+#if defined(CONFIG_CLK_800_133_66)
+......
+#else
+#define Startup_APLLdiv         0
+#define Startup_HCLKx2div       1
+#endif
+
+
+#define Startup_PCLKdiv         3
+#define Startup_HCLKdiv         1
+#define Startup_MPLLdiv         1
+
+#define CLK_DIV_VAL     ((Startup_PCLKdiv<<12)|(Startup_HCLKx2div<<9)|(Startup_HCLKdiv<<8)
+                        |(Startup_MPLLdiv<<4)|Startup_APLLdiv)
+]]></programlisting>
+CLK_DIV_VAL参数本质上也是受到CONFIG_CLK_532_133_66这个宏来控制的。
+<programlisting><![CDATA[
+include/s3c6410.h
+#define CLK_DIV0_OFFSET         0x20
+#define CLK_DIV1_OFFSET         0x24
+#define CLK_DIV2_OFFSET         0x28
+
+board/samsung/smdk6410/lowlevel_init.S
+ldr     r1, [r0, #CLK_DIV0_OFFSET]      /*Set Clock Divider*/
+bic     r1, r1, #0x30000
+bic     r1, r1, #0xff00
+bic     r1, r1, #0xff
+ldr     r2, =CLK_DIV_VAL
+orr     r1, r1, r2
+str     r1, [r0, #CLK_DIV0_OFFSET]
+]]></programlisting>
+对分频寄存器的操作与PLL的分频设定类似，都会对输出波形产生扰动，所以需要一个稳定周期。这个周期是不固定的，在典型的例子中大约是10～20 时钟周期。因此，如果一些IP 运行，必须特别注意比率改变的周期。否则，IP 操作将失败。所以如果需要改变分频器参数，必须考虑到对外设的影响，通常在外设关闭状态下进行，或者在启动时初始化，以后不再改变。
+<figure><title>系统时钟比例变化时波形</title><graphic fileref="images/time_divide.gif"/></figure>
+ARMCLK的最大频率为666MHz。HCLKX2，HCLK 和PCLK 的最大操作频率分别为266MHz，133MHz 和66MHz。NAND，SECUR
+和JPEG 的时钟操作不能超过66MHz。MFC 和CAM 时钟操作不能操过133MHz。配置分频器参数时必须满足这些要求，尽管ARM内核可以超频运行，但这可能影响CPU的稳定和使用寿命。
+</para>
+</sect2>
+<sect2><title>选择时钟源</title>
+<para>
+回到开始的<xref linkend="pll"/>，数据选择器用来对多路输入信号选择并输出其一，这里它起到对时钟信号的选择作用。S3C6410 有很多时钟源，包括外部振荡器，外部时钟，以及由这些时钟派生出的三个PLL 输出和其他时钟源。CLK_SRC 寄存器用于控制每个时钟分频器的时钟源。它的复位值为0x00000000，这里列出PLL输出控制位：
+<programlisting><![CDATA[
+CLK_SRC   位               描述                     初始状态
+UART_SEL [13]  控制MUXUART0，它是UART的时钟源。
+               (0：MOUTEPLL, 1：DOUTMPLL)            0
+EPLL_SEL [2] 控制MUXEPLL (0：FINEPLL, 1：FOUTEPLL)。 0
+MPLL_SEL [1] 控制MUXMPLL (0：FINMPLL, 1：FOUTMPLL)。 0
+APLL_SEL [0] 控制MUXAPLL (0：FINAPLL, 1：FOUTAPLL)。 0
+]]></programlisting>	
+Uboot中选通了PLL时钟信号的输出，并且根据是否配置UART(Universal Asynchronous Receiver/Transmitter，通用异步接收/发送装置)串口从DIVMPLL的输出取信号，还是从EPLL输出取信号。
+<programlisting><![CDATA[
+#define CLK_SRC_OFFSET          0x1C
+
+board/samsung/smdk6410/lowlevel_init.S
+   ldr     r1, [r0, #CLK_SRC_OFFSET]  /* APLL, MPLL, EPLL select to Fout */
+#if defined(CONFIG_CLKSRC_CLKUART)
+  ldr     r2, =0x2007
+#else
+  ldr     r2, =0x7
+#endif
+  orr     r1, r1, r2
+  str     r1, [r0, #CLK_SRC_OFFSET]
+]]></programlisting>
+</para>
+</sect2>
+<sect2><title>选通时钟源</title>
+<para>
+时钟源选通控制用来屏蔽或者选通时钟信号，通常它位于时钟产生电路的最后一级，只有选通时钟才能使设备正常工作，处于节省电源的考虑，有些设备可能在某些情况下停止运行，此时则可以通过屏蔽操作，来停止该设备时钟。参考<xref linkend="gate"/>，它用门电路来实现。通常被命名为XXX_GATE。S3C6410提供HCLK_GATE，PCLK_GATE和SCLK_GATE三个寄存器控制时钟禁用/使能操作。
+</para>
+<para>
+HCLK_GATE控制所有Ips的HCLK，如果区域为‘1’，则HCLK被提供，否则，HCLK被屏蔽。当S3C6410
+转换成掉电模式时，系统控制器检查一些模块（IROM，MEM0，MEM1和MFC模块）的状态。因此，位25，22，21，0必须为‘1’，以符合掉电的要求。
+</para>
+<para>
+PCLK_GATE 控制所有Ips的PCLK，比如PWM定时器的时钟源。SCLK_GATE控制IP的特殊时钟。
+</para>
+默认情况下这些时钟全部选通。
+</sect2>
+<sect2><title>PWM 定时器</title>
+<para>
+大多数的SOC CPU自身都集成有定时器子系统，它既可以使用定时器作为内部时钟中断使用，也可以根据外部时钟源生成特定的时钟并输出给外设使用。有些外部设备需要特殊的时钟波形：不同的占空比或者包含死区，比如LCD驱动可以调整占空比来调节LCD的周期内发光时间占比，以改变亮度；电机驱动电路通常需要带有死区的时钟信号。PWM(Pulse Width Modulation)脉冲宽度调制则可以满足这些需求。S3C6410提供了5个包含PWM调制功能的32位定时器(Timer)。
+</para>
+<para>
+<figure><title>PWM定时器</title><graphic fileref="images/time_pwm.gif"/></figure>
+如图所示，S3C6410的定时器有5个，定时器0和1具有死区调制功能，是有外部输出的，2、3和4仅供CPU内部使用，不具有死区调制功能，也没有输出管脚。PWM定时器主要有以下部分组成：
+<itemizedlist> 
+	<listitem>2个8位预分频器(Prescaler)，它的输入源为PLCK。输出被作为PWM定时器的第一级。</listitem>
+	<listitem>5个时钟分频器和5个多路选择器(MUX)提供第二级输出。</listitem>
+	<listitem>5个独立的逻辑控制电路，可以用来配置自动装载和时钟周期。</listitem>
+	<listitem>2个逆变器(Inverter)，用于控制输出时钟信号的电平极性，作用在0和1定时器。</listitem>
+	<listitem>1个死区发生器，它作用在0和1定时器。</listitem>	
+</itemizedlist>
+针对这些组成部分，S3C6410提供了18个特殊功能寄存器来对它们的参数进行配置。另外PWM定时器有两种工作模式：自动重新载入模式；一次触发脉冲模式。
+</para>
+<sect3><title>PWM 分频器</title>
+PWM有2个预分频器，通过TCFG0寄存器可以配置它们的参数。
+<programlisting><![CDATA[
+TCFG0              位    读/写            描述                     初始状态
+Reserved         [31:24]   读             保留                      0x00
+Dead zone length [23:16]  读/写         死区的长度                  0x00
+Prescaler 1      [15:8]   读/写  预定标器1 的值，用于定时器2、3 和4 0x01
+Prescaler 0      [7:0]    读/写  预定标器0 的值，用于定时器0 和1    0x01
+]]></programlisting>	
+8位预分频器可以设置的范围值为0~255。预分频器的输出为：
+<programlisting><![CDATA[
+预分频器输出 = PCLK / (预分频器值 + 1)
+预分频器值 = 0~255
+]]></programlisting>	
+预分频器的作用显然是在降频，以备提供合适的低频给外部设备或者内部时钟中断使用。PWM同时在预分频器后内置了对应的5路分频器，但是它们不可调节，仅有固定的5路输出。
+<programlisting><![CDATA[
+分频器值 = 1，2，4，8，16。
+]]></programlisting>
+分频器的输出为：
+<programlisting><![CDATA[
+分频器输出 = PCLK / (预分频器值 + 1) / 分频器值
+]]></programlisting>
+另外注意死区长度也通过TCFG0寄存器设定。当PLCK频率为66MHz时，分频器分辨率范围：
+<figure><title>分频器分辨率范围</title><graphic fileref="images/time_pre.gif"/></figure>
+</sect3>
+<sect3><title>PWM 多路选择器</title>
+5个6选1多路选择器的输入除了来自分频器的5路信号外，还有一路来自XpwmECLK管脚提供的外部时钟信号。通过TCFG1寄存器可以配置它们的参数。 TCFG1使用每4位控制选择器的输出。
+<programlisting><![CDATA[
+[3:0]		MUX0
+[7:4]		MUX1
+[11:8]		MUX2
+[15:12]		MUX3
+[19:16]		MUX4
+[3:0]		MUX5
+]]></programlisting>
+其中这些位的值只接受如下设置：
+<programlisting><![CDATA[
+值	选择信号			DMA通道选择([23:20])
+0000	1/1			无选择
+0001	1/2			INT0
+0010	1/4			INT1
+0011	1/8			INT2
+0100	1/16			INT3
+0101	TCLK外部时钟			INT4
+]]></programlisting>
+TCFG1的[31:24]位保留，[23:20]位用来控制DMA请求通道。
+</sect3>
+<sect3><title>定时器中断</title>
+每个定时器在计数至0后，都可以发出中断请求。它们对应到中断控制器和中断号如下所示：
+<programlisting><![CDATA[
+中断号	中断源		组
+23	INT_ TIMER0 VIC0
+24	INT_ TIMER1 VIC0
+25	INT_ TIMER2 VIC0
+27	INT_ TIMER3 VIC0
+28	INT_ TIMER4 VIC0
+]]></programlisting>
+定时器中断控制和状态寄存器TINT_CSTAT用来配置PWM定时器的中断开关，以及清除中断状态位。
+<programlisting><![CDATA[
+TINT_CSTAT                  位    读/写    描述                初始状态
+Reserved                 [31:10]    读    保留位                0x00000
+Timer 4 Interrupt Status [9]      读/写  定时器4 中断状态位。
+                                        通过写‘1’清除该位       0x0
+/*[8/7/6/5] 分别对应定时器3/2/1/0*/
+Timer 4 interrupt Enable [4]      读/写  定时器4 中断启动。
+                                         1：启动 0：禁止        0x0
+/*[3/2/1/0] 分别对应定时器3/2/1/0*/
+]]></programlisting>
+另外如果要在中断控制器接收到这些中断请求则需要开启中断号对应的中断使能位。中断使能寄存器VICINTENABLE完成该配置，其中没一位对应相应的中断号。但是对中断的清除需要通过VICINTENCLEAR 寄存器用来清除中断使能。详情参考中断章节。
+<programlisting><![CDATA[
+寄存器            地址    读/写       描述             复位值
+VIC0INTENABLE 0x7120_0010 读/写 中断使能寄存器(VIC0) 0x0000_0000
+VIC1INTENABLE 0x7130_0010 读/写 中断使能寄存器(VIC1) 0x0000_0000
+]]></programlisting>
+</sect3>
+<sect3><title>定时器设置</title>
+<para>
+对定时器的设置是对PWM操作的核心，通过配置逻辑控制电路参数，可以改变定时器的定时周期。除定时器4以外，每个逻辑控制电路都包含包括TCNTBn, TCNTn, TCMPBn和TCMPn四个寄存器。包含B的寄存器为定时器计数缓冲寄存器，可被外部操作，不含B的寄存器为内部寄存器，不可直接操作。当定时器倒计时为0时，TCNTn为0，如果开始了自动重装功能，TCNTBn和TCMPBn将被装入TCNTn和TCMPn寄存器。另外如果中断信号启动，则将产生中断请求。
+</para>
+PWM定时器有两种工作模式：自动重新载入模式；一次触发脉冲模式。在设置完B寄存器后，如果设置手动更新为1，对应内部寄存器立即装载，否则只有在该周期完成后才会装载。
+<figure><title>定时器装载</title><graphic fileref="images/time_load.gif"/></figure>
+对于上图中的设置，解释如下：
+<itemizedlist> 
+<listitem>1.设置TCNTBn=3，TCMPBn=1。</listitem>
+<listitem>2.设置自动装载(auto-reload)=1，手动更新(manual update)=1。当设置手动更新为1时，TCNTBn和TCMPBn将被装载到TCNTn和TCMPn。</listitem>
+<listitem>3.设置TCNTBn=2，TCMPBn=0。下一个计时周期将使用该参数。</listitem>
+<listitem>4.设置自动装载(auto-reload)=1，手动更新(manual update)=0。
+如果在此时设置manual update=1, TCNTn将被直接改为2，TCMPn也将被改为0。
+中断将在2个周期后产生，而非3个周期后了。
+另外必须设置自动装载(auto-reload=1)，否则在当前周期计数完后，刚刚设置的TCNTBn=2将不起作用。</listitem>
+<listitem>5.设置该计时器的start=1开始计时。TCNTn的值将递减。当TCNTn的值递减到TCMPn时，TOUTn输出的电平将发生跳变，而当TCNTn为0时，产生中断。如果auto-reload，重新从B寄存器装载，继续计时循环。</listitem>
+<listitem>6.在计时器被停止之前，TCNTn周而复始的装载和递减。</listitem>
+</itemizedlist>
+对寄存器的开启，和自动装载和手动更新的配置均通过TCON定时控制寄存器进行：
+<programlisting><![CDATA[
+TCON                          位    读/写        描述                            初始值
+Reserved                   [31:23]   读          保留。                          0x000d
+Timer 4 Auto Reload on/off  [22]    读/写   确定定时器4 的自动加载开/关。
+                                            0 = One-shot 1 = 间隔模式(自动重载)  0x0
+Timer 4 Manual Update(note) [21]    读/写   确定定时器4 的手动更新。 
+                                            0 = 无操作 1 = 更新 TCNTB4           0x0
+Timer 4 Start/Stop          [20]    读/写   确定定时器4 的启动/停止。
+                                            0 = 停止 1 = 开始定时器4             0x0
+/* for 3/2/1 */
+Reserved                    [7:5]   读/写        保留。                          0x0
+Dead Zone Enable            [4]     读/写   确定死区的操作。
+                                            0 = 禁用 1 = 使能                    0x0
+/* for 0 */
+]]></programlisting>
+注意到TCON寄存器还用来控制死区的使能。
+</sect3>
+<sect3><title>定时器脉宽调制</title>
+<para>
+TCNTBn 决定PWM的频率，TCMPBn 则决定了PWM 的值，或者说占空比。占空比(Duty Ratio)是指在一串理想的脉冲周期序列中（如方波），正脉冲的持续时间与脉冲总周期的比值。 在不启用逆变器时，占空比的值为TCMPBn/TCNTBn。
+<figure><title>占空比示意图</title><graphic fileref="images/time_dr.gif"/></figure>
+<programlisting><![CDATA[
+TCNTBn                   位   读/写     描述                        初始状态
+Timer n Count Buffer   [31:0] 读/写 设置定时器0 的计数缓冲器的值。 0x00000000
+TCMPBn
+Timer n Compare Buffer [31:0] 读/写 设置定时器0 的比较缓冲器的值。 0x00000000
+]]></programlisting>
+定时器的当前计数器TCNTn值从TCNTOn定时器计数观察寄存器中读取。如果读TCNTBn，这个值是下一个定时器的重载值不是当前计数器的状态。
+<programlisting><![CDATA[
+TCNTOn                      位   读/写     描述                        初始状态
+Timer n Count Observation [31:0]   读  设置定时器1 计数观察寄存器的值 0x00000000
+]]></programlisting>
+</para>
+</sect3>
+<sect3><title>启动定时器</title>
+<para>
+由于TCNTn在定时器开始时并没有值，所以需要首先设置它。此时，必须开启手动更新位。采取的步骤如下：
+<itemizedlist> 
+<listitem>写入初始值到TCNTBn和TCMPBn中。</listitem>
+<listitem>设定当前定时器的手动更新位。</listitem>
+<listitem>根据需要设置逆变器。</listitem>
+<listitem>设置相应定时器的起始位以启动定时器，根据需要清空手动更新位。</listitem>
+</itemizedlist>
+</para>
+</sect3>
+</sect2>
+<sect2><title>时钟源初始化</title>
+<para>
+由于S3C6410 CPU拥有非常复杂的PLL系统，以及其下对应的各类时钟，内核对它的定时器的实现相对复杂，由于该CPU沿革了S3C24xx系列以及S3C6400 CPU的硬件设计，在时钟控制这方面更是如此，所以内核代码对相关驱动进行了共用。与时钟控制相关的代码位于以下几个目录内：
+<programlisting><![CDATA[
+arch/arm/
+        |-plat-s3c/
+        |-plat-s3c64xx/
+        \-mach-s3c6410/
+]]></programlisting>	
+<itemizedlist> 
+	<listitem>mach-s3c6410目录放置了上s3c6410特有的初始化代码，并且也是所有初始化函数的入口。</listitem>
+	<listitem>plat-s3c64xx提供了s3c64xx系列共用的代码。</listitem>
+	<listitem>plat-s3c则是从更高层次封装了s3c系列的共用代码。</listitem>
+</itemizedlist>
+从以上目录可以看出，对于共用的代码调用流程通常从mach-s3c6410开始，然后经过最高层的plat-s3c封装，最终到达plat-s3c64xx。对于定时器来说，代码流程如下所示：
+<programlisting><![CDATA[
+paging_init-->devicemaps_init-->mdesc->map_io
+]]></programlisting>
+<figure><title>内核定时器实现</title><graphic fileref="images/time_call.gif"/></figure>
+位于MACHINE_START和MACHINE_END宏定义了一个struct machine_desc结构，其成员涵盖了一个“机器”所有的初始化代码。而注册时钟的函数通常不规范的放置在io_map函数指针指向的函数中，这里就是smdk6410_map_io。
+<programlisting><![CDATA[
+MACHINE_START(SMDK6410, "SMDK6410")
+  ......
+	.init_irq	= s3c6410_init_irq,
+	.map_io		= smdk6410_map_io,
+	.init_machine	= smdk6410_machine_init,
+	.timer		= &s3c64xx_timer,
+MACHINE_END
+]]></programlisting>
+s3c24xx_init_clocks就是真正的初始化入口，显然S3C6410重用了S3C24xx的时钟注册代码。
+<programlisting><![CDATA[
+arch/arm/mach-s3c6410/mach-smdk6410.c
+
+static void __init smdk6410_map_io(void)
+{
+	......
+	s3c64xx_init_io(smdk6410_iodesc, ARRAY_SIZE(smdk6410_iodesc));
+	s3c24xx_init_clocks(12000000);
+	......
+}
+]]></programlisting>
+该函数xtal参数用来指定PLL晶振源的频率。如果xtal为0，则使用默认值12MHz，否则使用指定的频值。
+<programlisting><![CDATA[
+arch/arm/plat-s3c/init.c
+
+void __init s3c24xx_init_clocks(int xtal)
+{
+	if (xtal == 0)
+		xtal = 12*1000*1000;
+
+	if (cpu->init_clocks == NULL)
+		panic("s3c24xx_init_clocks: cpu has no clock init\n");
+	else
+		(cpu->init_clocks)(xtal);
+}
+]]></programlisting>
+为了复用代码，同时支持多个S3C64xx系列的CPU，内核定义了struct cpu_table结构对不同的CPU架构的初始化代码进行了封装：
+<programlisting><![CDATA[
+arch/arm/plat-s3c64xx/cpu.c
+
+static const char name_s3c6400[] = "S3C6400";
+static const char name_s3c6410[] = "S3C6410";
+static struct cpu_table cpu_ids[] __initdata = {
+	{
+	  .init_clocks	= s3c6400_init_clocks,
+    ......
+		.name		= name_s3c6400,
+	}, {
+		.init_clocks	= s3c6410_init_clocks,
+		......
+		.name		= name_s3c6410,
+	},
+};
+]]></programlisting>
+可以看到S3C6410对应的init_clocks转向了针对该CPU的时钟初始化函数s3c6410_init_clocks。它就是所有时钟初始化的封装函数。
+<programlisting><![CDATA[
+void __init s3c6410_init_clocks(int xtal)
+{
+	s3c24xx_register_baseclocks(xtal);
+	s3c64xx_register_clocks();
+	s3c6400_register_clocks();
+	s3c6400_setup_clocks();
+#ifdef CONFIG_HAVE_PWM
+	s3c24xx_pwmclk_init();
+#endif
+}
+]]></programlisting>
+</para>
+<sect3><title>时钟注册</title>
+从函数调用图可以看出，无论是哪一个名字含register的函数，它们最终都是调用的s3c24xx_register_clock。
+<programlisting><![CDATA[
+arch/arm/plat-s3c/clock.c
+int s3c24xx_register_clock(struct clk *clk)
+{
+	clk->owner = THIS_MODULE;
+
+	if (clk->enable == NULL)
+		clk->enable = clk_null_enable;
+  ......
+	spin_lock(&clocks_lock);
+	list_add(&clk->list, &clocks);
+	spin_unlock(&clocks_lock);
+
+	return 0;
+}
+]]></programlisting>
+该函数的参数为struct clk结构体，在大多数体系架构上都存在该结构，只是根据硬件时钟系统的复杂度，它的成员的多少也不同。该函数只是将clk参数放入名为clocks的链表中的表头，它受clocks_lock保护。
+<programlisting><![CDATA[
+arch/arm/plat-s3c/clock.c
+static LIST_HEAD(clocks);
+DEFINE_SPINLOCK(clocks_lock);
+]]></programlisting>
+注意到该结构由SPIN锁锁定，所示该结构体是CPU公用的，也即系统中的时钟均统一放在该链表内管理。
+<programlisting><![CDATA[
+arch/arm/plat-s3c/include/plat/clock.c
+struct clk {
+	struct list_head      list;
+	struct module        *owner;
+	struct clk           *parent;
+	const char           *name;
+	int		      id;
+	int		      usage;
+	unsigned long         rate;
+	unsigned long         ctrlbit;
+
+	int		    (*enable)(struct clk *, int enable);
+	int		    (*set_rate)(struct clk *c, unsigned long rate);
+	unsigned long	    (*get_rate)(struct clk *c);
+	unsigned long	    (*round_rate)(struct clk *c, unsigned long rate);
+	int		    (*set_parent)(struct clk *c, struct clk *parent);
+};
+]]></programlisting>
+clk结构体在S3C6410 CPU的实现上要相对复杂，其中提供了时钟使能，速率设定等相关函数指针，对于一些简单的CPU则没有如此复杂。通过s3c24xx_register_clock内核注册了将近70个struct clk结构体，但是并没有启用它们，在接下来的时钟启用中只有部分时钟会被启用。
+<para>
+s3c64xx_register_clocks函数注册了两类时钟，它们分别定义在数组init_clocks和init_clocks_disable中，init_clocks默认就是启用的，而init_clocks_disable中的定时器则需要初始化时显示调用clk的enable成员函数。其中init_clocks中提供了PWM定时的定义：
+<programlisting><![CDATA[
+{
+  .name           = "timers",
+  .id             = -1,
+  .parent         = &clk_p,
+  .enable         = s3c64xx_pclk_ctrl,
+  .ctrlbit        = S3C_CLKCON_PCLK_PWM,
+},
+]]></programlisting>
+</para>
+</sect3>
+<sect3><title>时钟启用</title>
+相对于时钟的注册，时钟的使能只使用了一个函数s3c6400_setup_clocks来完成：
+<programlisting><![CDATA[
+arch/arm/plat-s3c64xx/s3c6400-clock.c
+void __init_or_cpufreq s3c6400_setup_clocks(void)
+{
+  ......
+	clkdiv0 = __raw_readl(S3C_CLK_DIV0);
+]]></programlisting>
+尽管在Bootloader内和系统的早期阶段，可以直接对硬件地址进行操作，但是在内存管理子系统初始化后，均是通过虚地址来完成操作的。所以这里的S3C_CLK_DIV0是虚控地址。smdk6410_map_io在初始化时钟函数前，首先调用了s3c64xx_init_io，在该函数中完成了实虚地址的映射过程。而时钟控制寄存器是系统控制寄存器的一部分，所以其虚地址位于S3C_VA_SYS之后的4K映射区内。0x7E00F000~0x7E00FFFF用于系统控制器。
+<programlisting><![CDATA[
+#define S3C64XX_PA_SYSCON       (0x7E00F000)
+
+arch/arm/mach-s3c6410/mach-smdk6410.c
+static struct map_desc s3c_iodesc[] __initdata = {
+	{
+		.virtual	= (unsigned long)S3C_VA_SYS,
+		.pfn		= __phys_to_pfn(S3C64XX_PA_SYSCON),
+		.length		= SZ_4K,
+		.type		= MT_DEVICE,
+	}, {
+......
+]]></programlisting>
+时钟控制寄存器的虚地址定义如下。
+<programlisting><![CDATA[
+arch/arm/plat-s3c64xx/include/plat/regs-clock.h
+#define S3C_CLKREG(x)		(S3C_VA_SYS + (x))
+......
+#define S3C_CLK_SRC		  S3C_CLKREG(0x1C)
+#define S3C_CLK_SRC2    S3C_CLKREG(0x10C)
+#define S3C_CLK_DIV0		S3C_CLKREG(0x20)
+#define S3C_CLK_DIV1		S3C_CLKREG(0x24)
+#define S3C_CLK_DIV2		S3C_CLKREG(0x28)
+#define S3C_CLK_OUT		  S3C_CLKREG(0x2C)、
+......
+]]></programlisting>
+以上虚拟地址的定义与物理地址的定义是保持映射一致的。
+<programlisting><![CDATA[
+寄存器        地址    读/写         描述           复位值
+......
+CLK_SRC  0x7E00_F01C  读/写 选择时钟源。          0x0000_0000
+CLK_DIV0 0x7E00_F020 读/写 设置时钟分频器的比例。 0x0105_1000
+CLK_DIV1 0x7E00_F024 读/写 设置时钟分频器的比例。 0x0000_0000
+CLK_DIV2 0x7E00_F028 读/写 设置时钟分频器的比例。 0x0000_0000
+CLK_OUT  0x7E00_F02C 读/写 选择时钟输出。         0x0000_0000
+......
+]]></programlisting>
+<itemizedlist> 
+	<listitem>首先读取S3C_CLK_DIV0存入clkdiv0。</listitem>
+	<listitem>clk_get通过时钟名称来查找clocks链表，并返回struct clk结构指针。</listitem>
+	<listitem>clk_get_rate则通过struct clk指针提供的参数返回clk->rate，如果该值为0，则尝试计算clk->get_rate并返回，否则有父节点，则返回parent的频率值，否则返回0。</listitem>
+	<listitem>clk_put调用module_put以增加clk->owner的引用值，只有该时钟通过模块方式加载时才会进行此步操作。</listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+	xtal_clk = clk_get(NULL, "xtal");
+
+	xtal = clk_get_rate(xtal_clk);
+	clk_put(xtal_clk);
+]]></programlisting>
+<itemizedlist> 
+	<listitem>s3c6400_get_epll通过xtal时钟提供的频率值(通常为12MHz)计算EPLL的输出频率。这里系统提供了PLL控制器S3C_EPLL_CON0和S3C_EPLL_CON1，从S3C_EPLL_CON0计算出mdiv，pdiv和sdiv值。从S3C_EPLL_CON1计算出kdiv。根据这四个参数然后根据公式Fout = (MDIV + KDIV / 2^16) * Fin / (PDIV * 2^SDIV)计算出EPLL的输出频率。</listitem>	
+	<listitem>s3c6400_get_pll则根据公式Fout = MDIV * Fin / (PDIV * 2SDIV)来计算出mpll和apll的输出频率。</listitem>
+	<listitem>通过clkdiv0获取CLK_DIV0寄存器的值，然后GET_DIV获取S3C6410_CLKDIV0_ARM_MASK指定的ARM_RATIO字段，所以fclk才是真正的CPU主频。</listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+#define GET_DIV(clk, field) ((((clk) & field##_MASK) >> field##_SHIFT) + 1)
+
+	epll = s3c6400_get_epll(xtal);
+	mpll = s3c6400_get_pll(xtal, __raw_readl(S3C_MPLL_CON));
+	apll = s3c6400_get_pll(xtal, __raw_readl(S3C_APLL_CON));
+
+	fclk = apll / GET_DIV(clkdiv0, S3C6410_CLKDIV0_ARM);
+]]></programlisting>
+<itemizedlist> 
+	<listitem>查看S3C_OTHERS寄存器的S3C_OTHERS_SYNCMUXSEL_SYNC位，查看当前系统SYNCMUX时钟源是apll还是mpll。</listitem>
+	<listitem>根据时钟源计算和S3C6400_CLKDIV0_HCLK2计算出HCLKx2。</listitem>
+  <listitem>最后根据hclkx2和HCLK，PCLK的分频，计算出hclk和pclk。</listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+	if(__raw_readl(S3C_OTHERS) & S3C_OTHERS_SYNCMUXSEL_SYNC) {
+		/* Synchronous mode */
+		hclkx2 = apll / GET_DIV(clkdiv0, S3C6400_CLKDIV0_HCLK2);
+	} else {
+		/* Asynchronous mode */
+		hclkx2 = mpll / GET_DIV(clkdiv0, S3C6400_CLKDIV0_HCLK2);
+	}
+
+	hclk = hclkx2 / GET_DIV(clkdiv0, S3C6400_CLKDIV0_HCLK);
+	pclk = hclkx2 / GET_DIV(clkdiv0, S3C6400_CLKDIV0_PCLK);
+]]></programlisting>
+当APLL为532MHz时，系统的各类时钟频率值如下：
+<programlisting><![CDATA[
+APLL    532MHz    FCLK    532MHz
+
+MPLL    532MHz    HCLK    133MHz
+                  HCLKx2  266MHz
+                  PCLK    66MHz
+EPLL    24MHz
+]]></programlisting>
+<itemizedlist>
+	<listitem>将PLL频率赋值给对应的结构体。注意clk_fout_mpll就是clk_mpll。它们是系统最终会用到的时钟或者时钟源。</listitem>
+	<listitem>将CLK频率赋值给对应的结构体。</listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+#define clk_fout_mpll	clk_mpll
+	clk_fout_mpll.rate = mpll;
+	clk_fout_epll.rate = epll;
+	clk_fout_apll.rate = apll;
+
+	clk_hx2.rate = hclkx2;
+	clk_h.rate = hclk;
+	clk_p.rate = pclk;
+	clk_f.rate = fclk;
+	
+	/* set Perphial MUX and DIV */
+]]></programlisting>
+<itemizedlist> 
+	<listitem>如果需要调整外设的时钟频率，可以在这里添加，比如MMC控制器的。</listitem>	
+</itemizedlist>
+<programlisting><![CDATA[	
+	for (ptr = 0; ptr < ARRAY_SIZE(init_parents); ptr++)
+		s3c6400_set_clksrc(init_parents[ptr]);
+]]></programlisting>
+<itemizedlist> 
+	<listitem>init_parents定义了系统中所需要的时钟的时钟源和输出规则。注册时时钟被链接入clocks链表，s3c6400_set_clksrc则建立了它们之间的联系。</listitem>
+</itemizedlist>
+<figure><title>时钟源与时钟关系</title><graphic fileref="images/time_src.gif"/></figure>
+本质上除了最终的时钟以外，时钟就是作为时钟源而使用，在S3C6410系统上，由于有PLL，并且它们产生的时钟可以自由设置分频和多路选择，所以为了记录当前时钟和它的时钟源，以及从时钟源获取该时钟的规则，系统引入了clksrc_clk和clk_sources结构体。clksrc_clk对当前时钟和时钟源以及规则进行了封装，而它的sources成员则指向了一个clk_sources指针。clk_sources则是对struct clk成员数组的封装。
+</sect3>
+<para>
+</para>
+</sect2>
+<sect2><title>内核计时体系</title>
+Linux总是会选择一个时钟源来同步整个内核区域中的时间记录，统计内核相关信息，并为内核软件定时器提供参考基本。内核通过将相关的处理函数和数据结构的更新动作挂载到该时钟时钟源的中断上，以达到这些目的。内核使用了相当多的数据结构以达到清晰而有层次感的处理。
+<sect3><title>jiffies</title>
+jiffies变量是一个计数器，用来记录子系统启动以来发生的时钟中断数。每次时钟中断发生称为一个节拍，此时jiffies就会加1。早些时候它是一个32位的变量，因此每个大约50天就会产生回绕。所以内核为了在回绕时能够比较将某个值与jiffies比较，以确定时间的先后，内核提供了如下几个宏来进行操作，注意：它们都是存在回绕问题的。
+	<table><title>时间比较宏</title>
+	<tgroup cols="2">
+	<thead><row><entry>宏</entry><entry>说明</entry></row></thead>
+	<tbody>
+	<row><entry>time_after(a, b)</entry><entry>如果时间a在时间b之后(a &lt; b)，则返回1。</entry></row>
+	<row><entry>time_after_eq(a, b)</entry><entry>如果时间a不在时间b之前(a &lt;= b)，则返回1。</entry></row>
+	<row><entry>time_before(a, b)</entry><entry>如果时间a在时间b之前(a &gt; b)，则返回1。</entry></row>
+	<row><entry>time_before_eq(a, b)</entry><entry>如果时间a不在时间b之后(a &gt;= b)，则返回1。</entry></row>
+	<row><entry>time_in_range(a, b, c)</entry><entry>如果a在[b, c]时间间隔内，返回1。</entry></row>	
+	</tbody>
+	</tgroup>
+	</table>
+另外内核为了方便与jiffies的比较，封装了一下四个宏，它们只需要提供一个参数。
+<programlisting><![CDATA[
+#define time_is_before_jiffies(a) time_after(jiffies, a)
+#define time_is_after_jiffies(a) time_before(jiffies, a)
+#define time_is_before_eq_jiffies(a) time_after_eq(jiffies, a)
+#define time_is_after_eq_jiffies(a) time_before_eq(jiffies, a)
+]]></programlisting>	
+尽管以上宏可以很好的处理时间比较，但是有些时候需要自系统启动以来产生的系统节拍数的精确值，所以当前jiffies变量通过链接器被转换为一个64位计数器的低32位。对于64的系统来说jiffies就是对jiffies_64的直接引用。
+<programlisting><![CDATA[
+arch/arm/kernel/vmlinux.lds.S
+#ifndef __ARMEB__
+jiffies = jiffies_64;
+#else
+jiffies = jiffies_64 + 4;
+#endif
+]]></programlisting>
+u64实际上就是unsigned long long int类型。由于在32位的体系架构上不能自动地对64为的变量进行访问，在每次执行对64位数的访问时，需要一些同步机制来保证当两个32位的计数器的值在被读取时这个64位的计数器不会被更新，所以在32位系统上读取64位的数要慢。
+<programlisting><![CDATA[
+kernel/timer.c
+u64 jiffies_64 __cacheline_aligned_in_smp = INITIAL_JIFFIES;
+EXPORT_SYMBOL(jiffies_64);
+]]></programlisting>
+get_jiffies_64函数用来读取jiffies_64的值，显然对于64位系统来说，就是读取jiffies。
+<programlisting><![CDATA[
+include/linux/jiffies.h
+#if (BITS_PER_LONG < 64)
+u64 get_jiffies_64(void);
+#else
+static inline u64 get_jiffies_64(void)
+{
+	return (u64)jiffies;
+}
+#endif
+]]></programlisting>
+这里的xtime_lock是一个顺序锁，用来保护64位的读操作：该函数一直读jiffies_64变量知道确认该变量并没有同时被其他内核控制路径更新时才完成读取并返回。所以如果要更新jiffies_64变量，必须首先使用write_seqlock来锁定xtime_lock，并在更新完毕后使用write_sequnlock取消锁定。对jiffies_64的操作也会同时更新jiffies的值，因为它对应jiffies_64的低32位。
+<programlisting><![CDATA[
+kernel/time.c
+#if (BITS_PER_LONG < 64)
+u64 get_jiffies_64(void)
+{
+	unsigned long seq;
+	u64 ret;
+
+	do {
+		seq = read_seqbegin(&xtime_lock);
+		ret = jiffies_64;
+	} while (read_seqretry(&xtime_lock, seq));
+	return ret;
+}
+EXPORT_SYMBOL(get_jiffies_64);
+#endif
+]]></programlisting>
+就时间间隔而言，jiffies在多数时候并不被直接使用，而是要转换成人们更熟悉的时间单位：微秒和毫秒，内核封装了这些函数：
+<programlisting><![CDATA[
+kernel/time.c
+unsigned int jiffies_to_msecs(const unsigned long j);
+unsigned int jiffies_to_usecs(const unsigned long j);
+unsigned long msecs_to_jiffies(const unsigned int m);
+unsigned long usecs_to_jiffies(const unsigned int u);
+]]></programlisting>
+</sect3>
+<sect3><title>HZ</title>
+Linux核心每隔固定周期会发出时钟中断，HZ是用来定义每一秒有几次中断。举例来说，HZ为1000，代表每秒有1000次时钟中断。 HZ可以通过配置选项在编译时设定：
+<programlisting><![CDATA[
+.config
+CONFIG_HZ=200
+]]></programlisting>
+在特定体系架构的代码中，将CONFIG_HZ转化给宏HZ。系统中的将直接引用HZ。
+<programlisting><![CDATA[
+arch/arm/include/asm/param.h
+# define HZ  CONFIG_HZ       /* Internal kernel timer frequency */
+]]></programlisting>
+通常，较高的HZ值使得系统具有更好的交互性和响应速度，特别是，每个时钟中断时都会调用调度器。但是，由于定时器中断例程调用得频繁，内核的一般性开销也会随之增加。所以，较大的HZ值比较适合交互系统，而较低的HZ值更适合于服务器等非交互系统。
+</sect3>
+<sect3><title>xtime</title>
+xtime变量存放当前时间和日期，它是一个timespec类型的数据结构，并且对其到16字节，这加速了对其的访问。
+<programlisting><![CDATA[
+kernel/timekeeping.c
+struct timespec xtime __attribute__ ((aligned (16)));
+]]></programlisting>
+timespec结构体有两个成员组成：
+<itemizedlist> 
+	<listitem>tv_sec 存放自1970年1月1日(UTC)凌晨依赖经过的描述。</listitem>
+	<listitem>tv_nsec 存放自上一秒开始经过的纳秒数。(0 ~ 999 999 999)</listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+include/linux.h
+struct timespec {
+	time_t	tv_sec;		/* seconds */
+	long	tv_nsec;	/* nanoseconds */
+};
+]]></programlisting>
+xtime通常每次时钟中断时被更新一次。用户程序从xtime变量或得当前时间和日期，内核也经常引用它，比如在更新文件节点时间戳时被引用。<?linebreak?>
+xtime_lock顺序锁消除了对xtime变量的同时访问而可能发生的竞争条件。一般而言，这个顺序锁用来定义计时子体系中的一些临界区。
+</sect3>
+<sect3><title>内核时钟源</title>
+内核时钟源和硬件的时钟源是两回事，内核时钟源是一种软件时钟源。内核时钟源基于硬件时钟源，它选取硬件时钟源之一作为内核时钟源的触发基础，所以除了触发的基础是由硬件时钟通过时钟中断来提供外，内核完全通过软件来模拟内核时钟源。相关的代码均位于kernel/time中。它是内核的走时和守时系统。
+<programlisting><![CDATA[
+......
+	timekeeping_init();
+	time_init();
+]]></programlisting>
+在start_kernel中调用timekeeping_init函数来初始化内核时钟源。并且它的初始化早于硬件时钟中断的初始化。
+<programlisting><![CDATA[
+include/linux/clocksource.h
+struct clocksource {	
+	char *name;
+	struct list_head list;
+	int rating;
+	cycle_t (*read)(void);
+	cycle_t mask;
+	u32 mult;
+	u32 mult_orig;
+	u32 shift;
+	unsigned long flags;
+	cycle_t (*vread)(void);
+	void (*resume)(void);
+	......
+]]></programlisting>
+<itemizedlist> 
+<listitem>name 字符串描述该时钟源，比如“jiffies”。</listitem>
+<listitem>list 用于将时钟源链接在一个双向内核链表中。</listitem>
+<listitem>相关体系的代码可能会定义一个时钟源并通过clocksource_register注册到内核，内核自身也会定义一个名为jiffies的时钟源，但是并不是所有时钟的精确性都很好，rating就是用来指明时钟源的质量。值越小，表明质量越差，rating在100~199之间，表明可以使用，但质量不好，rating在300~399区间，表示时钟源相当快速且准确。在1~99之间说明它非常差，仅仅用于启动期间。超过400的rating指明这是一个完美的时钟源。</listitem>
+<listitem>read 函数指针用于读取时钟周期的当前计数值。并非所有时钟的read返回值都使用统一的计时单位，因为需要单独转化为纳秒值。</listitem>
+</itemizedlist>
+<itemizedlist> 
+	<listitem>read_persistent_clock有体系架构代码定义，如果没有则被系统统一定义为返回0值得空函数。通常它用来读取rtc的秒值，ARM上并没有定义该函数。</listitem>
+	<listitem>write_seqlock_irqsave用来锁定xtime_lock并禁止中断。</listitem>
+	<listitem>ntp_init 用来初始化内核时间同步协议相关的数据结构。</listitem>	
+</itemizedlist>
+<programlisting><![CDATA[
+kernel/time/timekeeping.c
+
+struct clocksource *clock;
+void __init timekeeping_init(void)
+{
+	unsigned long flags;
+	unsigned long sec = read_persistent_clock();
+
+	write_seqlock_irqsave(&xtime_lock, flags);
+
+	ntp_init();
+
+	clock = clocksource_get_next();
+	clocksource_calculate_interval(clock, NTP_INTERVAL_LENGTH);
+	clock->cycle_last = clocksource_read(clock);
+
+	xtime.tv_sec = sec;
+	xtime.tv_nsec = 0;
+	set_normalized_timespec(&wall_to_monotonic,
+		-xtime.tv_sec, -xtime.tv_nsec);
+	update_xtime_cache(0);
+	total_sleep_time = 0;
+	write_sequnlock_irqrestore(&xtime_lock, flags);
+}
+]]></programlisting>
+内核在此时就使用默认定义的jiffies时钟源，它的rating被定义为1，显然优先级相当的低。在time_init中特定架构代码可以通过clocksource_register注册单独的时钟源到内核时钟源链表clocksource_list中，并在时钟中断时，更新时钟源。
+<programlisting><![CDATA[
+static cycle_t jiffies_read(void)
+{
+        return (cycle_t) jiffies;
+}
+
+struct clocksource clocksource_jiffies= {
+        .name           = "jiffies",
+        .rating         = 1, /* lowest valid rating*/
+        .read           = jiffies_read,
+        .mask           = 0xffffffff, /*32bits*/
+        .mult           = NSEC_PER_JIFFY << JIFFIES_SHIFT, /* details above */
+        .mult_orig      = NSEC_PER_JIFFY << JIFFIES_SHIFT,
+        .shift          = JIFFIES_SHIFT,
+};
+]]></programlisting>
+在内核初始化阶段clocksource_get_next会获取clocksource_jiffies。clocksource_calculate_interval用来计算每个TICK给xtime变量  tv_nsec成员增加的纳秒值。clock用来指向最终选定的内核时钟源。
+<itemizedlist>
+<listitem>clocksource_read通过调用时钟源的read函数获取最后一次更新的时钟源的值。</listitem>
+<listitem>接下来初始化墙上时间xtime。</listitem>
+<listitem>set_normalized_timespec把xtime上的时间调整成struct timespec格式，并保存到wall_to_monotonic变量中。</listitem>
+<listitem>update_xtime_cache用来更新名为xtime_cache的timespec结构体，time系统调用根据它来获取系统时间。</listitem>
+<listitem>total_sleep_time用来统计时钟源的挂起时间，比如系统睡眠后可以停止该时钟源以节约电能。</listitem>
+<listitem>最后调用write_sequnlock_irqrestore用来解锁，并恢复中断。</listitem>
+</itemizedlist>
+clocksource_jiffies中的read成员的返回值需要转化为纳秒值。为此，需要分别使用mult和shift成员来乘/右移返回的时钟周期数。如下：
+<programlisting><![CDATA[
+include/linux/clocksource.h
+static inline s64 cyc2ns(struct clocksource *cs, cycle_t cycles)
+{
+	u64 ret = (u64)cycles;
+	ret = (ret * cs->mult) >> cs->shift;
+	return ret;
+}
+]]></programlisting>
+cycle_t被定义为u64，如果时钟不提供64位是兼职，那么mask指定了一位掩码，用于选择适当的比特位。CLOCKSOURCE_MASK宏用于针对给定的比特位数构建适当的掩码。分析cyc2ns的实现似乎先左移JIFFIES_SHIFT然后再右移相同的位数，似乎没有意义。但由于NTP代码不接受0位的移位操作，所以这里使用了这种奇怪的方法。<?linebreak?><?linebreak?>
+NSEC_PER_JIFFY的定义抱哈了预处理符号ACTHZ。虽然HZ表示编译时选择的低分辨率计时频率，但系统实际上提供的计时频率会因硬件的选择而有轻微差别。ACTHZ表示时钟实际上运行的频率。
+<figure><title>时钟事件与时钟源</title><graphic fileref="images/time_event.gif"/></figure>
+尽管多数情况下系统可以使用默认的jiffies时钟源，但是对于要求更高精确度的时钟事件，需要在系统clock直接读取硬件时钟的寄存器值，来直接确定jiffies。所以对于jiffies_64的更新会出现两种可能：
+<itemizedlist> 
+	<listitem>直接使用默认的“jiffies”时钟源，此时在时钟中断中直接调用do_timer并首先更新jiffies_64，并在接下来的update_wall_time中调用时钟源的读函数，这里就是jiffies_read，显然读取的就是刚刚更新过的jiffies_64值。但是在这个过程中时钟事件明显出现了延时，这是由于对于纳秒级的事件已经出现了很大的延迟。</listitem>
+	<listitem>直接注册硬件时钟源，此时中断发生后通过中断事件调用tick_handle_periodic或者之间调用时钟事件函数。tick_handle_periodic是必须要其中一个时钟中断处理函数来调用的，因为它调用do_timer来实现系统时钟的更新，但是在update_wall_time中读取的当前时钟寄存器的值，所以延时就非常小了，系统时钟就相当精确。</listitem>
+</itemizedlist>
+S3C6410的时钟源驱动中没有提供时钟事件设备的支持。支持的系统要开启CONFIG_GENERIC_CLOCKEVENTS和CONFIG_GENERIC_TIME配置参数。
+</sect3>
+</sect2>
+<sect2><title>时钟中断注册</title>
+<para>
+内核定时器的实现对于S3C6410来说就是PWM定时器单元的配置和应用。内核的时钟中断也是有该定时器单元提供的。在注册定时器时提到PWM定时器被注册为：
+<programlisting><![CDATA[
+#define S3C_CLKCON_PCLK_PWM		(1<<7)
+{
+  .name           = "timers",
+  .id             = -1,
+  .parent         = &clk_p,
+  .enable         = s3c64xx_pclk_ctrl,
+  .ctrlbit        = S3C_CLKCON_PCLK_PWM,
+},
+]]></programlisting>
+S3C_CLKCON_PCLK_PWM指定了HCLK_GATE的第7位，它用来控制选通PWM的时钟源为PCLK。
+</para>
+<sect3><title>定时器初始化</title>
+在最高层的板级抽象结构封装中的成员timer指向了初始化内核定时器的相关函数，对于S3C6410来说就是s3c64xx_timer函数。
+<programlisting><![CDATA[
+MACHINE_START(SMDK6410, "SMDK6410")
+  ......	
+	.timer		= &s3c64xx_timer,
+MACHINE_END
+]]></programlisting>
+timer定义了一个全局的系统滴答时钟(Tick Timer)，对于ARM来说，它被声明为struct sys_timer类型。
+<programlisting><![CDATA[
+struct sys_timer {
+	struct sys_device	dev;
+	void			(*init)(void);
+	void			(*suspend)(void);
+	void			(*resume)(void);
+#ifndef CONFIG_GENERIC_TIME
+	unsigned long		(*offset)(void);
+#endif
+};
+]]></programlisting>
+<itemizedlist> 
+	<listitem>init用于初始化内核jiffy时钟源。它必须在中断子系统已初始化完毕，但是内核依然禁用中断时调用。</listitem>
+	<listitem>suspend用于挂起时钟中断，通常在所有设备都停止工作后，在禁中断中调用该函数，通常为NULL。</listitem>
+	<listitem>resume用于恢复挂起的时钟中断。</listitem>
+	<listitem>offset返回上次中断后经过的时间，单位为微妙。</listitem>	
+</itemizedlist>
+<programlisting><![CDATA[
+struct sys_timer s3c64xx_timer = {
+	.init		= s3c64xx_timer_init,
+	.offset		= s3c2410_gettimeoffset,
+	.resume		= s3c64xx_timer_setup
+};
+]]></programlisting>
+初始化函数是对s3c64xx_timer_setup的封装，另外就是安装了用于更新jiffy的IRQ_TIMER4中断函数s3c2410_timer_irq。
+<programlisting><![CDATA[
+static void __init s3c64xx_timer_init(void)
+{
+	s3c64xx_timer_setup();
+	setup_irq(IRQ_TIMER4, &s3c2410_timer_irq);
+}
+]]></programlisting>
+在中断初始化函数s3c64xx_init_irq，将IRQ_TIMER4中断源设置为IRQ_TIMER4_VIC，处理函数s3c_irq_demux_timer4完成了跳转。
+<programlisting><![CDATA[
+	set_irq_chained_handler(IRQ_TIMER4_VIC, s3c_irq_demux_timer4);
+]]></programlisting>	
+最终通过generic_handle_irq调用中断ISR处理函数。所以这里的IRQ_TIMER4实际上是二级中断号。
+<programlisting><![CDATA[
+static void s3c_irq_demux_timer(unsigned int base_irq, unsigned int sub_irq)
+{
+	generic_handle_irq(sub_irq);
+}
+
+static void s3c_irq_demux_timer4(unsigned int irq, struct irq_desc *desc)
+{
+	s3c_irq_demux_timer(irq, IRQ_TIMER4);
+}	
+]]></programlisting>
+s3c64xx_timer_setup完成了PWM时钟源的初始化工作：
+<programlisting><![CDATA[
+#define S3C2410_TCFG0	      S3C_TIMERREG(0x00)
+#define S3C2410_TCFG1	      S3C_TIMERREG(0x04)
+#define S3C2410_TCON	      S3C_TIMERREG(0x08)
+
+static void s3c64xx_timer_setup (void)
+{
+......
+	tcnt = TICK_MAX;  /* default value for tcnt */
+
+	/* read the current timer configuration bits */
+
+	tcon = __raw_readl(S3C2410_TCON);
+	tcfg1 = __raw_readl(S3C2410_TCFG1);
+	tcfg0 = __raw_readl(S3C2410_TCFG0);
+]]></programlisting>
+<itemizedlist> 
+	<listitem>首先读取PWM定时器的控制寄存器TCON。</listitem>
+	<listitem>读取配置寄存器TCFG0和TCFG1。</listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+	/* configure the system for whichever machine is in use */
+	if (use_tclk1_12()) {
+......
+	} else {
+		unsigned long pclk;
+		struct clk *clk;
+
+		clk = clk_get(NULL, "timers");
+
+		clk_enable(clk);
+		pclk = clk_get_rate(clk);
+
+		timer_usec_ticks = timer_mask_usec_ticks(6, pclk);
+
+		tcfg1 &= ~S3C2410_TCFG1_MUX4_MASK;
+		tcfg1 |= S3C2410_TCFG1_MUX4_DIV1;
+
+		tcfg0 &= ~S3C2410_TCFG_PRESCALER1_MASK;
+		tcfg0 |= (6) << S3C2410_TCFG_PRESCALER1_SHIFT;
+
+		tcnt = (pclk / 7) / HZ;
+	}
+]]></programlisting>
+只有特定的系统才会满足use_tclk1_12，而这里将会进入else分支。
+<itemizedlist> 
+	<listitem>clk_get通过PWM时钟源timers获取对应的clk结构体。在本节的开始已经介绍了该结构体的成员。</listitem>
+	<listitem>clk_enable通过调用成员enable函数指针，使能时钟源。显然这里就是s3c64xx_pclk_ctrl函数。</listitem>
+	<listitem>clk_get_rate获取当前的PWM时钟源的频率值。</listitem>
+	<listitem>timer_mask_usec_ticks计算1微秒包含的TICK数目存入timer_usec_ticks。timer_usec_ticks被用在timer_ticks_to_usec函数中，实现TICK数向微秒的转换。</listitem>
+</itemizedlist>
+HZ是1秒内发生的时钟中断数，而TICK是HZ的倒数，即时钟中断的间隔时间。
+<programlisting><![CDATA[
+#define S3C2410_TCFG1_MUX4_DIV1	  (0<<16)
+#define S3C2410_TCFG1_MUX4_MASK	  (15<<16)
+
+#define S3C2410_TCFG_PRESCALER1_MASK (255<<8)
+#define S3C2410_TCFG_PRESCALER1_SHIFT (8)
+]]></programlisting>
+<itemizedlist>
+	<listitem>tcfg1通过S3C2410_TCFG1_MUX4_MASK和S3C2410_TCFG1_MUX4_DIV1设置选择定时器4的MUX输入为0b0000，也即1/1分频。</listitem>
+	<listitem>tcfg0通过S3C2410_TCFG_PRESCALER1_MASK和S3C2410_TCFG_PRESCALER1_SHIFT设置预分频器的值为6，显然它控制定时器2，3和4。</listitem>
+	<listitem>根据HZ和pclk计算PWM的周期数。</listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+	tcnt--;
+......
+	__raw_writel(tcfg1, S3C2410_TCFG1);
+	__raw_writel(tcfg0, S3C2410_TCFG0);
+
+	timer_startval = tcnt;
+	__raw_writel(tcnt, S3C2410_TCNTB(4));
+	
+	tcon &= ~(7<<20);
+	tcon |= S3C2410_TCON_T4RELOAD;
+	tcon |= S3C2410_TCON_T4MANUALUPD;
+
+	__raw_writel(tcon, S3C2410_TCON);
+	__raw_writel(tcnt, S3C2410_TCNTB(4));
+	__raw_writel(tcnt, S3C2410_TCMPB(4));
+]]></programlisting>
+<itemizedlist> 
+	<listitem>由于自动装载时，计数器可以技术到0，所以这里的tcnt再减1。</listitem>
+	<listitem>写回配置信息到对应的寄存器。</listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+	/* start the timer running */
+	tcon |= S3C2410_TCON_T4START;
+	tcon &= ~S3C2410_TCON_T4MANUALUPD;
+	__raw_writel(tcon, S3C2410_TCON);
+
+	/* Timer interrupt Enable */
+	__raw_writel(__raw_readl(S3C64XX_TINT_CSTAT) | S3C_TINT_CSTAT_T4INTEN , S3C64XX_TINT_CSTAT);
+]]></programlisting>
+<itemizedlist> 
+	<listitem>使能PWM时钟4。</listitem>
+	<listitem>通过CSTAT寄存器使能时钟中断。</listitem>
+</itemizedlist>
+注意，此时PWM时钟4已开始向中断控制器提交中断信号，中断控制器也已被初始化，但是此时是禁中断的。
+</sect3>
+<sect3><title>安装时钟中断</title>
+时钟中断的处理结构irqaction为s3c2410_timer_irq。
+<programlisting><![CDATA[
+setup_irq(IRQ_TIMER4, &s3c2410_timer_irq);
+]]></programlisting>
+这里的处理函数是s3c2410_timer_interrupt。
+<programlisting><![CDATA[
+static struct irqaction s3c2410_timer_irq = {
+	.name		= "S3C2410 Timer Tick",
+	.flags		= IRQF_DISABLED | IRQF_TIMER | IRQF_IRQPOLL,
+	.handler	= s3c2410_timer_interrupt,
+};
+]]></programlisting>
+该函数是对timer_tick的封装，
+<programlisting><![CDATA[
+static irqreturn_t s3c2410_timer_interrupt(int irq, void *dev_id)
+{
+	timer_tick();
+	return IRQ_HANDLED;
+}
+]]></programlisting>
+timer_tick是一个非常复杂的函数，其中包括更新jiffies，检测定时器等一些列动作。
+</sect3>
+<sect3><title>安装时钟中断</title>
+尽管板级代码提供了timer成员，那么它是何时被引用的呢？在内核第一个初始化函数start_kernel中调用了time_init：
+<programlisting><![CDATA[
+arch/arm/kernel/time.c
+struct sys_timer *system_timer;
+void __init time_init(void)
+{
+#ifndef CONFIG_GENERIC_TIME
+	if (system_timer->offset == NULL)
+		system_timer->offset = dummy_gettimeoffset;
+#endif
+	system_timer->init();
+}
+]]></programlisting>
+system_timer被定义成了全局变量，它是何时被赋值的呢？在架构独立的总函数setup_arch时，它被赋值：
+<programlisting><![CDATA[
+  init_arch_irq = mdesc->init_irq;
+  system_timer = mdesc->timer;
+  init_machine = mdesc->init_machine;
+]]></programlisting>
+显然这里system_timer调用的init就是s3c64xx_timer_setup。time_init的调用晚于init_IRQ，这是必须的，所有需要中断子系统的其他子系统都需要满足这个要求。
+</sect3>
+</sect2>
+<sect2><title id="time_intr">时钟中断处理</title>
+<programlisting><![CDATA[
+void timer_tick(void)
+{
+	profile_tick(CPU_PROFILING);
+	do_leds();
+	do_set_rtc();
+	write_seqlock(&xtime_lock);
+	do_timer(1);
+	write_sequnlock(&xtime_lock);
+#ifndef CONFIG_SMP
+	update_process_times(user_mode(get_irq_regs()));
+#endif
+}
+]]></programlisting>
+timer_tick是内核时间中断处理的核心函数，它完成了以下重要功能：
+<itemizedlist> 
+	<listitem>profile_tick通常为空函数，只有定义了CONFIG_PROFILING才有效。它为内核代码监管器采集数据。监管期确定内核的“热点”——执行频率最频繁的内核代码片段，以得到优化代码的方向和重点。</listitem>
+	<listitem>do_leds 用来每隔HZ/2个时钟中断周期后，点亮指示时间活动的LED灯，只有定义了CONFIG_LEDS_TIMER才有效。</listitem>
+	<listitem>do_set_rtc 用来每隔11分钟更新rtc的时间，只有提供了set_rtc的钩子函数，才会更新。</listitem>
+	<listitem>write_seqlock和write_sequnlock用来锁定xtime_lock，以保证对时间更新的互斥执行。</listitem>
+	<listitem>do_timer负责全系统范围的，全局性的任务：更新jiffies的值，处理进程统计。在SMP上，通常会选择一个特定的CPU来执行这两个任务，而不涉及其他CPU。</listitem>
+	<listitem>update_process_times只在SMP关闭时有效。除了进程统计之外，它还激活了所有注册的低分辨率定时器并使之到期，以触发调度。</listitem>
+</itemizedlist>
+这里不对update_process_times进行深入的探讨，但是注意到scheduler_tick函数，schedule_tick函数用来更新进程的时间片，它在本地中断被禁止时调用。
+<programlisting><![CDATA[
+void update_process_times(int user_tick)
+{
+	struct task_struct *p = current;
+	int cpu = smp_processor_id();
+
+	/* Note: this timer irq context must be accounted for as well. */
+	account_process_tick(p, user_tick);
+	run_local_timers();
+	if (rcu_pending(cpu))
+		rcu_check_callbacks(cpu, user_tick);
+	printk_tick();
+	scheduler_tick();
+	run_posix_cpu_timers(p);
+}
+]]></programlisting>
+每次时钟节拍到来时，schedule_tick都被调用以执行各个进程的调度相关的统计量以及激活调度相关的操作的。它执行的主要步骤如下：
+<itemizedlist>
+<listitem>首先通过相应的函数和宏获得当前处理器的编号、当前可运行队列和当前进程描述符。</listitem>
+<listitem>sched_clock_tick把转换为纳秒的TSC的当前值存入本地运行队列的timestamp_lask_tick字段。这个时间戳是从sched_clock获得的。</listitem>
+<listitem>由于实时进程和普通进程的调度方法不同，因此这两种进程对时间片的更新方式也有所不同，下面仅说明普通进程更新时间片的方式。如果当前进程是普通进程，则递减当前进程的时间片。</listitem>
+<listitem>如果当前进程时间片用完，首先从当前活动进程集合中删除该进程，然后通过set_tsk_need_resched函数设置TIF_NEED_RESCHED标志。</listitem>
+<listitem></listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+void scheduler_tick(void)
+{
+	int cpu = smp_processor_id();
+	struct rq *rq = cpu_rq(cpu);
+	struct task_struct *curr = rq->curr;
+
+	sched_clock_tick();
+
+	spin_lock(&rq->lock);
+	update_rq_clock(rq);
+	update_cpu_load(rq);
+	curr->sched_class->task_tick(rq, curr, 0);
+	spin_unlock(&rq->lock);
+
+#ifdef CONFIG_SMP
+	rq->idle_at_tick = idle_cpu(cpu);
+	trigger_load_balance(rq, cpu);
+#endif
+}
+]]></programlisting>
+另外注意到run_local_timers唤醒时钟软中断：
+<programlisting><![CDATA[
+void run_local_timers(void)
+{
+	hrtimer_run_queues();
+	raise_softirq(TIMER_SOFTIRQ);
+	softlockup_tick();
+}
+]]></programlisting>
+<figure><title>时钟中断处理流程图</title><graphic fileref="images/time_tick.gif"/></figure>
+<sect3><title>do_timer</title>
+do_timer首先更新jiffies_64的值，显然这里的操作都在锁定xtime_lock中完成。
+<programlisting><![CDATA[
+kernel/timer.c
+void do_timer(unsigned long ticks)
+{
+	jiffies_64 += ticks;
+	update_times(ticks);
+}
+]]></programlisting>
+update_times完成其余每个时钟中断必须完成的操作。它更新墙上时钟(Wall Clock)，它指定了系统已经启动并运行了多长时间。该信息也是由jiffies提供的，Wall Clock 从当前时间源读取时间，并据此更新墙上时钟。与jiffies机制相反，它使用了人类可读格式纳秒单位来表示当前时间。
+<programlisting><![CDATA[
+static inline void update_times(unsigned long ticks)
+{
+	update_wall_time();
+	calc_load(ticks);
+}
+]]></programlisting>
+calc_load更新系统负载统计，确定在前1分钟，5分钟和15分钟内，平均有多少个就绪状态的进程在就绪队列上等待，该状态可以通过w命令获取。<?linebreak?>
+总之xtime是timespec结构，用来向用户空间提供时间支持，clock则是内核的时钟源，它记录非常详细的时钟数据。
+</sect3>
+</sect2>
+<sect2><title>RTC时钟</title>
+<para>
+RTC(Real Time Clock)是实时时钟，它通常独立于CPU和其他所有芯片，即使当板卡被切断电源，它依然可以依靠板载的纽扣电池继续工作。在PC上，CMOS RAM和RTC被集成在一个芯片，被称为BIOS。</para>
+<para>
+对于嵌入式SOC CPU来说，RTC电路可能被集成到CPU内部，此时CPU将提供RTC电源和RTC使用的外部晶振的接入引脚。由于它是一个完全独立的设备，所以它的驱动也相对独立，通常被放在drivers/rtc下，比如rtc-s3c.c。
+</para>
+<para>
+RTC总是记录外部世界的时间值，并不停的依靠外部晶振和电源更新时间。Linux只用RTC来获取外部世界的时间以或得与外界的时间同步。一个名为hwclock的程序可以通过/dev/rtc来获取或者设置RTC的时间。
+</para>
+<para>
+内核在初始化xtime时可以尝试从rtc设备(如果注册的话)更新时间，也可以通过NTP获取时间后周期的更新RTC以实现同步。多数时间内核时间都是与RTC独立的，并不相互同步和访问。date命令并不从RTC获取时间，它获取的是内核xtime时间，同样它设置的也是内核xtime时间，而非RTC。
+</para>
+<para>
+RTC驱动的核心文件如下，其中与RTC芯片相关的文件是rtc-s3c.c。系统中集成了相当多的RTC芯片驱动。
+<programlisting><![CDATA[
+-rw-r--r-- 1 root root  73688 2011-12-21 13:49 class.c
+-rw-r--r-- 1 root root  66176 2011-12-21 13:49 hctosys.c
+-rw-r--r-- 1 root root  80332 2011-12-21 13:49 interface.c
+-rw-r--r-- 1 root root 373448 2011-12-21 13:49 rtc-core.c
+-rw-r--r-- 1 root root  82712 2011-12-21 13:49 rtc-dev.c
+-rw-r--r-- 1 root root  63352 2011-12-21 13:49 rtc-lib.c
+-rw-r--r-- 1 root root  70880 2011-12-21 13:49 rtc-proc.c
+-rw-r--r-- 1 root root  84844 2011-12-21 16:56 rtc-s3c.c
+-rw-r--r-- 1 root root  74140 2011-12-21 13:49 rtc-sysfs.c
+]]></programlisting>
+</para>
+</sect2>
+</sect1>

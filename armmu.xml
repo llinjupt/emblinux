@@ -1,0 +1,38 @@
+<sect1><title>ARM MMU</title>
+<para>本文主要介绍ARM的内存管理单元。依据的文档为ARM1176JZF-S Technical Reference Manual。该文档主要针对ARMv6体系结构的系列ARM，比如ARM11，但是不限于该版本。
+</para>
+<sect2><title>简述</title>
+<para>
+MMU是内存管理单元（Memory Management Unit）的缩写。MMU在处理器中实现内存管理的功能，完成物理地址到虚拟地址的映射。MMU本身有少量存储空间存放从虚拟地址到物理地址的匹配表。此表称作TLB(转换旁置缓冲区)。所有数据请求都送往MMU，由MMU决定数据是在RAM内还是在大容量存储器设备内。如果数据不在存储空间内，MMU将产生页面错误中断。
+</para><para>
+在通常情况下，MMU的两个主要功能是:  
+<itemizedlist> 
+	<listitem>将虚地址转换成物理地址。</listitem>
+	<listitem>控制内存的访问权限。</listitem>
+</itemizedlist>
+MMU关闭时，虚地址直接输出到物理地址总线。对MMU的控制通过CP15协处理器的寄存器C2,C3,C4,C5,C6,C8,C10以及寄存器C1中的部分位。
+</para><para>
+	<table><title>CP15中MMU控制相关的寄存器</title>
+	<tgroup cols="2">
+	<thead><row><entry>CP15寄存器</entry><entry>功能</entry></row></thead>
+	<tbody>
+	<row><entry>C1</entry><entry>使能/禁止MMU、cache、写缓冲。</entry></row>		
+	<row><entry>C2</entry><entry>设置变换表基地址。</entry></row>		
+	<row><entry>C3</entry><entry>设置16个域的访问权限。</entry></row>		
+	<row><entry>C8</entry><entry>操作TLB功能（无效统一TLB、无效指令或数据TLB）。</entry></row>		
+	</tbody>
+	</tgroup>
+	</table>
+</para>	
+</sect2>
+<sect2><title>访问过程</title>
+<para>
+
+</para>
+</sect2>
+<sect2><title>访问控制</title>
+<para>
+
+</para>
+</sect2>
+</sect1>

@@ -1,0 +1,869 @@
+<sect1><title>内核初始化2</title>
+<sect2><title>resource资源分配</title>
+	<para>
+request_standard_resources为内存和外设预留I/O访问资源。
+<programlisting><![CDATA[
+arch/arm/kernel/setup.c
+
+static void __init
+request_standard_resources(struct meminfo *mi, struct machine_desc *mdesc)
+{
+	struct resource *res;
+	int i;
+
+	kernel_code.start   = virt_to_phys(&_text);
+	kernel_code.end     = virt_to_phys(&_etext - 1);
+	kernel_data.start   = virt_to_phys(&__data_start);
+	kernel_data.end     = virt_to_phys(&_end - 1);
+]]></programlisting>
+mi参数记录了当前系统中的所有内存bank，它通过Bootloader的ATAG机制传递给内核，并存放在struct meminfo类型同名meminfo描述符中。如果系统中只提供了一个内存bank，且大小为256M，那么打印出该描述符的信息如下所示：
+<programlisting><![CDATA[
+mi->nr_banks:1
+bank[0]: start:0x50000000, size:0x10000000, node:0
+]]></programlisting>
+系统定义了三个标准内存资源：视频内存资源，内核代码区和内核数据区。
+<programlisting><![CDATA[
+static struct resource mem_res[] = {
+	{
+		.name = "Video RAM",
+		.start = 0,
+		.end = 0,
+		.flags = IORESOURCE_MEM
+	},
+	{
+		.name = "Kernel text",
+		.start = 0,
+		.end = 0,
+		.flags = IORESOURCE_MEM
+	},
+	{
+		.name = "Kernel data",
+		.start = 0,
+		.end = 0,
+		.flags = IORESOURCE_MEM
+	}
+};
+]]></programlisting>
+内核用三个宏分别对应这三个标准内存资源。函数中通过这三个宏进行这三个内存资源引用。由于mem_res被定义为static类型，所以它并不会在其他地方被引用，这里只是使用它来记录内核的代码和数据段在内存中的分布信息。
+<programlisting><![CDATA[
+#define video_ram   mem_res[0]
+#define kernel_code mem_res[1]
+#define kernel_data mem_res[2]
+]]></programlisting>
+首先通过alloc_bootmem_low分配一个struct resource类型的资源描述符，然后通过request_resource申请该资源同时注册到内核资源管理树中，以声明RAM设备对这一I/O地址区域的占有。
+<programlisting><![CDATA[
+	for (i = 0; i < mi->nr_banks; i++) {
+		if (mi->bank[i].size == 0)
+			continue;
+
+		res = alloc_bootmem_low(sizeof(*res));
+		res->name  = "System RAM";
+		res->start = mi->bank[i].start;
+		res->end   = mi->bank[i].start + mi->bank[i].size - 1;
+		res->flags = IORESOURCE_MEM | IORESOURCE_BUSY;
+
+		request_resource(&iomem_resource, res);
+
+		if (kernel_code.start >= res->start &&
+		    kernel_code.end <= res->end)
+			request_resource(res, &kernel_code);
+		if (kernel_data.start >= res->start &&
+		    kernel_data.end <= res->end)
+			request_resource(res, &kernel_data);
+	}
+]]></programlisting>
+IORESOURCE_BUSY指明该资源在使用中，不可被分配，IORESOURCE_MEM指明这是使用内存映射的资源。接着预留kernel_code和kernel_data区，以防其他外设的I/O地址映射到内核代码和数据区。所以System RAM资源总是第一个申请的外设I/O资源。
+<programlisting><![CDATA[
+	if (mdesc->video_start) {
+		video_ram.start = mdesc->video_start;
+		video_ram.end   = mdesc->video_end;
+		request_resource(&iomem_resource, &video_ram);
+	}
+
+	/*
+	 * Some machines don't have the possibility of ever
+	 * possessing lp0, lp1 or lp2
+	 */
+	if (mdesc->reserve_lp0)
+		request_resource(&ioport_resource, &lp0);
+	if (mdesc->reserve_lp1)
+		request_resource(&ioport_resource, &lp1);
+	if (mdesc->reserve_lp2)
+		request_resource(&ioport_resource, &lp2);
+}
+]]></programlisting>
+如果系统中注册了视频设备，那么通常视频驱动会将视屏设备占用的内存资源注册函数过载到机器描述符的video_start指针函数上。并在此时调用。lp0/1/2是老式的并口打印机设备，它们通过I/O端口映射来工作，所以注册到ioport_resource中。
+</para>	
+	<para>
+	</para>
+</sect2>
+<sect2 id="cpu_init"><title>cpu_init</title>
+<para>
+cpu_init用来设置CPU在各种工作模式下的堆栈地址。显然任何一个CPU的堆栈寄存器都有一份自己的拷贝，这样它们才能独立处理中断。
+<programlisting><![CDATA[
+struct stack {
+	u32 irq[3];
+	u32 abt[3];
+	u32 und[3];
+} ____cacheline_aligned;
+
+static struct stack stacks[NR_CPUS];
+
+void cpu_init(void)
+{
+	unsigned int cpu = smp_processor_id();
+	struct stack *stk = &stacks[cpu];
+
+	__asm__ (
+	"msr	cpsr_c, %1\n\t"
+	"add	sp, %0, %2\n\t"
+	"msr	cpsr_c, %3\n\t"
+	"add	sp, %0, %4\n\t"
+	"msr	cpsr_c, %5\n\t"
+	"add	sp, %0, %6\n\t"
+	"msr	cpsr_c, %7"
+	    :
+	    : "r" (stk),
+	      "I" (PSR_F_BIT | PSR_I_BIT | IRQ_MODE),
+	      "I" (offsetof(struct stack, irq[0])),
+	      "I" (PSR_F_BIT | PSR_I_BIT | ABT_MODE),
+	      "I" (offsetof(struct stack, abt[0])),
+	      "I" (PSR_F_BIT | PSR_I_BIT | UND_MODE),
+	      "I" (offsetof(struct stack, und[0])),
+	      "I" (PSR_F_BIT | PSR_I_BIT | SVC_MODE)
+	    : "r14");
+}
+]]></programlisting>
+查看编译后的汇编语言如下：
+<programlisting><![CDATA[
+c002d190:       e1a0c00d        mov     ip, sp
+c002d194:       e92dd800        push    {fp, ip, lr, pc}
+......
+c002d1c0:       e59f3024        ldr     r3, [pc, #36]   ; c002d1ec <cpu_init+0x5c>
+]]></programlisting>
+ldr将stacks的地址装入r3，也即stacks[cpu].irq[0]的地址。
+<programlisting><![CDATA[
+/* 
+ * CPSR_c中的c标志意味着只改变CPSR控制域屏蔽字节也即cpsr[0:7]。0xd2对应IRQ模式，并禁止IRQ和FIQ中断。
+ * add指令将r3+0存入sp，由于任何模式都有独立的sp寄存器，所以这里将依次设置IRQ，ABT，UND模式的堆栈
+ */ 
+c002d1c4:       e321f0d2        msr     CPSR_c, #210    ; 0xd2
+c002d1c8:       e283d000        add     sp, r3, #0      ; 0x0
+/* ABT模式关IRQ和FIQ中断，将r3+0xc的值放入sp*/
+c002d1cc:       e321f0d7        msr     CPSR_c, #215    ; 0xd7
+c002d1d0:       e283d00c        add     sp, r3, #12     ; 0xc
+/* UND模式关IRQ和FIQ中断，将r3+0x18的值放入sp*/
+c002d1d4:       e321f0db        msr     CPSR_c, #219    ; 0xdb
+c002d1d8:       e283d018        add     sp, r3, #24     ; 0x18
+/* 返回到SVC模式 */
+c002d1dc:       e321f0d3        msr     CPSR_c, #211    ; 0xd3
+/* ldm 将保存在sp中的值出栈，分别保存到fp, sp和pc中，与进入函数时压栈相呼应*/
+c002d1e0:       e89da800        ldm     sp, {fp, sp, pc}
+]]></programlisting>
+显然以上的代码用来设置IRQ/ABT/UND三种模式的堆栈地址，并且该地址是由静态变量stacks的地址决定的。stacks的开始地址就是irq[0]的地址，开始地址的0xc偏移处是abt[0]的地址，0x18的偏移处则是und[0]的地址。
+<figure><title>IRQ/ABT/UND中断堆栈</title><graphic fileref="images/irq_stack.gif"/></figure>
+上图中描述了IRQ/ABT/UND三种模式的堆栈地址，并且堆栈是向高地址增加，且做多只能存放三个整形数据，这一点可以在<xref linkend="irq_vector"/>看到。那么SVC模式的堆栈地址在何处设置的呢？在arch/arm/kernel/head.S中有如下代码：
+<programlisting><![CDATA[
+__switch_data:
+	......
+	.long	init_thread_union + THREAD_START_SP @ sp
+	......
+__mmap_switched:
+	......
+	ldmia	r3, {r4, r5, r6, r7, sp}
+	......		
+]]></programlisting>
+这里的sp值被赋值为init_thread_union + THREAD_START_SP，init_thread_union是内核线程struct thread_info 结构体的开始地址，通常它与__data_start相等。
+<programlisting><![CDATA[
+#define THREAD_SIZE_ORDER       1
+#define THREAD_SIZE             8192
+#define THREAD_START_SP         (THREAD_SIZE - 8)
+]]></programlisting>
+<para>内核线程struct thread_info 结构体的大小为THREAD_SIZE，其中线程信息在最底部，其余的内存作为线程的堆栈使用。这里将init_thread_union加上THREAD_SIZE，是因为堆栈是向下增长的，再减去8，是为了在堆栈上端留出中断处理所需的空间。</para>
+<para>默认情况下内核并不开启FIQ功能，只有在配置CONFIG_FIQ时，快速中断的相关代码才会编译进内核。
+<programlisting><![CDATA[
+arch/arm/kernel/Makefile
+obj-$(CONFIG_FIQ)               += fiq.o
+]]></programlisting>
+而相关的函数就定义在fiq.c中，设置FIQ堆栈的函数如下所示：
+<programlisting><![CDATA[
+void __attribute__((naked)) set_fiq_regs(struct pt_regs *regs)
+{
+        register unsigned long tmp;
+        asm volatile (
+        "mov    ip, sp\n\
+        stmfd   sp!, {fp, ip, lr, pc}\n\
+        sub     fp, ip, #4\n\
+        mrs     %0, cpsr\n\
+        msr     cpsr_c, %2      @ select FIQ mode\n\
+        mov     r0, r0\n\
+        ldmia   %1, {r8 - r14}\n\
+        msr     cpsr_c, %0      @ return to SVC mode\n\
+        mov     r0, r0\n\
+        ldmfd   sp, {fp, sp, pc}"
+        : "=&r" (tmp)
+        : "r" (&regs->ARM_r8), "I" (PSR_I_BIT | PSR_F_BIT | FIQ_MODE));
+}
+]]></programlisting>
+这里ldmia设置FIQ堆栈，而参数来自regs。
+</para>
+通过以上的设置，内核在各个模式下的堆栈如下表所示：
+<table><title>内核堆栈设置</title>
+<tgroup cols="2">
+<thead><row><entry>CPU模式</entry><entry>堆栈sp</entry></row></thead>
+<tbody>
+<row><entry>SVC超级模式</entry><entry>init_thread_union + THREAD_START_SP</entry></row>
+<row><entry>IRQ中断模式</entry><entry>stacks[cpu].irq</entry></row>
+<row><entry>ABT中止模式</entry><entry>stacks[cpu].stack.abt</entry></row>
+<row><entry>UND未定义模式</entry><entry>stacks[cpu].stack.und</entry></row>
+<row><entry>FIQ模式</entry><entry>set_fiq_regs设定</entry></row>
+</tbody>
+</tgroup>
+</table>
+</para>
+<para></para>
+<para></para>
+<para></para>
+<para></para>
+</sect2>
+<sect2><title>early_trap_init</title>
+<programlisting><![CDATA[
+	/*
+	 * Set up various architecture-specific pointers
+	 */
+	init_arch_irq = mdesc->init_irq;
+	system_timer = mdesc->timer;
+	init_machine = mdesc->init_machine;
+	early_trap_init();
+}	
+]]></programlisting>
+setup_arch的最后部分记录一些特定架构的指针，它们再接下来的初始化中被调用。
+<programlisting><![CDATA[
+arch/arm/kernel/traps.c
+void __init early_trap_init(void)
+{
+        unsigned long vectors = CONFIG_VECTORS_BASE;
+        extern char __stubs_start[], __stubs_end[];
+        extern char __vectors_start[], __vectors_end[];
+        extern char __kuser_helper_start[], __kuser_helper_end[];
+        int kuser_sz = __kuser_helper_end - __kuser_helper_start;
+
+        /*
+         * Copy the vectors, stubs and kuser helpers (in entry-armv.S)
+         * into the vector page, mapped at 0xffff0000, and ensure these
+         * are visible to the instruction stream.
+         */
+        memcpy((void *)vectors, __vectors_start, __vectors_end - __vectors_start);
+        memcpy((void *)vectors + 0x200, __stubs_start, __stubs_end - __stubs_start);
+        memcpy((void *)vectors + 0x1000 - kuser_sz, __kuser_helper_start, kuser_sz);
+
+        /*
+         * Copy signal return handlers into the vector page, and
+         * set sigreturn to be a pointer to these.
+         */
+        memcpy((void *)KERN_SIGRETURN_CODE, sigreturn_codes,
+               sizeof(sigreturn_codes));
+
+        flush_icache_range(vectors, vectors + PAGE_SIZE);
+        modify_domain(DOMAIN_USER, DOMAIN_CLIENT);
+}
+]]></programlisting>
+early_trap_init初始化ARM Linux中断向量，它已经完全代替了trap_init函数。首先通过memcpy复制__vectors_start的中断处理函数的入口到vectors，vectors被赋值为CONFIG_VECTORS_BASE，它在.config中被设置为0xffff0000。它就是页表中建立的中断向量的入口地址。__vectors_start等一些列中断向量都应以在名为entry-arm中断向量表放在这个文件里。
+<programlisting><![CDATA[
+        .globl  __vectors_start
+__vectors_start:
+        swi     SYS_ERROR0 // 复位异常
+        b       vector_und + stubs_offset
+        ldr     pc, .LCvswi + stubs_offset
+        b       vector_pabt + stubs_offset
+        b       vector_dabt + stubs_offset
+        b       vector_addrexcptn + stubs_offset
+        b       vector_irq + stubs_offset
+        b       vector_fiq + stubs_offset
+
+        .globl  __vectors_end
+__vectors_end:
+]]></programlisting>
+__vectors_start至__vectors_end之间为异常向量表。当有异常发生时，处理器会跳转到对应的0xffff0000起始的向量处取指令，然后，通过b指令散转到异常处理代码．因为ARM中b指令是相对跳转，而且只有+/-32MB的寻址范围，所以把__stubs_start~__stubs_end之间的异常处理代码复制到了0xffff0200起始处,这里可直接用b指令跳转过去，这样比使用绝对跳转（ldr)效率高。__stubs_start至__stubs_end之间是异常处理的位置。也位于文件arch/arm/kernel/entry-armv.S中，这部分代码被复制到0xffff0200处。vector_und等参数通过宏vector_stub扩展而成。
+<programlisting><![CDATA[
+	.macro	vector_stub, name, mode, correction=0
+	.align	5
+
+vector_\name:
+	.if \correction
+	sub	lr, lr, #\correction
+	.endif
+
+	@
+	@ Save r0, lr_<exception> (parent PC) and spsr_<exception>
+	@ (parent CPSR)
+	@
+	stmia	sp, {r0, lr}		@ save r0, lr
+	mrs	lr, spsr
+	str	lr, [sp, #8]		@ save spsr
+
+	@
+	@ Prepare for SVC32 mode.  IRQs remain disabled.
+	@
+	mrs	r0, cpsr
+	eor	r0, r0, #(\mode ^ SVC_MODE)
+	msr	spsr_cxsf, r0
+
+	@
+	@ the branch table must immediately follow this code
+	@
+	and	lr, lr, #0x0f
+	mov	r0, sp
+	ldr	lr, [pc, lr, lsl #2]
+	movs	pc, lr			@ branch to handler in SVC mode
+ENDPROC(vector_\name)
+	.endm
+]]></programlisting>
+stubs_offset是如何确定的呢?当汇编器看到B指令后会把要跳转的标签转化为相对于当前PC的偏移量（±32M）写入指令码。从上面的代码可以看到中断向量表和stubs都发生了代码搬移，所以如果中断向量表中仍然写成b vector_irq，那么实际执行的时候就无法跳转到搬移后的vector_irq处，因为指令码里写的是原来的偏移量，所以需要把指令码中的偏移量写成搬移后的。我们把搬移前的中断向量表中的irq入口地址记irq_PC,它在中断向量表的偏移量就是irq_PC-vectors_start, vector_irq在stubs中的偏移量是vector_irq-stubs_start，这两个偏移量在搬移前后是不变的。搬移后 vectors_start在0xffff0000处，而stubs_start在0xffff0200处，所以搬移后的vector_irq相对于中断 向量中的中断入口地址的偏移量就是，200+vector_irq在stubs中的偏移量再减去中断入口在向量表中的偏移量，即200+ vector_irq-stubs_start-irq_PC+vectors_start = (vector_irq-irq_PC) + vectors_start+200-stubs_start,对于括号内的值实际上就是中断向量表中写的vector_irq，减去irq_PC是由汇编器完成的，而后面的 vectors_start+200-stubs_start就应该是stubs_offset，实际上在entry-armv.S中也是这样定义的。
+<programlisting><![CDATA[
+	.globl	__stubs_start
+__stubs_start:
+/*
+ * Interrupt dispatcher
+ */
+	vector_stub	irq, IRQ_MODE, 4
+
+	.long	__irq_usr			@  0  (USR_26 / USR_32)
+	.long	__irq_invalid			@  1  (FIQ_26 / FIQ_32)
+	.long	__irq_invalid			@  2  (IRQ_26 / IRQ_32)
+	.long	__irq_svc			@  3  (SVC_26 / SVC_32)
+	.long	__irq_invalid			@  4
+	.long	__irq_invalid			@  5
+	.long	__irq_invalid			@  6
+	......
+.LCvswi:
+	.word	vector_swi
+
+	.globl	__stubs_end
+__stubs_end:
+
+	.equ	stubs_offset, __vectors_start + 0x200 - __stubs_start
+]]></programlisting>
+<para>
+</para>
+</sect2>
+<sect2><title>sched_init</title>
+<programlisting><![CDATA[
+	sched_init();
+	/*
+	 * Disable preemption - early bootup scheduling is extremely
+	 * fragile until we cpu_idle() for the first time.
+	 */
+	preempt_disable();
+]]></programlisting>
+sched_init初始化进程调度器。preempt_disable禁止调度，这是为了内核进一步初始化其他部分。当调用最后一个函数rest_init时，通过cpu_idle完成第一次调度。
+</sect2>
+<sect2><title>setup_command_line</title>
+command_line参数在start_kernel中定义，然后在setup_arch中被赋予值。setup_arch首先对CONFIG_CMDLINE传递的参数通过parse_cmdline进行解析。parse_cmdline对所有__early_param宏定义的参数进行解析：
+<programlisting><![CDATA[
+./mm/mmu.c:125:__early_param("cachepolicy=", early_cachepolicy);
+./mm/mmu.c:133:__early_param("nocache", early_nocache);
+./mm/mmu.c:141:__early_param("nowb", early_nowrite);
+./mm/mmu.c:153:__early_param("ecc=", early_ecc);
+./mm/mmu.c:655:__early_param("vmalloc=", early_vmalloc);
+./mm/init.c:46:__early_param("initrd=", early_initrd);
+./kernel/setup.c:415:__early_param("mem=", early_mem);
+]]></programlisting>
+所有未被__early_param定义的参数均被传递给setup_command_line函数。
+<programlisting><![CDATA[
+/*
+ * We need to store the untouched command line for future reference.
+ * We also need to store the touched command line since the parameter
+ * parsing is performed in place, and we should allow a component to
+ * store reference of name/value for future reference.
+ */
+static void __init setup_command_line(char *command_line)
+{
+	saved_command_line = alloc_bootmem(strlen (boot_command_line)+1);
+	static_command_line = alloc_bootmem(strlen (command_line)+1);
+	strcpy (saved_command_line, boot_command_line);
+	strcpy (static_command_line, command_line);
+}
+]]></programlisting>
+saved_command_line和static_command_line首先通过Bootmem机制分配内存，然后分别保存未处理的原始命令行，以及通过parse_cmdline处理过的命令行，一个实际的示例如下：
+<programlisting><![CDATA[
+CONFIG_CMDLINE="root=/dev/mtdblock2 rootfstype=cramfs init=/linuxrc console=ttySAC0,115200 mem=256M"
+
+saved_command_line:root=/dev/mtdblock2 rootfstype=cramfs console=ttySAC0,115200 mem=256M bootmem_debug=1
+static_command_line:root=/dev/mtdblock2 rootfstype=cramfs console=ttySAC0,115200 bootmem_debug=1
+]]></programlisting>
+</sect2>
+<sect2><title>build_all_zonelists</title>
+<programlisting><![CDATA[
+mm/page_alloc.c
+
+void build_all_zonelists(void)
+{
+	set_zonelist_order();
+]]></programlisting>
+set_zonelist_order函数与CONFIG_NUMA是否定义有关，没有定时，如下所示：
+<programlisting><![CDATA[
+/*
+ *  zonelist_order:
+ *  0 = automatic detection of better ordering.
+ *  1 = order by ([node] distance, -zonetype)
+ *  2 = order by (-zonetype, [node] distance)
+ *
+ *  If not NUMA, ZONELIST_ORDER_ZONE and ZONELIST_ORDER_NODE will create
+ *  the same zonelist. So only NUMA can configure this param.
+ */ 
+#define ZONELIST_ORDER_DEFAULT  0 
+#define ZONELIST_ORDER_NODE     1
+#define ZONELIST_ORDER_ZONE     2
+
+static void set_zonelist_order(void)
+{
+	current_zonelist_order = ZONELIST_ORDER_ZONE;
+}
+]]></programlisting>
+<programlisting><![CDATA[
+include/linux/kernel.h
+/* Values used for system_state */
+extern enum system_states {
+        SYSTEM_BOOTING,
+        SYSTEM_RUNNING,
+        SYSTEM_HALT,
+        SYSTEM_POWER_OFF,
+        SYSTEM_RESTART,
+        SYSTEM_SUSPEND_DISK,
+} system_state;
+
+	if (system_state == SYSTEM_BOOTING) {
+		__build_all_zonelists(NULL);
+		mminit_verify_zonelist();
+		cpuset_init_current_mems_allowed();
+	} else {
+		/* we have to stop all cpus to guarantee there is no user
+		   of zonelist */
+		stop_machine(__build_all_zonelists, NULL, NULL);
+		/* cpuset refresh routine should be here */
+	}
+]]></programlisting>
+system_state默认被初始化为SYSTEM_BOOTING，它在rest_init才会被改变为SYSTEM_RUNNING。这里通过__build_all_zonelists来设置内存管理区中的分配器参考链表zonelists成员，它根据访问优先级来将不通管理区挂在到该链表。通常只有配置了CONFIG_NUMA时才有效，否则只是按当前节点中的node_zones数组成员的下标依序加入zonelists。
+<programlisting><![CDATA[	
+	vm_total_pages = nr_free_pagecache_pages();
+	/*
+	 * Disable grouping by mobility if the number of pages in the
+	 * system is too low to allow the mechanism to work. It would be
+	 * more accurate, but expensive to check per-zone. This check is
+	 * made on memory-hotadd so a system can start with mobility
+	 * disabled and enable it later
+	 */
+	if (vm_total_pages < (pageblock_nr_pages * MIGRATE_TYPES))
+		page_group_by_mobility_disabled = 1;
+	else
+		page_group_by_mobility_disabled = 0;
+
+	printk("Built %i zonelists in %s order, mobility grouping %s.  "
+		"Total pages: %ld\n",
+			num_online_nodes(),
+			zonelist_order_name[current_zonelist_order],
+			page_group_by_mobility_disabled ? "off" : "on",
+			vm_total_pages);
+#ifdef CONFIG_NUMA
+	printk("Policy zone: %s\n", zone_names[policy_zone]);
+#endif
+]]></programlisting>
+根据当前系统中的物理内存大小，来决定是否启用流动分组(Mobility Grouping)机制，这种机制可以在分配大内存块时减少内存碎片。显然只有内存足够大时才会启用该功能。
+</sect2>
+<sect2><title>page_alloc_init</title>
+<para>
+<programlisting><![CDATA[
+void __init page_alloc_init(void)
+{
+	hotcpu_notifier(page_alloc_cpu_notify, 0);
+}
+]]></programlisting>
+hotcpu_notifier是一个宏，在编译选项CONFIG_HOTPLUG_CPU(CPU热插拔)起作用时，它才有效。否则不做任何事情。
+<programlisting><![CDATA[
+include/linux/cpu.h
+/* old style is :hotcpu_notifier(fn, pri) do { } while (0)  */
+#define hotcpu_notifier(fn, pri)  do { (void)(fn); } while (0)
+]]></programlisting>
+旧代码的定义要容易理解，也即未使能CONFIG_HOTPLUG_CPU时，什么也不做。(void)(fn)扩展开就是(void)(page_alloc_cpu_notify)，这并不是对函数page_alloc_cpu_notify的引用，而是类似于int a; (int)(a);的一种使用方式，GCC会将这种代码优化掉。为什么要这样做呢？这是为了在没有配置CPU热插拔功能的系统上避免GCC类似的抱怨：
+<programlisting><![CDATA[
+mm/page_alloc.c:4152: warning: 'page_alloc_cpu_notify' defined but not used
+]]></programlisting>
+总而言之，page_alloc_init函数只有在开启CONFIG_HOTPLUG_CPU时，才有作用，此时完成对每个CPU的通告功能。
+</para>
+</sect2>
+<sect2><title>第二阶段的参数解析</title>
+<programlisting><![CDATA[
+	parse_early_param();
+	parse_args("Booting kernel", static_command_line, __start___param,
+		   __stop___param - __start___param,
+		   &unknown_bootoption);
+]]></programlisting>
+parse_early_param参数解析函数主要针对__setup_param声明的参数进行解析。parse_args在这里主要针对编译进内核的模块中的参数进行解析。
+<programlisting><![CDATA[
+/* Sort the kernel's built-in exception table */
+void __init sort_main_extable(void)
+{
+	sort_extable(__start___ex_table, __stop___ex_table);
+}
+]]></programlisting>
+sort_main_extable对__start___ex_table和__stop___ex_table之间的异常表struct exception_table_entry元素进行排序，以加快对异常的处理。
+<programlisting><![CDATA[
+arch/arm/kernel/vmlinux.lds.S
+                __start___ex_table = .;
+#ifdef CONFIG_MMU
+                *(__ex_table)
+#endif
+                __stop___ex_table = .;
+]]></programlisting>
+定义到__ex_table节中的代码均由汇编或者内嵌语言写成，例如：
+<programlisting><![CDATA[
+arch/arm/kernel/entry-armv.S
+	.section .fixup, "ax"
+4:	mov	pc, r9
+	.previous
+	.section __ex_table,"a"
+	.long	1b, 4b
+]]></programlisting>
+__ex_table节中的"a"是指该节中的代码需要分配内存。.long 1b, 4b则分别前面的标号1和4，其中如果标号1对应的子程序如果处理中出现问题，则继续继续标号4的子程序，以确保可以在异常处理中返回。
+接下来的trap_init()是一个空函数，它被各个系统架构下的trap初始化代码取代。
+</sect2>
+<sect2><title>rcu_init</title>
+Read-Copy-Update机制在此时初始化，它基于修改副本，而读者可以在不加锁的情况下来读取资源，当没有读者读取时将副本替换，并在适当的时刻释放旧的数据。它在读去次数多，而写的次数少，并且资源区可以通过指针表示的情况下很高效。RCU的初始化位于start_kernel中的rcu_init代码如下: 
+<programlisting><![CDATA[
+kernel/rcupdate.c
+void __init rcu_init(void)
+{
+	__rcu_init();
+}
+
+kernel/rcuclassic.c
+void __init __rcu_init(void)
+{
+	rcu_cpu_notify(&rcu_nb, CPU_UP_PREPARE,
+			(void *)(long)smp_processor_id());
+	/* Register notifier for non-boot CPUs */
+	register_cpu_notifier(&rcu_nb);
+}
+]]></programlisting>
+rcu机制的核心书籍结构是名为rcu_nb的通知链表结构struct notifier_block。通知链表节点的结构如下，其中notifier_call是通知事件的处理函数，priority则是该节点的优先级。
+<programlisting><![CDATA[
+struct notifier_block {
+	int (*notifier_call)(struct notifier_block *, unsigned long, void *);
+	struct notifier_block *next;
+	int priority;
+};
+
+static struct notifier_block __cpuinitdata rcu_nb = {
+	.notifier_call	= rcu_cpu_notify,
+};
+]]></programlisting>
+rcu_nb的通知处理函数为rcu_cpu_notify，它用来处理以下事件：CPU_UP_PREPARE，CPU_UP_PREPARE_FROZEN和CPU_DEAD，CPU_DEAD_FROZEN，它们分别对应CPU上线和下线。
+<programlisting><![CDATA[
+static int __cpuinit rcu_cpu_notify(struct notifier_block *self,
+				unsigned long action, void *hcpu)
+{
+	long cpu = (long)hcpu;
+
+	switch (action) {
+	case CPU_UP_PREPARE:
+	case CPU_UP_PREPARE_FROZEN:
+		rcu_online_cpu(cpu);
+		break;
+	case CPU_DEAD:
+	case CPU_DEAD_FROZEN:
+		rcu_offline_cpu(cpu);
+		break;
+	default:
+		break;
+	}
+	return NOTIFY_OK;
+}
+]]></programlisting>
+在系统初始话阶段，__rcu_init将在当前CPU上注册CPU_UP_PREPARE事件。对应的处理函数为：rcu_online_cpu。
+<programlisting><![CDATA[
+static void rcu_init_percpu_data(int cpu, struct rcu_ctrlblk *rcp,
+						struct rcu_data *rdp)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&rcp->lock, flags);
+	memset(rdp, 0, sizeof(*rdp));
+	rdp->nxttail[0] = rdp->nxttail[1] = rdp->nxttail[2] = &rdp->nxtlist;
+	rdp->donetail = &rdp->donelist;
+	rdp->quiescbatch = rcp->completed;
+	rdp->qs_pending = 0;
+	rdp->cpu = cpu;
+	rdp->blimit = blimit;
+	spin_unlock_irqrestore(&rcp->lock, flags);
+}
+
+static void __cpuinit rcu_online_cpu(int cpu)
+{
+	struct rcu_data *rdp = &per_cpu(rcu_data, cpu);
+	struct rcu_data *bh_rdp = &per_cpu(rcu_bh_data, cpu);
+
+	rcu_init_percpu_data(cpu, &rcu_ctrlblk, rdp);
+	rcu_init_percpu_data(cpu, &rcu_bh_ctrlblk, bh_rdp);
+	open_softirq(RCU_SOFTIRQ, rcu_process_callbacks);
+}
+]]></programlisting>
+每CPU均有一个rcu_data，rcu_ctrlblk是控制块(Control Block)。这里可以看到RCU机制是通过RCU_SOFTIRQ软中断实现的。在RCU_SOFTIRQ软中断被初出发时，处理函数rcu_process_callbacks将处理rcu_data和rcu_bh_data数据。内核线程ksoftirqd则用来统一处理软中断。
+<programlisting><![CDATA[
+static void rcu_process_callbacks(struct softirq_action *unused)
+{
+	smp_mb(); /* See above block comment. */
+	__rcu_process_callbacks(&rcu_ctrlblk, &__get_cpu_var(rcu_data));
+	__rcu_process_callbacks(&rcu_bh_ctrlblk, &__get_cpu_var(rcu_bh_data));
+	smp_mb(); /* See above block comment. */
+}
+
+void open_softirq(int nr, void (*action)(struct softirq_action *))
+{
+	softirq_vec[nr].action = action;
+}
+]]></programlisting>
+</sect2>
+<sect2><title>init_IRQ</title>
+init_IRQ初始化中断描述符中的status。而init_arch_irq则由特定的系统架构提供，以用来初始化系统中的中断功能。
+<programlisting><![CDATA[
+void __init init_IRQ(void)
+{
+	int irq;
+
+	for (irq = 0; irq < NR_IRQS; irq++)
+		irq_desc[irq].status |= IRQ_NOREQUEST | IRQ_NOPROBE;
+
+#ifdef CONFIG_SMP
+	bad_irq_desc.affinity = CPU_MASK_ALL;
+	bad_irq_desc.cpu = smp_processor_id();
+#endif
+	init_arch_irq();
+}
+]]></programlisting>
+NR_IRQS依据CPU系统架构设定。
+<programlisting><![CDATA[
+arch/arm/plat-s3c64xx/include/plat/irqs.h
+/* Set the default NR_IRQS */
+#define NR_IRQS (IRQ_EINT_GROUP9_BASE + IRQ_EINT_GROUP9_NR + 1)
+]]></programlisting>
+init_arch_irq在初始化系统架构相关的代码中被赋值为init_irq，这里为s3c6410_init_irq。
+<programlisting><![CDATA[
+arch/arm/kernel/setup.c
+void __init setup_arch(char **cmdline_p)
+{
+......
+init_arch_irq = mdesc->init_irq;
+......
+}
+]]></programlisting>
+
+<programlisting><![CDATA[
+arch/arm/mach-s3c6410/cpu.c
+void __init s3c6410_init_irq(void)
+{
+	/* VIC0 is missing IRQ7, VIC1 is fully populated. */
+  s3c64xx_init_irq(~0 & ~(1 << 7), ~0);
+}
+]]></programlisting>
+<programlisting><![CDATA[
+arch/arm/plat-s3c64xx/irq.c
+void __init s3c64xx_init_irq(u32 vic0_valid, u32 vic1_valid)
+{
+  int uart, irq;
+
+  printk(KERN_DEBUG "%s: initialising interrupts\n", __func__);
+
+  /* initialise the pair of VICs */
+  vic_init(S3C_VA_VIC0, S3C_VIC0_BASE, vic0_valid);
+  vic_init(S3C_VA_VIC1, S3C_VIC1_BASE, vic1_valid);
+
+  /* add the timer sub-irqs */
+  set_irq_chained_handler(IRQ_TIMER0_VIC, s3c_irq_demux_timer0);
+  set_irq_chained_handler(IRQ_TIMER1_VIC, s3c_irq_demux_timer1);
+  set_irq_chained_handler(IRQ_TIMER2_VIC, s3c_irq_demux_timer2);
+  set_irq_chained_handler(IRQ_TIMER3_VIC, s3c_irq_demux_timer3);
+  set_irq_chained_handler(IRQ_TIMER4_VIC, s3c_irq_demux_timer4);
+
+  for (irq = IRQ_TIMER0; irq <= IRQ_TIMER4; irq++) {
+          set_irq_chip(irq, &s3c_irq_timer);
+          set_irq_handler(irq, handle_level_irq);
+          set_irq_flags(irq, IRQF_VALID);
+  }
+
+  for (uart = 0; uart < ARRAY_SIZE(uart_irqs); uart++)
+          s3c64xx_uart_irq(&uart_irqs[uart]);
+}
+]]></programlisting>
+注意到这些都是对底层硬件寄存器的操作。S3C_VA_VIC0虚拟地址是在setup_arch中mdesc->map_io的操作实现映射的：
+<programlisting><![CDATA[
+arch/arm/plat-s3c64xx/cpu.c
+static struct map_desc s3c_iodesc[] __initdata = {
+  {
+          .virtual        = (unsigned long)S3C_VA_SYS,
+          .pfn            = __phys_to_pfn(S3C64XX_PA_SYSCON),
+          .length         = SZ_4K,
+          .type           = MT_DEVICE,
+  }, {
+          .virtual        = (unsigned long)(S3C_VA_UART + UART_OFFS),
+          .pfn            = __phys_to_pfn(S3C_PA_UART),
+          .length         = SZ_4K,
+          .type           = MT_DEVICE,
+  }, {
+          .virtual        = (unsigned long)S3C_VA_VIC0,
+          .pfn            = __phys_to_pfn(S3C64XX_PA_VIC0),
+          .length         = SZ_16K,
+          .type           = MT_DEVICE,
+  }, {
+          .virtual        = (unsigned long)S3C_VA_VIC1,
+          .pfn            = __phys_to_pfn(S3C64XX_PA_VIC1),
+          .length         = SZ_16K,
+          .type           = MT_DEVICE,
+  }, {
+          .virtual        = (unsigned long)S3C_VA_TIMER,
+          .pfn            = __phys_to_pfn(S3C_PA_TIMER),
+          .length         = SZ_16K,
+          .type           = MT_DEVICE,
+  }, {
+          .virtual        = (unsigned long)S3C64XX_VA_GPIO,
+          .pfn            = __phys_to_pfn(S3C64XX_PA_GPIO),
+          .length         = SZ_4K,
+          .type           = MT_DEVICE,
+  },
+};
+]]></programlisting>
+<itemizedlist> 
+	<listitem>S3C64XX_PA_SYSCON对应系统的控制接口寄存器地址；系统控制器控制PLL，时钟发生器，电源管理部分和其他系统部分。</listitem>
+	<listitem>S3C_PA_UART对应UART控制器。</listitem>
+	<listitem>S3C64XX_PA_VIC0和S3C64XX_PA_VIC1对应矢量中断控制器。</listitem>
+	<listitem>S3C_PA_TIMER对应PWM脉宽调制定时器。</listitem>
+	<listitem>S3C64XX_PA_GPIO则对应了通用IO端口。</listitem>
+</itemizedlist>
+</sect2>
+<sect2><title>pidhash_init</title>
+LINUX进程总是会分配一个号码用于在其命令空间中唯一地标识它们。该号码被称作进程ID号，简称PID。用fork或clone产生的每个进程都由内核自动地分配一个新的唯一的PID值。为了便于管理PID，系统定义了一个哈希数组。
+<programlisting><![CDATA[
+kernel/pid.c
+static struct hlist_head *pid_hash;
+]]></programlisting>
+hlist_head类型是一个内核用于建立双链散列表的标准数据结构。pid_hash用作一个hlist_head数组，数组的元素数目取决于计算机的内存配置，为16到4096之间的2的幂指数。
+<programlisting><![CDATA[
+void __init pidhash_init(void)
+{
+	int i, pidhash_size;
+	unsigned long megabytes = nr_kernel_pages >> (20 - PAGE_SHIFT);
+
+	pidhash_shift = max(4, fls(megabytes * 4));
+	pidhash_shift = min(12, pidhash_shift);
+	pidhash_size = 1 << pidhash_shift;
+
+	printk("PID hash table entries: %d (order: %d, %Zd bytes)\n",
+		pidhash_size, pidhash_shift,
+		pidhash_size * sizeof(struct hlist_head));
+
+	pid_hash = alloc_bootmem(pidhash_size *	sizeof(*(pid_hash)));
+	if (!pid_hash)
+		panic("Could not alloc pidhash!\n");
+	for (i = 0; i < pidhash_size; i++)
+		INIT_HLIST_HEAD(&pid_hash[i]);
+}
+]]></programlisting>
+pidhash_init在系统启动时被执行，主要做了以下工作：
+<itemizedlist> 
+	<listitem>根据nr_kernel_pages指定的内存大小计算PID哈希表的大小pidhash_size。</listitem>
+	<listitem>在终端打印出分配的表的大小，所占的阶数以及总的占用内存字节数。</listitem>
+	<listitem>通过Bootmem系统为pid_hash分配空间。</listitem>
+	<listitem>通过INIT_HLIST_HEAD初始化hash表。</listitem>
+</itemizedlist>
+</sect2>
+<sect2><title>init_timers</title>
+<programlisting><![CDATA[
+void __init init_timers(void)
+{
+	int err = timer_cpu_notify(&timers_nb, (unsigned long)CPU_UP_PREPARE,
+				(void *)(long)smp_processor_id());
+
+	init_timer_stats();
+
+	BUG_ON(err == NOTIFY_BAD);
+	register_cpu_notifier(&timers_nb);
+	open_softirq(TIMER_SOFTIRQ, run_timer_softirq);
+}
+]]></programlisting>
+init_timers主要初始化本地软件时钟：
+<itemizedlist> 
+	<listitem>初始化本 CPU 上的软件时钟相关的数据结构。</listitem>
+	<listitem>向cpu_chain通知链注册元素 timers_nb，该元素的回调函数用于初始化指定CPU上的软件时钟相关的数据结构。</listitem>
+	<listitem>初始化时钟的软中断处理函数。</listitem>
+</itemizedlist>
+与RCU机制类似，软件时钟也是通过软中断实现的。init_timers调用timer_cpu_notify初始化内核定时器struct tvec_base结构。timer_jiffies成员指明了最近即将超时的相对值，也即tv1[0]的超时相对值。
+<programlisting><![CDATA[
+struct tvec_base {
+	spinlock_t lock;
+	struct timer_list *running_timer;
+	unsigned long timer_jiffies;
+	struct tvec_root tv1;
+	struct tvec tv2;
+	struct tvec tv3;
+	struct tvec tv4;
+	struct tvec tv5;
+} ____cacheline_aligned;
+
+kernel/timer.c
+struct tvec_base boot_tvec_bases;
+]]></programlisting>
+<figure><title>内核定时器布局</title><graphic fileref="images/timer.gif"/></figure>
+内核定时器的结构如上图所示。它间接定义了五个数组，其中第一个数组是tvec_root类型，其余四个均为tvec类型，它们实际都是对链表头进行的数组封装。内核为了快速及时的处理定时器，它将不同的定时器根据到期时间分别分组，最靠前的放在tv1中，依次类推。
+<programlisting><![CDATA[
+struct tvec {
+	struct list_head vec[TVN_SIZE];
+};
+
+struct tvec_root {
+	struct list_head vec[TVR_SIZE];
+};
+]]></programlisting>
+由于每个分组本身是一个双向链表，
+<table><title>定时器时间间隔</title>
+<tgroup cols="2">
+<thead><row><entry>时间分组 </entry><entry> 时间间隔 </entry></row></thead>
+<tbody>
+<row><entry>tv1</entry><entry>0至255</entry></row>		
+<row><entry>tv2</entry><entry>2<superscript>8</superscript>至2<superscript>14</superscript>-1</entry></row>		
+<row><entry>tv3</entry><entry>2<superscript>14</superscript>至2<superscript>20</superscript>-1</entry></row>		
+<row><entry>tv4</entry><entry>2<superscript>20</superscript>至2<superscript>26</superscript>-1</entry></row>		
+<row><entry>tv5</entry><entry>2<superscript>26</superscript>至2<superscript>32</superscript>-1</entry></row>		
+</tbody>
+</tgroup>
+</table>
+<para>
+TVR_SIZE和TVN_SIZE决定了tvec_root和tvec的链表的个数。如果为了节约内存可以配置CONFIG_BASE_SMALL为0，否则TVN_BITS的值为6，而TVR_BITS对应8。所以tvec_root和tvec的链表的个数分别为256和64。所以对于tv1来说，它的每一个链表对应与它的下标相同的到期时间的定时器。
+<programlisting><![CDATA[
+#define TVN_BITS (CONFIG_BASE_SMALL ? 4 : 6)
+#define TVR_BITS (CONFIG_BASE_SMALL ? 6 : 8)
+#define TVN_SIZE (1 << TVN_BITS)
+#define TVR_SIZE (1 << TVR_BITS)
+]]></programlisting>
+</para>
+timer_cpu_notify在初始化阶段时参数action被指定为CPU_UP_PREPARE，此时它将调用init_timers_cpu来初始化当前CPU对应的tvec_base结构。对于非SMP系统来说就是boot_tvec_bases。初始化的代码如下：
+<programlisting><![CDATA[
+/kernel/timer.c(init_timers_cpu)
+	spin_lock_init(&base->lock);
+
+	for (j = 0; j < TVN_SIZE; j++) {
+		INIT_LIST_HEAD(base->tv5.vec + j);
+		INIT_LIST_HEAD(base->tv4.vec + j);
+		INIT_LIST_HEAD(base->tv3.vec + j);
+		INIT_LIST_HEAD(base->tv2.vec + j);
+	}
+	for (j = 0; j < TVR_SIZE; j++)
+		INIT_LIST_HEAD(base->tv1.vec + j);
+
+	base->timer_jiffies = jiffies;
+]]></programlisting>
+init_timer_stats函数只有在配置CONFIG_TIMER_STATS时才有效，否则为空函数。register_cpu_notifier在SMP上有效，否则为空函数。open_softirq用来注册TIMER_SOFTIRQ软中断的处理函数run_timer_softirq。run_timer_softirq用来在软中断中使用后半步来进行定时器链表的处理。
+</sect2>
+<sect2><title>hrtimers_init</title>
+hrtimers_init与init_timers类似，但是它初始化每CPU变量hrtimer_bases，它用来实现高精度定时器。
+</sect2>
+</sect1>

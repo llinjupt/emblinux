@@ -1,0 +1,2517 @@
+<sect1><title>内核初始化</title>
+start_kernel是一个非常重要的初始化函数和引导函数。在start_kernel()函数中：
+<itemizedlist>
+<listitem>输出Linux版本信息（printk(linux_banner)） </listitem>
+<listitem>设置与体系结构相关的环境（setup_arch()） </listitem>
+<listitem>页表结构初始化（paging_init()） </listitem>
+<listitem>使用"arch/alpha/kernel/entry.S"中的入口点设置系统自陷入口（trap_init()） </listitem>
+<listitem>使用alpha_mv结构和entry.S入口初始化系统IRQ（init_IRQ()） </listitem>
+<listitem>核心进程调度器初始化（包括初始化几个缺省的Bottom-half，sched_init()） </listitem>
+<listitem>时间、定时器初始化（包括读取CMOS时钟、估测主频、初始化定时器中断等，time_init()） </listitem>
+<listitem>提取并分析核心启动参数（从环境变量中读取参数，设置相应标志位等待处理，（parse_options()） </listitem>
+<listitem>控制台初始化（为输出信息而先于PCI初始化，console_init()） </listitem>
+<listitem>剖析器数据结构初始化（prof_buffer和prof_len变量） </listitem>
+<listitem>核心Cache初始化（描述Cache信息的Cache，kmem_cache_init()） </listitem>
+<listitem>延迟校准（获得时钟jiffies与CPU主频ticks的延迟，calibrate_delay()）</listitem> 
+<listitem>内存初始化（设置内存上下界和页表项初始值，mem_init()） </listitem>
+<listitem>创建和设置内部及通用cache（"slab_cache"，kmem_cache_sizes_init()） </listitem>
+<listitem>创建uid taskcount SLAB cache（"uid_cache"，uidcache_init()） </listitem>
+<listitem>创建文件cache（"files_cache"，filescache_init()） </listitem>
+<listitem>创建目录cache（"dentry_cache"，dcache_init()） </listitem>
+<listitem>创建与虚存相关的cache（"vm_area_struct"，"mm_struct"，vma_init()） </listitem>
+<listitem>块设备读写缓冲区初始化（同时创建"buffer_head"cache用户加速访问，buffer_init()） </listitem>
+<listitem>创建页cache（内存页hash表初始化，page_cache_init()） </listitem>
+<listitem>创建信号队列cache（"signal_queue"，signals_init()） </listitem>
+<listitem>初始化内存inode表（inode_init()） </listitem>
+<listitem>创建内存文件描述符表（"filp_cache"，file_table_init()） </listitem>
+<listitem>检查体系结构漏洞（对于alpha，此函数为空，check_bugs()） </listitem>
+<listitem>SMP机器其余CPU（除当前引导CPU）初始化（对于没有配置SMP的内核，此函数为空，smp_init()） </listitem>
+<listitem>启动init过程（创建第一个核心线程，调用init()函数，原执行序列调用cpu_idle() 等待调度，init()） </listitem>
+</itemizedlist>
+下面将根据start_kernel调用一些列初始化函数的流程，一一分析。start_kernel的开始的几个函数都是空函数，第一个有效的函数是local_irq_disable，它通过汇编指令cpsid i关中断。一些初始化的动作必须在关中断下进行。
+<programlisting><![CDATA[
+asmlinkage void __init start_kernel(void)
+{
+	char * command_line;
+	extern struct kernel_param __start___param[], __stop___param[];
+	
+	smp_setup_processor_id();
+
+	unwind_init();
+	lockdep_init();
+	debug_objects_early_init();
+	cgroup_init_early();
+
+	local_irq_disable();
+	early_boot_irqs_off();
+	early_init_irq_lock_class();
+/*
+ * Interrupts are still disabled. Do necessary setups, then
+ * enable them
+ */
+	lock_kernel();
+	tick_init();
+	boot_cpu_init();
+	page_address_init();
+	......	
+]]></programlisting>	
+<sect2>	<title>CPU掩码</title>
+<para>
+当前系统的所有CPU均通过一些被声明为全局变量的掩码来进行记录，处于不同状态的CPU将对应不同的掩码。boot_cpu_init函数设置当前CPU到online，present和possible掩码中。它们分别表示正在运行，物理上存在，和其他情况。<emphasis>具体请参考Documentation/cpu-hotplug.txt。</emphasis>
+<programlisting><![CDATA[
+static void __init boot_cpu_init(void)
+{
+	int cpu = smp_processor_id();
+	/* Mark the boot cpu "present", "online" etc for SMP and UP case */
+	cpu_set(cpu, cpu_online_map);
+	cpu_set(cpu, cpu_present_map);
+	cpu_set(cpu, cpu_possible_map);
+}
+]]></programlisting>	
+<programlisting><![CDATA[
+include/linux/cpumask.h
+typedef struct cpumask { DECLARE_BITMAP(bits, NR_CPUS);}cpumask_t;
+
+include/linux/types.h
+#define DECLARE_BITMAP(name,bits) \
+        unsigned long name[BITS_TO_LONGS(bits)]
+
+include/linux/bitopts.h
+#define BITS_PER_BYTE           8
+#define BITS_TO_LONGS(nr)       DIV_ROUND_UP(nr, BITS_PER_BYTE * sizeof(long))
+
+include/linux/kernel.h
+#define DIV_ROUND_UP(n,d) (((n) + (d) - 1) / (d))
+]]></programlisting>
+DIV_ROUND_UP作用是将n/d，除非整除，否则向上取整。考虑sizeof(long)为4的情况，展开后的定义为：
+<programlisting><![CDATA[
+typedef struct cpumask 
+{
+ unsigned long bits[ceil[(NR_CPUS + 32 - 1)/32]] /* ceil意为向上取整 */
+}cpumask_t;
+]]></programlisting>
+NR_CPUS是与多处理相关的宏定义，表示CPU的个数。如果定义了CONFIG_SMP那么取CONFIG_NR_CPUS，否则取1。
+<programlisting><![CDATA[
+include/linux/threads.h
+#ifdef CONFIG_SMP
+#define NR_CPUS         CONFIG_NR_CPUS
+#else
+#define NR_CPUS         1
+#endif
+]]></programlisting>
+cpu_online_map和cpu_possible_map被定义在对应架构下的smp.c中。cpu_present_map则定义在通用的cpu.c中。
+<programlisting><![CDATA[
+arch/arm/kernel/smp.c
+cpumask_t cpu_possible_map;
+EXPORT_SYMBOL(cpu_possible_map);
+cpumask_t cpu_online_map;
+EXPORT_SYMBOL(cpu_online_map);
+
+kernel/cpu.c
+cpumask_t cpu_present_map __read_mostly;
+EXPORT_SYMBOL(cpu_present_map);
+]]></programlisting>
+对这些CPU掩码变量的引用需要通过定义在cpumask.h中的宏，而不可直接操作。系统在include/linux/bitmap.h中定义了一些位操作函数，它们同时包含了特定系统架构的位操作函数，比如ARM的arch/arm/include/asm/bitops.h。
+<programlisting><![CDATA[
+include/linux/cpumask.h
+#define cpu_set(cpu, dst) __cpu_set((cpu), &(dst))
+static inline void __cpu_set(int cpu, volatile cpumask_t *dstp)
+{
+        set_bit(cpu, dstp->bits);
+}
+]]></programlisting>
+gcc的内建函数 __builtin_constant_p 用于判断一个值是否为编译时常数，如果参数EXP的值是常数，函数返回1，否则返回 0。这里对位操作采用原子操作，所以在操作前后需要关中断和恢复中断标志位。
+<programlisting><![CDATA[
+arch/arm/include/asm/bitops.h
+#define set_bit(nr,p)    ATOMIC_BITOP_LE(set_bit,nr,p)
+#define ATOMIC_BITOP_LE(name,nr,p)              \
+        (__builtin_constant_p(nr) ?             \
+         ____atomic_##name(nr, p) :             \
+         _##name##_le(nr,p))
+
+static inline void ____atomic_set_bit(unsigned int bit, volatile unsigned long *p)
+{
+        unsigned long flags;
+        unsigned long mask = 1UL << (bit & 31);
+
+        p += bit >> 5;
+
+        raw_local_irq_save(flags);
+        *p |= mask;
+        raw_local_irq_restore(flags);
+}
+]]></programlisting>
+首先使用mrs指令将cpsr保存到x中，然后通过cpsid i关中断，cpsid只可以运行在非用户模式下。
+<programlisting><![CDATA[
+arch/arm/include/asm/irqflags.h
+#define raw_local_irq_save(x)                                   \
+        ({                                                      \
+        __asm__ __volatile__(                                   \
+        "mrs    %0, cpsr                @ local_irq_save\n"     \
+        "cpsid  i"                                              \
+        : "=r" (x) : : "memory", "cc");                         \
+        })
+
+#define raw_local_irq_restore(x)                                \
+        __asm__ __volatile__(                                   \
+        "msr    cpsr_c, %0              @ local_irq_restore\n"  \
+        :                                                       \
+        : "r" (x)                                               \
+        : "memory", "cc")      
+]]></programlisting>	
+恢复标志位，cpsr_c指CPSR中的control field（[7:0]）。由于F位，模式位M[3:0]和状态位T[4]不变，相当于只恢复I位。
+	</para>
+</sect2>
+<sect2><title>内核版本信息</title>
+	<para>
+page_address_init在include/linux/mm.h中被定义为空函数。紧接着将打印出内核的版本信息。
+<programlisting><![CDATA[
+	printk(KERN_NOTICE);
+	printk(linux_banner);
+]]></programlisting>
+KERN_NOTICE是内核pinrk函数的一个优先级，它们被定义在kernel.h中。
+<programlisting><![CDATA[
+include/linux/kernel.h
+#define KERN_EMERG      "<0>"   /* system is unusable                   */
+#define KERN_ALERT      "<1>"   /* action must be taken immediately     */
+#define KERN_CRIT       "<2>"   /* critical conditions                  */
+#define KERN_ERR        "<3>"   /* error conditions                     */
+#define KERN_WARNING    "<4>"   /* warning conditions                   */
+#define KERN_NOTICE     "<5>"   /* normal but significant condition     */
+#define KERN_INFO       "<6>"   /* informational                        */
+#define KERN_DEBUG      "<7>"   /* debug-level messages                 */
+]]></programlisting>
+linux_banner则给出了一些内核启动时的信息。
+<programlisting><![CDATA[
+include/linux/utsrelease.h
+#define UTS_RELEASE "2.6.28.6"
+
+include/linux/compile.h
+/* This file is auto generated, version 468 */
+#define UTS_MACHINE "arm"
+#define UTS_VERSION "#468 Fri Sep 16 14:19:20 CST 2011"
+#define LINUX_COMPILE_TIME "14:19:20"
+#define LINUX_COMPILE_BY "root"
+#define LINUX_COMPILE_HOST "ubuntu"
+#define LINUX_COMPILE_DOMAIN ""
+#define LINUX_COMPILER "gcc version 4.2.2"
+
+init/version.c
+/* FIXED STRINGS! Don't touch! */
+const char linux_banner[] =
+        "Linux version " UTS_RELEASE " (" LINUX_COMPILE_BY "@"
+        LINUX_COMPILE_HOST ") (" LINUX_COMPILER ") " UTS_VERSION "\n";     
+]]></programlisting>
+utsrelease.h在内核的主Makefile自动生成，规则如下，显然tahiti根据KERNELRELEASE生成的，而KERNELRELEASE被定义为：KERNELRELEASE = $(shell cat include/config/kernel.release 2> /dev/null)。所以最终由kernel.release文件或得，这也是它作为utsrelease.h依赖的原因。
+<programlisting><![CDATA[
+uts_len := 64
+define filechk_utsrelease.h
+        if [ `echo -n "$(KERNELRELEASE)" | wc -c ` -gt $(uts_len) ]; then \
+          echo '"$(KERNELRELEASE)" exceeds $(uts_len) characters' >&2;    \
+          exit 1;                                                         \
+        fi;                                                               \
+        (echo \#define UTS_RELEASE \"$(KERNELRELEASE)\";)
+endef
+......
+include/linux/utsrelease.h: include/config/kernel.release FORCE
+        $(call filechk,utsrelease.h)
+......  
+]]></programlisting>	
+compile.h在init/Makefile中定义了生成规则，这些宏均是通过脚本scripts/mkcompile_h检测和生成的。
+<programlisting><![CDATA[
+include/linux/compile.h: FORCE
+        @$($(quiet)chk_compile.h)
+        $(Q)$(CONFIG_SHELL) $(srctree)/scripts/mkcompile_h $@ \
+        "$(UTS_MACHINE)" "$(CONFIG_SMP)" "$(CONFIG_PREEMPT)" "$(CC) $(KBUILD_CFLAGS)"
+]]></programlisting>
+它的输出类似于如下信息。这些信息指明了内核版本，编译时间和编译环境。
+<programlisting><![CDATA[
+Linux version 2.6.28.6 (root@ubuntu) (gcc version 4.2.2) #468 Fri Sep 16 14:19:20 CST 2011
+]]></programlisting>
+</para>
+</sect2>
+<sect2><title>内存屏障</title>
+<para>
+内存屏障保证高级语言，比如C语言的编译器在优化生成的代码时能够保证总是使用内存中的值，而不是D Cache缓冲区或者寄存器中的值。换句话说，所有在设置内存屏障前发起的内存访问，必须在设置内存屏障之后发起的内存访问之前完成，并且之后的访问被保证是从内存而来。内存屏障的本质是保证了指令按特定的顺序执行，而非编译器优化过的顺序执行。内存屏障由一个名为barrier()的宏定义：
+<programlisting><![CDATA[
+include/linux/compiler-gcc.h
+#define barrier() __asm__ __volatile__("": : :"memory")
+]]></programlisting>	
+要彻底理解barrier()的作用，需要首先理解内嵌汇编。字符串"memory"向GCC声明："在这里，内存发生了，或可能发生了改变"。接下来的在编译器需要某个内存中的数据时，它将从内存取得，而不是寄存器或者高速缓存。一个实际的例子如下所示：
+<programlisting><![CDATA[
+#define barrier() __asm__ __volatile__("": : :"memory")
+int g_test = 0;
+int main()
+{
+        int *tmp = &g_test;
+        *tmp = 100;
+     // barrier();
+        if(*tmp == 100)
+                return 0;
+
+        return 1;
+}
+]]></programlisting>
+编译命令如下，为了得到间接的代码，参数中加上了-O2优化选项。
+<programlisting><![CDATA[
+arm-linux-gcc test.c -o test -O2
+]]></programlisting>	
+首先编译没有内存屏障宏的代码，并反汇编得到main函数对应的汇编指令：
+<programlisting><![CDATA[
+00008334 <main>:
+    8334:       e59f300c        ldr     r3, [pc, #12]   ; 8348 <main+0x14>
+    8338:       e3a02064        mov     r2, #100        ; 0x64
+    833c:       e3a00000        mov     r0, #0  ; 0x0
+    8340:       e5832000        str     r2, [r3]
+    8344:       e12fff1e        bx      lr
+    8348:       000104fc        .word   0x000104fc
+]]></programlisting>
+这里找不到*tmp == 100对应的汇编指令，显然编译器认为这句话是多余的，因为从*tmp = 100这句话开始，*tmp的值没有被任何语句改变过，所以它尝试了优化。接下来打开barrier()。
+<programlisting><![CDATA[
+00008334 <main>:
+    8334:       e59f3014        ldr     r3, [pc, #20]   ; 8350 <main+0x1c>
+    8338:       e3a02064        mov     r2, #100        ; 0x64
+    833c:       e5832000        str     r2, [r3]
+    8340:       e5930000        ldr     r0, [r3]
+    8344:       e0500002        subs    r0, r0, r2
+    8348:       13a00001        movne   r0, #1  ; 0x1
+    834c:       e12fff1e        bx      lr
+    8350:       00010504        .word   0x00010504
+]]></programlisting>
+可以看到subs和movne指令，所以确实执行了比较操作。考虑什么时候g_test的值会被悄悄改变呢？当g_test指向的是公用内存是，比如mmap，或者是I/O地址，多个线程的公用变量等。只要这个变量被其他的非运行在该CPU上的进程/线程指令改变的可能都会发生这种情况。
+</para>
+</sect2>
+<sect2><title>内核抢占</title>
+<para>
+与其他大部分Unix变体和其他大部分的操作系统不同， Linux完整地支持内核抢占。在不支持内核抢占的内核中，内核代码可以一直执行直到它完成为止。也就是说，调度程序没有办法在一个内核级的任务正在执行的时候重新调度——内核中的各任务是协作方式调度的，不具备抢占性。在2.6版的内核中，内核引人了抢占能力；现在，只要重新调度是安全的，那么内核就可以在任何时间抢占正在执行的任务。那么，什么时候重新调度才是安全的呢？只要没有持有锁，内核就可以进行抢占。锁是非抢占区域的标志。由于内核是支持SMP的，所以，如果没有持有锁，那么正在执行的代码就是可重新导入的，也就是可以抢占的。
+</para>
+<para>
+为了支持内核抢占，每个进程的数据结构thread_info中引入了preempt_count计数器。该计数器初始值通常为0，每当使用锁的时候数值加1，释放锁的时候数值减1。当数值为0的时候，内核就可执行抢占。从中断返回内核空间的时候，内核会检查need_resched和preempt_count的值。如果need_resched被设置，并且当前进程preempt_count为0的话，这说明有一个更为重要的任务需要执行并且可以安全地抢占，此时，调度程序就会调度(抢占当前进程)。如果preempt_count不为0，说明当前任务持有锁，所以抢占是不安全的。这时，就会像通常那样直接从中断返回当前执行进程。如果当前进程所持有的所有的锁都被释放了。那么preempt_count就会重新为0。此时，释放锁的代码会检查need_resched是否被设置。如果是的话，就会调用调度程序。有些内核代码需要允许或禁止内核抢占。
+<programlisting><![CDATA[
+arch/arm/include/asm/thread_info.h
+#define INIT_THREAD_INFO(tsk)                                           \
+{                                                                       \
+        .task           = &tsk,                                         \
+        .exec_domain    = &default_exec_domain,                         \
+        .flags          = 0,                                            \
+        .preempt_count  = 1,                                            \
+        .addr_limit     = KERNEL_DS,                                    \
+        .cpu_domain     = domain_val(DOMAIN_USER, DOMAIN_MANAGER) |     \
+                          domain_val(DOMAIN_KERNEL, DOMAIN_MANAGER) |   \
+                          domain_val(DOMAIN_IO, DOMAIN_CLIENT),         \
+        .restart_block  = {                                             \
+                .fn     = do_no_restart_syscall,                        \
+        },                                                              \
+}
+......
+struct task_struct init_task = INIT_TASK(init_task);
+]]></programlisting>
+init_task代表的0号进程比较特殊，它的preempt_count初始值为1，也即它默认是不可抢占的直到它自身将preempt_count置为0。内核抢占通过在.config中配置CONFIG_PREEMPT使能。preempt_count的操作通过以下宏定义进行：
+<programlisting><![CDATA[
+include/linux/preempt.h
+
+# define add_preempt_count(val) do { preempt_count() += (val); } while (0)
+# define sub_preempt_count(val) do { preempt_count() -= (val); } while (0)
+#define inc_preempt_count() add_preempt_count(1)
+#define dec_preempt_count() sub_preempt_count(1)
+#define preempt_count() (current_thread_info()->preempt_count)
+
+#ifdef CONFIG_PREEMPT
+#define preempt_disable() \
+do { \
+        inc_preempt_count(); \
+        barrier(); \
+} while (0)
+]]></programlisting>
+preempt_disable的实现首通过inc_preempt_count将进程的preempt_count增加1，然后使用内存屏障确保操作完成。
+<programlisting><![CDATA[
+#define preempt_enable_no_resched() \
+do { \
+        barrier(); \
+        dec_preempt_count(); \
+} while (0)
+
+#define preempt_check_resched() \
+do { \
+        if (unlikely(test_thread_flag(TIF_NEED_RESCHED))) \
+                preempt_schedule(); \
+} while (0)
+
+#define preempt_enable() \
+do { \
+        preempt_enable_no_resched(); \
+        barrier(); \
+        preempt_check_resched(); \
+} while (0)
+#else
+.....
+]]></programlisting>
+preempt_enable首先通过内存屏障确保当前操作完成，然后通过dec_preempt_count将进程的preempt_count减去1，接着根据TIF_NEED_RESCHED标志位决定是否执行preempt_schedule从而触发调度函数schedule的执行。
+</para>
+<para>
+如果内核中的进程被阻塞了，或它显式地调用了schedule()，内核抢占也会显式地发生。这种形式的内核代码从来都是受支持的，因为根本无需额外的逻辑来保证内核可以安全地发生被抢占。如果代码显式的调用了schedule()，那么它应该清楚自己是可以安全地被抢占的。
+</para>	
+<para>
+内核抢占发生在:
+<itemizedlist> 
+<listitem>(1) 当"从中断处理程序"正在执行，且返回内核空间之前</listitem>
+<listitem>(2) 内核代码再一次具有可抢占性的时候</listitem>
+<listitem>(3) 如果内核中的任务显式的调用schedule()</listitem>
+<listitem>(4) 如果内核中的任务阻塞(这同样也会导致调用schedule())</listitem>
+</itemizedlist>
+</para>	
+</sect2>
+<sect2><title>printk</title>
+<para>
+一个奇怪的事实是printk是如何将信息打印出来的，此时一些基本的初始化还没有完成。它被定义在kernel/printk.c中：
+<programlisting><![CDATA[
+asmlinkage int printk(const char *fmt, ...)
+{
+	va_list args;
+	int r;
+	
+	va_start(args, fmt);
+	r = vprintk(fmt, args);
+	va_end(args);
+	
+	return r;
+}
+]]></programlisting>
+下面就接着看vprintk函数的处理流程，vprintk实现printk的主要操作。它用到了两个缓冲区，并最终调用终端驱动打印出信息。
+<programlisting><![CDATA[
+asmlinkage int vprintk(const char *fmt, va_list args)
+{
+	int printed_len = 0;
+	int current_log_level = default_message_loglevel;
+	unsigned long flags;
+	int this_cpu;
+	char *p;
+
+	boot_delay_msec();
+
+	preempt_disable();
+	/* This stops the holder of console_sem just where we want him */
+	raw_local_irq_save(flags);
+	this_cpu = smp_processor_id();
+]]></programlisting>
+首先设置当前日志级别为default_message_loglevel，所有关于内核日志级别的设定均位于kernel.h中。boot_delay_msec只有配置了CONFIG_BOOT_PRINTK_DELAY才起作用，它尝试在内核打印一条信息后等待一段时间。preempt_disable禁止内核抢占。raw_local_irq_save禁中断，是为了使console_sem信号量的持有者能够在我们希望它停止的地方停止。this_cpu获取当前CPU的编号，它用来检测printk是否出现了嵌套。
+<programlisting><![CDATA[
+include/linux/kernel.h
+#define console_loglevel (console_printk[0])
+#define default_message_loglevel (console_printk[1])
+#define minimum_console_loglevel (console_printk[2])
+#define default_console_loglevel (console_printk[3])
+
+kernel/printk.c
+int console_printk[4] = {
+	DEFAULT_CONSOLE_LOGLEVEL,	/* console_loglevel */
+	DEFAULT_MESSAGE_LOGLEVEL,	/* default_message_loglevel */
+	MINIMUM_CONSOLE_LOGLEVEL,	/* minimum_console_loglevel */
+	DEFAULT_CONSOLE_LOGLEVEL,	/* default_console_loglevel */
+};
+]]></programlisting>
+
+<programlisting><![CDATA[
+	/*
+	 * Ouch, printk recursed into itself!
+	 */
+	if (unlikely(printk_cpu == this_cpu)) {
+		/*
+		 * If a crash is occurring during printk() on this CPU,
+		 * then try to get the crash message out but make sure
+		 * we can't deadlock. Otherwise just return to avoid the
+		 * recursion and return - but flag the recursion so that
+		 * it can be printed at the next appropriate moment:
+		 */
+		if (!oops_in_progress) {
+			recursion_bug = 1;
+			goto out_restore_irqs;
+		}
+		zap_locks();
+	}
+
+	lockdep_off();
+	spin_lock(&logbuf_lock);
+	printk_cpu = this_cpu;	
+]]></programlisting>
+printk_cpu记录了当前执行vprintk的CPU的编号。oops_in_progress只有在panic(), BUG() 或 die() 调用中才会被置1。如果发现嵌套调用，那么置recursion_bug为1，然后做恢复处理后直接退出。所以嵌套调用的错误信息只有在下次调用printk时才能处理。zap_locks只有在oops处理时才会被调用，此时这个CPU崩溃，10秒1次初始化锁logbuf_lock和console_sem，以确保不会死锁，留时间给控制台打印完全的oops信息。接下来锁住logbuf_lock，它同时保证对log_buf和printk_buf的互斥操作。接着记录当前的CPU编号。
+<programlisting><![CDATA[
+static void zap_locks(void)
+{
+	static unsigned long oops_timestamp;
+
+	if (time_after_eq(jiffies, oops_timestamp) &&
+			!time_after(jiffies, oops_timestamp + 30 * HZ))
+		return;
+
+	oops_timestamp = jiffies;
+
+	/* If a crash is occurring, make sure we can't deadlock */
+	spin_lock_init(&logbuf_lock);
+	/* And make sure that we print immediately */
+	init_MUTEX(&console_sem);
+}
+]]></programlisting>
+如果发生了嵌套调用，那么recursion_bug清零，与此同时将recursion_bug_msg信息放入printk_buf。注意嵌套调用是发生在上一次，而非本次。
+<programlisting><![CDATA[
+static const char recursion_bug_msg [] =
+		KERN_CRIT "BUG: recent printk recursion!\n";		
+......
+	if (recursion_bug) {
+		recursion_bug = 0;
+		strcpy(printk_buf, recursion_bug_msg);
+		printed_len = sizeof(recursion_bug_msg);
+	}
+]]></programlisting>
+将要输出的字符串按照fmt中的格式编排好，放入printk_buf中，并返回应该输出的字符个数。
+<programlisting><![CDATA[
+	/* Emit the output into the temporary buffer */
+	printed_len += vscnprintf(printk_buf + printed_len,
+				  sizeof(printk_buf) - printed_len, fmt, args);
+]]></programlisting>
+拷贝printk_buf数据到环形缓冲区中，如果调用者没有提供合适的日志级别，则插入默认级别。拷贝的过程由函数emit_log_char实现，每次拷贝一个字节。另外如果配置了CONFIG_PRINTK_TIME，printk_time将被设置为1，将在每条信息前加上当前时间。
+<programlisting><![CDATA[
+	for (p = printk_buf; *p; p++) {
+		if (new_text_line) {
+			/* If a token, set current_log_level and skip over */
+			if (p[0] == '<' && p[1] >= '0' && p[1] <= '7' &&
+			    p[2] == '>') {
+				current_log_level = p[1] - '0';
+				p += 3;
+				printed_len -= 3;
+			}
+
+			/* Always output the token */
+			emit_log_char('<');
+			emit_log_char(current_log_level + '0');
+			emit_log_char('>');
+			printed_len += 3;
+			new_text_line = 0;
+
+			if (printk_time) {
+				/* Follow the token with the time */
+				......
+			}
+
+			if (!*p)
+				break;
+		}
+		......
+	}
+]]></programlisting>
+真正的打印在release_console_sem中调用实际的串口驱动进行，但是对串口驱动的操作需要获取console_sem。acquire_console_semaphore_for_printk就是获取信号量的操作。
+<programlisting><![CDATA[
+	if (acquire_console_semaphore_for_printk(this_cpu))
+		release_console_sem();
+]]></programlisting>
+acquire_console_semaphore_for_printk函数必须在锁定logbuf_lock并且关中断时才可调用。如果获取成功必须设置console_locked为1，console_may_schedule则被清零。can_use_console用来判断串口驱动是否已经被注册入内核。无论获取失败还是成功都将释放spin_unlock自旋锁。此时CPU依然处于关中断环境，这是由于vprintk将处理中断的恢复。
+<programlisting><![CDATA[
+int try_acquire_console_sem(void)
+{
+	if (down_trylock(&console_sem))
+		return -1;
+	console_locked = 1;
+	console_may_schedule = 0;
+	return 0;
+}
+......
+static int acquire_console_semaphore_for_printk(unsigned int cpu)
+{
+	int retval = 0;
+
+	if (!try_acquire_console_sem()) {
+		retval = 1;
+
+		/*
+		 * If we can't use the console, we need to release
+		 * the console semaphore by hand to avoid flushing
+		 * the buffer. We need to hold the console semaphore
+		 * in order to do this test safely.
+		 */
+		if (!can_use_console(cpu)) {
+			console_locked = 0;
+			up(&console_sem);
+			retval = 0;
+		}
+	}
+	printk_cpu = UINT_MAX;
+	spin_unlock(&logbuf_lock);
+	return retval;
+}
+]]></programlisting>
+<programlisting><![CDATA[
+void release_console_sem(void)
+{
+	unsigned long flags;
+	unsigned _con_start, _log_end;
+	unsigned wake_klogd = 0;
+
+	if (console_suspended) {
+		up(&secondary_console_sem);
+		return;
+	}
+
+	console_may_schedule = 0;
+
+	for ( ; ; ) {
+		spin_lock_irqsave(&logbuf_lock, flags);
+		wake_klogd |= log_start - log_end;
+		if (con_start == log_end)
+			break;			/* Nothing to print */
+		_con_start = con_start;
+		_log_end = log_end;
+		con_start = log_end;		/* Flush */
+		spin_unlock(&logbuf_lock);
+		stop_critical_timings();	/* don't trace print latency */
+		call_console_drivers(_con_start, _log_end);
+		start_critical_timings();
+		local_irq_restore(flags);
+	}
+	console_locked = 0;
+	up(&console_sem);
+	spin_unlock_irqrestore(&logbuf_lock, flags);
+	if (wake_klogd)
+		wake_up_klogd();
+}
+]]></programlisting>
+call_console_drivers函数在最终是通过__call_console_drivers函数来实现的。所有的串口驱动都通过register_console注册到console_drivers链表中，当printk侦测到有可以使用的终端，那么就将信息通过驱动的write函数写出。
+<programlisting><![CDATA[
+static void __call_console_drivers(unsigned start, unsigned end)
+{
+	struct console *con;
+
+	for (con = console_drivers; con; con = con->next) {
+		if ((con->flags & CON_ENABLED) && con->write &&
+				(cpu_online(smp_processor_id()) ||
+				(con->flags & CON_ANYTIME)))
+			con->write(con, &LOG_BUF(start), end - start);
+	}
+}
+]]></programlisting>
+log_buf的大小由__LOG_BUF_LEN定义，它又由.config中的CONFIG_LOG_BUF_SHIFT决定，通常值为17，也即128K的大小。log_buf数组被模拟成环状队列，当信息总长度超过它的最大大小时，新的信息将覆盖旧的信息。dmesg输出的信息就是从该缓冲区读出的。
+<programlisting><![CDATA[
+#define __LOG_BUF_LEN	(1 << CONFIG_LOG_BUF_SHIFT)
+......
+static char __log_buf[__LOG_BUF_LEN];
+static char *log_buf = __log_buf;
+static int log_buf_len = __LOG_BUF_LEN;
+]]></programlisting>
+	</para>	
+</sect2>
+
+<sect2><title>setup_arch</title>
+<para>
+setup_arch是一个重量级函数，它使用Bootloader传递来的内核参数对特定机器架构驱动等进行初始化。
+<programlisting><![CDATA[
+char *command_line;
+......
+setup_arch(&command_line);
+]]></programlisting>	
+setup_arch特定于系统架构，init_tags的定义与bootloader中的struct tag需要保持一致，使用它来解析bootloader传递来的内核参数以及通过CONFIG_CMDLINE定义的参数。
+<programlisting><![CDATA[
+arch/arm/include/asm/setup.h
+#define COMMAND_LINE_SIZE 1024
+
+arch/arm/kernel/setup.c
+static char default_command_line[COMMAND_LINE_SIZE] __initdata = CONFIG_CMDLINE;
+
+void __init setup_arch(char **cmdline_p)
+{
+	struct tag *tags = (struct tag *)&init_tags;
+	struct machine_desc *mdesc;
+	char *from = default_command_line;
+]]></programlisting>
+default_command_line通过CONFIG_CMDLINE传递进来：
+<programlisting><![CDATA[
+CONFIG_CMDLINE="root=/dev/mtdblock2 rootfstype=cramfs init=/linuxrc console=ttySAC0,115200 mem=256M"
+]]></programlisting>
+
+<programlisting><![CDATA[
+	setup_processor();
+]]></programlisting>
+lookup_processor_type被定义在arch/arm/mm/proc-v6.S中。read_cpuid_id从CP15的寄存器中读取CPU ID，然后查找到CPU对应的proc_info_list结构体。然后通过printk打印出CPU的相关信息。
+<programlisting><![CDATA[
+static void __init setup_processor(void)
+{
+	struct proc_info_list *list;
+
+	......
+	list = lookup_processor_type(read_cpuid_id());
+	if (!list) {
+		printk("CPU configuration botched (ID %08x), unable "
+		       "to continue.\n", read_cpuid_id());
+		while (1);
+	}
+
+	cpu_name = list->cpu_name;
+
+	......
+#ifdef MULTI_USER
+	cpu_user = *list->user;
+#endif
+#ifdef MULTI_CACHE
+	cpu_cache = *list->cache;
+#endif
+
+	printk("CPU: %s [%08x] revision %d (ARMv%s), cr=%08lx\n",
+	       cpu_name, read_cpuid_id(), read_cpuid_id() & 15,
+	       proc_arch[cpu_architecture()], cr_alignment);
+
+	sprintf(init_utsname()->machine, "%s%c", list->arch_name, ENDIANNESS);
+	sprintf(elf_platform, "%s%c", list->elf_name, ENDIANNESS);
+	elf_hwcap = list->elf_hwcap;
+#ifndef CONFIG_ARM_THUMB
+	elf_hwcap &= ~HWCAP_THUMB;
+#endif
+
+	cacheid_init();
+	cpu_proc_init();
+}
+]]></programlisting>
+printk的输出如下所示，cpu_name为ARMv6-compatible processor，CPUID为410fb766，revision为6，processor arch为ARMv7。cr_alignment则保存了CP15中控制寄存器C1的值。
+<programlisting><![CDATA[
+CPU: ARMv6-compatible processor [410fb766] revision 6 (ARMv7), cr=00c5387f
+]]></programlisting>
+read_cpuid_cachetype和cpu_architecture分别获取cachetype和arch，根据它们确定cacheid并打印输出。cpu_proc_init通过一些列的宏定义最终调用到cpu_xxx_proc_init，这里为cpu_v6_proc_init，它通过汇编语言定义在arch/arm/mm/proc_v6.S中，完成CPU的初始化。
+<programlisting><![CDATA[
+static void __init cacheid_init(void)
+{
+	unsigned int cachetype = read_cpuid_cachetype();
+	unsigned int arch = cpu_architecture();
+
+	if (arch >= CPU_ARCH_ARMv7) {
+		cacheid = CACHEID_VIPT_NONALIASING;
+		if ((cachetype & (3 << 14)) == 1 << 14)
+			cacheid |= CACHEID_ASID_TAGGED;
+	} else if (arch >= CPU_ARCH_ARMv6) {
+		if (cachetype & (1 << 23))
+			cacheid = CACHEID_VIPT_ALIASING;
+		else
+			cacheid = CACHEID_VIPT_NONALIASING;
+	} else {
+		cacheid = CACHEID_VIVT;
+	}
+
+	printk("CPU: %s data cache, %s instruction cache\n",
+		cache_is_vivt() ? "VIVT" :
+		cache_is_vipt_aliasing() ? "VIPT aliasing" :
+		cache_is_vipt_nonaliasing() ? "VIPT nonaliasing" : "unknown",
+		cache_is_vivt() ? "VIVT" :
+		icache_is_vivt_asid_tagged() ? "VIVT ASID tagged" :
+		cache_is_vipt_aliasing() ? "VIPT aliasing" :
+		cache_is_vipt_nonaliasing() ? "VIPT nonaliasing" : "unknown");
+}
+]]></programlisting>
+<programlisting><![CDATA[
+CPU: VIPT nonaliasing data cache, VIPT nonaliasing instruction cache
+]]></programlisting>
+接下来通过setup_machine用机器编号作为参数返回机器描述符。从机器描述符中获得内核参数的物理地址，赋值给tags 变量。然后调用parse_tags（）函数分析内核参数链表，把各个参数值传递给全局变量。这样内核就收到了BootLoader 传递的参数。
+<programlisting><![CDATA[
+	mdesc = setup_machine(machine_arch_type);
+	machine_name = mdesc->name;
+]]></programlisting>
+.config中定义了CONFIG_MACH_SMDK6410，如果定义了machine_arch_type，那么传递的值从bootloader传递来的__machine_arch_type得到，否则为MACH_TYPE_SMDK6410。
+<programlisting><![CDATA[
+include/asm/mach-types.h
+#define MACH_TYPE_SMDK6410             1626
+......
+#ifdef CONFIG_MACH_SMDK6410
+# ifdef machine_arch_type
+#  undef machine_arch_type
+#  define machine_arch_type     __machine_arch_type
+# else
+#  define machine_arch_type     MACH_TYPE_SMDK6410
+# endif
+# define machine_is_smdk6410()  (machine_arch_type == MACH_TYPE_SMDK6410)
+#else
+# define machine_is_smdk6410()  (0)
+#endif
+]]></programlisting>
+setup_machine通过lookup_machine_type查找machine_desc结构体。lookup_machine_type通过汇编定义。
+<programlisting><![CDATA[
+arch/arm/kernel/head-common.S
+ENTRY(lookup_machine_type)
+        stmfd   sp!, {r4 - r6, lr}
+        mov     r1, r0
+        bl      __lookup_machine_type
+        mov     r0, r5
+        ldmfd   sp!, {r4 - r6, pc}
+ENDPROC(lookup_machine_type)
+
+static struct machine_desc * __init setup_machine(unsigned int nr)
+{
+	struct machine_desc *list;
+
+	list = lookup_machine_type(nr);
+	if (!list) {
+		printk("Machine configuration botched (nr %d), unable "
+		       "to continue.\n", nr);
+		while (1);
+	}
+
+	printk("Machine: %s\n", list->name);
+	return list;
+}
+]]></programlisting>	
+实际的机器架构则位于arch/arm/mach-xxx/mach-smdkxxx.c中，对于s3c6410位于arch/arm/mach-s3c6410/mach-smdk6410.c中，请参考<xref linkend="mach_type"/>。Machine的名称输出如下：
+<programlisting><![CDATA[
+Machine: SMDK6410
+]]></programlisting>
+如果机器架构提供了soft_reboot，那么说明它支持软启动，设置启动模式为软启动"s"。
+<programlisting><![CDATA[
+if (mdesc->soft_reboot)
+		reboot_setup("s");
+]]></programlisting>
+接着判断从bootloader是否给内核传递了参数，它通过__atags_pointer来传递，请参考<xref linkend="mach_type"/>。由于__atags_pointer指定的是物理地址，通常为物理地址开始处的0x100处，这里为0x50000100，转换后的tags的地址指向0xc0000100。boot_params中的定义.boot_params  = S3C64XX_PA_SDRAM + 0x100与此相同。
+<programlisting><![CDATA[
+	if (__atags_pointer)
+		tags = phys_to_virt(__atags_pointer);
+	else if (mdesc->boot_params)
+		tags = phys_to_virt(mdesc->boot_params);
+]]></programlisting>
+tags的第一个参数节点的类型应该是ATAG_CORE，如果不是则认为是通过旧方式struct param_struct来进行传递参数，需通过convert_to_tag_list进行转换，转换后如果第一个参数节点的类型还不是ATAG_CORE，那么使用系统默认的init_tags参数列表。
+<programlisting><![CDATA[
+	if (tags->hdr.tag != ATAG_CORE)
+		convert_to_tag_list(tags);
+	if (tags->hdr.tag != ATAG_CORE)
+		tags = (struct tag *)&init_tags;
+]]></programlisting>		
+struct machine_desc提供了用来映射IO地址空间的函数，用来初始化中断控制器的函数，用来注册外围设备函数。而对于struct machine_desc 没有能够覆盖到的处理函数，可以在fixup函数里处理。
+<programlisting><![CDATA[
+	if (mdesc->fixup)
+		mdesc->fixup(mdesc, tags, &from, &meminfo);
+]]></programlisting>
+接下来对tags参数进行解析，meminfo.nr_banks此时应该是0，squash_mem_tags是将所有ATAG_MEM类型的节点改为ATAG_NONE也即如果meminfo.nr_banks不为0，则认为已经处理过内存参数，直接跳过这些节点。只有定义了CONFIG_ATAGS_PROC，save_atags才有意义，此时tags被被备份到atags_copy[BOOT_PARAMS_SIZE]中。
+<programlisting><![CDATA[
+static struct meminfo meminfo __initdata = { 0, };
+......
+	if (tags->hdr.tag == ATAG_CORE) {
+		if (meminfo.nr_banks != 0)
+			squash_mem_tags(tags);
+		save_atags(tags);
+		parse_tags(tags);
+	}
+]]></programlisting>
+parse_tags对参数进行解析，parse_tag是真正解析的函数。解析过程详见内核参数解析<footnote>
+<para>
+<programlisting><![CDATA[
+arch/arm/kernel/setup.c
+static int __init parse_tag(const struct tag *tag)
+{
+	extern struct tagtable __tagtable_begin, __tagtable_end;
+	struct tagtable *t;
+
+	for (t = &__tagtable_begin; t < &__tagtable_end; t++)
+		if (tag->hdr.tag == t->tag) {
+			t->parse(tag);
+			break;
+		}
+
+	return t < &__tagtable_end;
+}
+]]></programlisting>
+__tagtable_begin和__tagtable_end在vmlinux.lds.S中定义，它们包含了名为.taglist.init的段类型。
+<programlisting><![CDATA[
+arch/arm/kernel/vmlinux.lds.S
+
+__tagtable_begin = .;
+        *(.taglist.init)
+__tagtable_end = .;
+]]></programlisting>
+.taglist.init的段通过宏__tagtable来定义，在arch/arm/kernel/setup.c和arch/arm/mm/init.c中可以找到很多__tagtable的定义。
+<programlisting><![CDATA[
+arch/arm/include/asm/setup.h
+struct tagtable {
+        __u32 tag;
+        int (*parse)(const struct tag *);
+};
+......
+#define __tag __used __attribute__((__section__(".taglist.init")))
+#define __tagtable(tag, fn) \
+static struct tagtable __tagtable_##fn __tag = { tag, fn }
+]]></programlisting>
+一个__tagtable定义代表了一个struct tagtable，在arch/arm下搜索__tagtable的结果如下：
+<programlisting><![CDATA[
+./mm/init.c:55:__tagtable(ATAG_INITRD, parse_tag_initrd);
+./mm/init.c:64:__tagtable(ATAG_INITRD2, parse_tag_initrd2);
+......
+./kernel/setup.c:538:__tagtable(ATAG_CORE, parse_tag_core);
+./kernel/setup.c:552:__tagtable(ATAG_MEM, parse_tag_mem32);
+./kernel/setup.c:578:__tagtable(ATAG_VIDEOTEXT, parse_tag_videotext);
+./kernel/setup.c:589:__tagtable(ATAG_RAMDISK, parse_tag_ramdisk);
+./kernel/setup.c:598:__tagtable(ATAG_SERIAL, parse_tag_serialnr);
+./kernel/setup.c:606:__tagtable(ATAG_REVISION, parse_tag_revision);
+./kernel/setup.c:614:__tagtable(ATAG_CMDLINE, parse_tag_cmdline);
+]]></programlisting>
+尝试将__tagtable(ATAG_MEM, parse_tag_mem32)展开可以得到名为__tagtable_parse_tag_mem32的tag表。它的类型被设置为ATAG_MEM，对应的parse函数为parse_tag_mem32。这些tag表被链接到__tagtable_begin和__tagtable_end之间。parse_tag就在它们之间读取tag表，并根据tag类型与传入的tag参数相匹配。一旦匹配将调用parse函数进行解析。这里以parse_tag_mem32为例：
+<programlisting><![CDATA[
+static int __init parse_tag_mem32(const struct tag *tag)
+{
+        if (meminfo.nr_banks >= NR_BANKS) {
+                printk(KERN_WARNING
+                       "Ignoring memory bank 0x%08x size %dKB\n",
+                        tag->u.mem.start, tag->u.mem.size / 1024);
+                return -EINVAL;
+        }
+        arm_add_memory(tag->u.mem.start, tag->u.mem.size);
+        return 0;
+}
+]]></programlisting>
+一个不能忽略的事实是在处理ATAG_CMDLINE节点参数时，parse_tag_cmdline将会改变default_command_line的值，所以bootloader提供的bootargs参数的优先级要高于内核配置文件中的CONFIG_CMDLINE。一般情况下它们应该保持一致。
+<programlisting><![CDATA[
+static int __init parse_tag_cmdline(const struct tag *tag)
+{
+	strlcpy(default_command_line, tag->u.cmdline.cmdline, COMMAND_LINE_SIZE);
+	return 0;
+}
+]]></programlisting>
+NR_BANKS定义支持的最大内存块数。tag->u.mem.start定义了内存的物理起始地址，tag->u.mem.size则定义了内存大小。
+<programlisting><![CDATA[
+arch/arm/include/asm/setup.h
+# define NR_BANKS 8
+struct membank {
+        unsigned long start;
+        unsigned long size;
+        int           node;
+};
+struct meminfo {
+        int nr_banks;
+        struct membank bank[NR_BANKS];
+};
+......
+static void __init arm_add_memory(unsigned long start, unsigned long size)
+{
+	struct membank *bank;
+
+	/*
+	 * Ensure that start/size are aligned to a page boundary.
+	 * Size is appropriately rounded down, start is rounded up.
+	 */
+	size -= start & ~PAGE_MASK;
+
+	bank = &meminfo.bank[meminfo.nr_banks++];
+
+	bank->start = PAGE_ALIGN(start);
+	bank->size  = size & PAGE_MASK;
+	bank->node  = PHYS_TO_NID(start);
+}
+]]></programlisting>
+size被对齐到页大小。nr_banks记录已经注册的内存bank，而bank[i]成员则记录第i个bank内存的开始地址和大小。arm_add_memory函数的工作就是把atags里面的物理内存信息增加到meminfo结构。
+</para>	</footnote>
+在解析完所有的参数以后，下面是init_mm的初始化，init_mm定义在arch/arm/kernel/init_task.c： 
+include/linux/init_task.h
+<programlisting><![CDATA[
+#define INIT_MM(name) \
+{                                                               \
+        .mm_rb          = RB_ROOT,                              \
+        .pgd            = swapper_pg_dir,                       \
+        .mm_users       = ATOMIC_INIT(2),                       \
+        .mm_count       = ATOMIC_INIT(1),                       \
+        .mmap_sem       = __RWSEM_INITIALIZER(name.mmap_sem),   \
+        .page_table_lock =  __SPIN_LOCK_UNLOCKED(name.page_table_lock), \
+        .mmlist         = LIST_HEAD_INIT(name.mmlist),          \
+        .cpu_vm_mask    = CPU_MASK_ALL,                         \
+}
+
+struct mm_struct init_mm = INIT_MM(init_mm); 
+]]></programlisting>
+从现在开始的相当一部分内容是和内存管理相关的，操作系统的内存管理是很复杂的，牵扯到处理器的硬件细节和软件算法，需要深入了解ARM MMU机制。这里设置init_mm的代码段和数据段。
+<programlisting><![CDATA[
+	init_mm.start_code = (unsigned long) &_text;
+	init_mm.end_code   = (unsigned long) &_etext;
+	init_mm.end_data   = (unsigned long) &_edata;
+	init_mm.brk	   = (unsigned long) &_end;
+]]></programlisting>
+此时的内核在RAM中的布局如下所示：
+<figure><title>内核RAM布局</title><graphic fileref="images/kernelmap.gif"/></figure>
+接着在.config中配置的CONFIG_CMDLINE被备份到boot_command_line，它将被在setup_kernel中使用。
+<programlisting><![CDATA[
+	memcpy(boot_command_line, from, COMMAND_LINE_SIZE);
+	boot_command_line[COMMAND_LINE_SIZE-1] = '\0';
+	parse_cmdline(cmdline_p, from);
+]]></programlisting>
+parse_cmdline用来解析CONFIG_CMDLINE或Bootloader传递来的参数，cmdline_p从start_arch传递而来，它将返回没有解析的其余参数。
+<programlisting><![CDATA[
+static void __init parse_cmdline(char **cmdline_p, char *from)
+{
+	char c = ' ', *to = command_line;
+	int len = 0;
+
+	for (;;) {
+		if (c == ' ') {
+			extern struct early_params __early_begin, __early_end;
+			struct early_params *p;
+
+			for (p = &__early_begin; p < &__early_end; p++) {
+				int arglen = strlen(p->arg);
+			......
+			}
+		}
+		......
+	}
+	*to = '\0';
+	*cmdline_p = command_line;
+}
+]]></programlisting>
+__early_begin和__early_en在vmlinux.lds.S中定义，显然所有名为.early_param.init的段都包含在其中。
+<programlisting><![CDATA[
+__early_begin = .;
+    *(.early_param.init)
+__early_end = .;
+]]></programlisting>
+__early_param定义了这些位于.early_param.init段中的代码。
+<programlisting><![CDATA[
+arch/arm/include/asm/setup.h
+struct early_params {
+        const char *arg;
+        void (*fn)(char **p);
+};
+
+#define __early_param(name,fn)                                  \
+static struct early_params __early_##fn __used                  \
+__attribute__((__section__(".early_param.init"))) = { name, fn }
+]]></programlisting>
+在arch/arm中搜索__early_param的结果如下：
+<programlisting><![CDATA[
+./mm/mmu.c:123:__early_param("cachepolicy=", early_cachepolicy);
+./mm/mmu.c:131:__early_param("nocache", early_nocache);
+./mm/mmu.c:139:__early_param("nowb", early_nowrite);
+./mm/mmu.c:151:__early_param("ecc=", early_ecc);
+./mm/mmu.c:650:__early_param("vmalloc=", early_vmalloc);
+./mm/init.c:44:__early_param("initrd=", early_initrd);
+./kernel/setup.c:413:__early_param("mem=", early_mem);
+]]></programlisting>
+对照bootargs的内容"root=/dev/mtdblock2 rootfstype=cramfs init=/linuxrc console=ttySAC0,115200 mem=256M"，其中的mem参数将得到处理。early_mem类似于parse_tag_mem32，但是它将开始地址设置为默认的物理偏移地址PHYS_OFFSET，大小由参数mem的值指定，并且如果使用early_mem来添加bank那么先前通过parse_tag_mem32添加的bank将被清除，也即用户指定的mem的优先级高于Bootload在启动中传递的参数。
+<programlisting><![CDATA[
+static void __init early_mem(char **p)
+{
+	static int usermem __initdata = 0;
+	unsigned long size, start;
+
+	/*
+	 * If the user specifies memory size, we
+	 * blow away any automatically generated
+	 * size.
+	 */
+	if (usermem == 0) {
+		usermem = 1;
+		meminfo.nr_banks = 0;
+	}
+
+	start = PHYS_OFFSET;
+	size  = memparse(*p, p);
+	if (**p == '@')
+		start = memparse(*p + 1, p);
+
+	arm_add_memory(start, size);
+}
+]]></programlisting>
+</para>
+<para>
+</para>	
+</sect2>
+<sect2><title>直接地址转换</title>
+内核定义了两个宏来进行物理地址和虚拟地址之间的转换。注意这里的转换只有在直接映射的情况下才有效，也即在使用段页表的情况下才有效，它们被线性映射，物理地址和虚拟地址间的偏移保持一致，通过直接的加减进行转换。虚拟地址减去虚拟地址的偏移地址PAGE_OFFSET(0xc0000000)然后加上物理地址的偏移地址(0x50000000)即可得到对应的的物理地址，反向亦然。
+<programlisting><![CDATA[
+arch/arm/include/asm/memory.h
+
+#ifndef __virt_to_phys
+#define __virt_to_phys(x)       ((x) - PAGE_OFFSET + PHYS_OFFSET)
+#define __phys_to_virt(x)       ((x) - PHYS_OFFSET + PAGE_OFFSET)
+#endif
+......
+static inline unsigned long virt_to_phys(void *x)
+{
+        return __virt_to_phys((unsigned long)(x));
+}
+
+static inline void *phys_to_virt(unsigned long x)
+{
+        return (void *)(__phys_to_virt((unsigned long)(x)));
+}
+]]></programlisting>
+</sect2>
+<sect2><title>内核页表</title>
+<para>
+这部分的主要工作建立页表，初始化内存。
+<programlisting><![CDATA[
+paging_init(&meminfo, mdesc);
+	
+arch/arm/mm/mmu.c	
+void __init paging_init(struct meminfo *mi, struct machine_desc *mdesc)
+{
+	void *zero_page;
+
+	build_mem_type_table();
+	sanity_check_meminfo(mi);
+	prepare_page_table(mi);
+	bootmem_init(mi);
+	devicemaps_init(mdesc);
+
+	top_pmd = pmd_off_k(0xffff0000);
+
+	/*
+	 * allocate the zero page.  Note that we count on this going ok.
+	 */
+	zero_page = alloc_bootmem_low_pages(PAGE_SIZE);
+	memzero(zero_page, PAGE_SIZE);
+	empty_zero_page = virt_to_page(zero_page);
+	flush_dcache_page(empty_zero_page);
+}
+]]></programlisting>
+build_mem_type_table主要是用来建立各种类型的页表选项(比如内存是MEMORY类型，设备是DEVICE，中断向量表是HIGH_VECTORS)。
+<programlisting><![CDATA[
+static void __init build_mem_type_table(void)
+{
+	struct cachepolicy *cp;
+	unsigned int cr = get_cr();
+	unsigned int user_pgprot, kern_pgprot, vecs_pgprot;
+	int cpu_arch = cpu_architecture();
+	int i;
+]]></programlisting>
+get_cr获取cp15处理器的控制寄存器c1的值。cpu_architecture获取CPU架构，S3C5410对应的值为9，也即ARMv7。
+<programlisting><![CDATA[
+arch/arm/include/asm/system.h
+#define CPU_ARCH_UNKNOWN        0
+#define CPU_ARCH_ARMv3          1
+#define CPU_ARCH_ARMv4          2
+#define CPU_ARCH_ARMv4T         3
+#define CPU_ARCH_ARMv5          4
+#define CPU_ARCH_ARMv5T         5
+#define CPU_ARCH_ARMv5TE        6
+#define CPU_ARCH_ARMv5TEJ       7
+#define CPU_ARCH_ARMv6          8
+#define CPU_ARCH_ARMv7          9
+]]></programlisting>
+S3C5410不是Xscale 3，并且注意到前面输出的cr=00c5387f，CR_XP对应到第23位，所以cr与CR_XP为真，会进入如下代码从而或得内存类型。
+<programlisting><![CDATA[
+arch/arm/include/asm/system.h
+#define CR_XP   (1 << 23)       /* Extended page tables                 */
+
+......
+if (cpu_is_xsc3() || (cpu_arch >= CPU_ARCH_ARMv6 && (cr & CR_XP))) {
+		if (!cpu_is_xsc3()) {
+			/*
+			 * Mark device regions on ARMv6+ as execute-never
+			 * to prevent speculative instruction fetches.
+			 */
+			mem_types[MT_DEVICE].prot_sect |= PMD_SECT_XN;
+			mem_types[MT_DEVICE_NONSHARED].prot_sect |= PMD_SECT_XN;
+			mem_types[MT_DEVICE_CACHED].prot_sect |= PMD_SECT_XN;
+			mem_types[MT_DEVICE_WC].prot_sect |= PMD_SECT_XN;
+		}
+		......
+]]></programlisting>
+
+<programlisting><![CDATA[
+arch/arm/mm/mm.h
+struct mem_type {
+        unsigned int prot_pte;
+        unsigned int prot_l1;
+        unsigned int prot_sect;
+        unsigned int domain;
+};
+]]></programlisting>
+struct cachepolicy *cp用来处理映射策略。它在初始化时被赋值为CPOLICY_WRITEBACK。为了保证cache和memory的数据一致性，通常有三种方法：
+<itemizedlist>
+<listitem>write through：CPU向cache写入数据时，同时向memory也写一份，使cache和memory的数据保持一致。优点是简单，缺点是每次都要访问memory，速度比较慢。</listitem>
+<listitem>post write：CPU更新cache数据时，把更新的数据写入到一个更新缓冲器，在合适的时候才对memory进行更新。这样可以提高cache访问速度，但是，在数据连续被更新两次以上的时候，缓冲区将不够使用，被迫同时更新memory。</listitem>
+<listitem>write back：CPU更新cache时，只是把更新的cache区标记一下，并不同步更新memory。只是在cache区要被新进入的数据取代时，才更新memory。这样做的原因是考虑到很多时候cache存入的是中间结果，没有必要同步更新memory。优点是CPU执行的效率提高，缺点是实现起来技术比较复杂。</listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+static unsigned int cachepolicy __initdata = CPOLICY_WRITEBACK;
+......
+cp = &cache_policies[cachepolicy];
+vecs_pgprot = kern_pgprot = user_pgprot = cp->pte;
+]]></programlisting>
+cp对应的CPOLICY_WRITEBACK内存策略如下所示，vecs_pgprot，kern_pgprot和user_pgprot被赋值为L_PTE_MT_WRITEBACK。
+<programlisting><![CDATA[
+arch/arm/include/asm/pgtable.h
+#define L_PTE_MT_WRITEBACK      (0x03 << 2)     /* 0011 */
+
+		.policy		= "writeback",
+		.cr_mask	= 0,
+		.pmd		= PMD_SECT_WB,
+		.pte		= L_PTE_MT_WRITEBACK,
+]]></programlisting>
+<programlisting><![CDATA[
+	if (cpu_arch >= CPU_ARCH_ARMv6 && (cr & CR_XP)) {
+		/*
+		 * Mark cache clean areas and XIP ROM read only
+		 * from SVC mode and no access from userspace.
+		 */
+		mem_types[MT_ROM].prot_sect |= PMD_SECT_APX|PMD_SECT_AP_WRITE;
+		mem_types[MT_MINICLEAN].prot_sect |= PMD_SECT_APX|PMD_SECT_AP_WRITE;
+		mem_types[MT_CACHECLEAN].prot_sect |= PMD_SECT_APX|PMD_SECT_AP_WRITE;
+    ......
+	}
+]]></programlisting>
+protection_map定义了16种内存访问权限，其中映射类型MAP_PRIVATE和MAP_SHARED各占8个。这里为其加上L_PTE_MT_WRITEBACK位。
+<programlisting><![CDATA[
+/mm/mmap.c 
+pgprot_t protection_map[16] = {
+        __P000, __P001, __P010, __P011, __P100, __P101, __P110, __P111,
+        __S000, __S001, __S010, __S011, __S100, __S101, __S110, __S111
+};
+
+for (i = 0; i < 16; i++) {
+	unsigned long v = pgprot_val(protection_map[i]);
+	protection_map[i] = __pgprot(v | user_pgprot);
+}
+]]></programlisting>
+
+<programlisting><![CDATA[
+	mem_types[MT_LOW_VECTORS].prot_pte |= vecs_pgprot;
+	mem_types[MT_HIGH_VECTORS].prot_pte |= vecs_pgprot;
+
+	pgprot_user   = __pgprot(L_PTE_PRESENT | L_PTE_YOUNG | user_pgprot);
+	pgprot_kernel = __pgprot(L_PTE_PRESENT | L_PTE_YOUNG |
+				 L_PTE_DIRTY | L_PTE_WRITE |
+				 L_PTE_EXEC | kern_pgprot);
+
+	mem_types[MT_LOW_VECTORS].prot_l1 |= ecc_mask;
+	mem_types[MT_HIGH_VECTORS].prot_l1 |= ecc_mask;
+	mem_types[MT_MEMORY].prot_sect |= ecc_mask | cp->pmd;
+	mem_types[MT_ROM].prot_sect |= cp->pmd;
+
+	switch (cp->pmd) {
+	case PMD_SECT_WT:
+		mem_types[MT_CACHECLEAN].prot_sect |= PMD_SECT_WT;
+		break;
+	case PMD_SECT_WB:
+	case PMD_SECT_WBWA:
+		mem_types[MT_CACHECLEAN].prot_sect |= PMD_SECT_WB;
+		break;
+	}
+	printk("Memory policy: ECC %sabled, Data cache %s\n",
+		ecc_mask ? "en" : "dis", cp->policy);
+]]></programlisting>
+<programlisting><![CDATA[
+	for (i = 0; i < ARRAY_SIZE(mem_types); i++) {
+		struct mem_type *t = &mem_types[i];
+		if (t->prot_l1)
+			t->prot_l1 |= PMD_DOMAIN(t->domain);
+		if (t->prot_sect)
+			t->prot_sect |= PMD_DOMAIN(t->domain);
+	}
+}
+]]></programlisting>
+输出结果如下：
+<programlisting><![CDATA[
+Memory policy: ECC disabled, Data cache writeback
+]]></programlisting>
+sanity_check_meminfo用于检查meminfo注册的内存bank的有效性，比如大小，是否重叠等，检测错误的内存bank将被从meminfo中移除。prepare_page_table则用于初始化页表。
+<programlisting><![CDATA[
+arch/arm/include/asm/memory.h
+#define MODULES_END             (PAGE_OFFSET)
+#define MODULES_VADDR           (MODULES_END - 16*1048576)
+
+static inline void prepare_page_table(struct meminfo *mi)
+{
+	unsigned long addr;
+
+	/*
+	 * Clear out all the mappings below the kernel image.
+	 */
+	for (addr = 0; addr < MODULES_VADDR; addr += PGDIR_SIZE)
+		pmd_clear(pmd_off_k(addr));
+
+#ifdef CONFIG_XIP_KERNEL
+	/* The XIP kernel is mapped in the module area -- skip over it */
+	addr = ((unsigned long)&_etext + PGDIR_SIZE - 1) & PGDIR_MASK;
+#endif
+	for ( ; addr < PAGE_OFFSET; addr += PGDIR_SIZE)
+		pmd_clear(pmd_off_k(addr));
+
+	/*
+	 * Clear out all the kernel space mappings, except for the first
+	 * memory bank, up to the end of the vmalloc region.
+	 */
+	for (addr = __phys_to_virt(mi->bank[0].start + mi->bank[0].size);
+	     addr < VMALLOC_END; addr += PGDIR_SIZE)
+		pmd_clear(pmd_off_k(addr));
+}
+]]></programlisting>
+1048576即为1M大小，MODULES_VADDR为PAGE_OFFSET也即0xc0000000向下偏移的16M地址0xbf000000，它定义了内核模块加载的地址。通过lsmod或者proc系统可以产看当前系统中的模块地址分配情况,所有的模块地址应该位于MODULES_VADDR和MODULES_END之间。
+<programlisting><![CDATA[
+# cat /proc/modules 
+hello 1216 0 - Live 0xbf000000
+# lsmod 
+hello 1216 0 - Live 0xbf000000
+]]></programlisting>
+VMALLOC_START和VMALLOC_END分别定义了内核堆区的起始地址。VMALLOC_OFFSET定义了8M的空洞，用于捕捉越界的内存访问。high_memory在asm-offsets.s中定义和初始化，并在后面的bootmem_init函数中赋值，但是此时的值依然为0。所以VMALLOC_START的值为8M。bank[0].start 和bank[0].size分别记录第一个内存bank的起始物理地址和大小，这里为0x50000000和0x10000000，对应的虚拟地址为0xc0000000 + 0x10000000为0xd0000000。所以接下里初始化0xd0000000到0xe0000000虚拟地址对应的段页表。
+<programlisting><![CDATA[
+arch/arm/plat-s3c/include/mach/vmalloc.h
+#define VMALLOC_END       (0xE0000000)
+
+arch/arm/include/asm/pgtable.h
+#ifndef VMALLOC_START
+#define VMALLOC_OFFSET          (8*1024*1024)
+#define VMALLOC_START           (((unsigned long)high_memory + VMALLOC_OFFSET) & ~(VMALLOC_OFFSET-1))
+#endif
+
+arch/arm/kernel/asm-offsets.s
+.ascii  "high_memory\000"
+
+arch/arm/mm/init.c
+high_memory = __va(memend_pfn << PAGE_SHIFT);
+]]></programlisting>
+Linux总是假定处理器有三级页表。
+包括： 
+<itemizedlist> 
+<listitem>页全局目录 (Page Global Directory)，即 pgd，是多级页表的抽象最高层。每一级的页表都处理不同大小的内存 —— 这个全局目录可以处理 4 MB 的区域。每项都指向一个更小目录的低级表，因此 pgd 就是一个页表目录。当代码遍历这个结构时（有些驱动程序就要这样做），就称为是在“遍历”页表。 </listitem>
+<listitem>页中间目录 (Page Middle Directory),即 pmd，是页表的中间层。在 x86 架构上，pmd 在硬件中并不存在，但是在内核代码中它是与 pgd 合并在一起的。 </listitem>
+<listitem>页表条目 (Page Table Entry)，即 pte，是页表的最低层，它直接处理页（参看PAGE_SIZE），该值包含某页的物理地址，还包含了说明该条目是否有效及相关页是否在物理内存中的位。 </listitem>
+</itemizedlist> 
+clean_pmd_entry的作用是通过CP15清楚MMU中的缓冲。
+<programlisting><![CDATA[
+arch/arm/include/asm/pgtable.h
+#define pmd_clear(pmdp)                 \
+        do {                            \
+                pmdp[0] = __pmd(0);     \ 
+                pmdp[1] = __pmd(0);     \
+                clean_pmd_entry(pmdp);  \
+        } while (0) 
+
+arch/arm/include/asm/tlbflush.h
+static inline void clean_pmd_entry(pmd_t *pmd)
+{
+        const unsigned int __tlb_flag = __cpu_tlb_flags;
+
+        if (tlb_flag(TLB_DCLEAN))
+                asm("mcr        p15, 0, %0, c7, c10, 1  @ flush_pmd"
+                        : : "r" (pmd) : "cc");
+
+        if (tlb_flag(TLB_L2CLEAN_FR))
+                asm("mcr        p15, 1, %0, c15, c9, 1  @ L2 flush_pmd"
+                        : : "r" (pmd) : "cc");
+}
+]]></programlisting>
+<programlisting><![CDATA[
+arch/arm/mm/mm.h
+static inline pmd_t *pmd_off(pgd_t *pgd, unsigned long virt)
+{
+        return pmd_offset(pgd, virt);
+}
+
+static inline pmd_t *pmd_off_k(unsigned long virt)
+{
+        return pmd_off(pgd_offset_k(virt), virt);
+}
+
+arch/arm/include/asm/page.h
+typedef struct { unsigned long pte; } pte_t;
+typedef struct { unsigned long pmd; } pmd_t; 
+typedef struct { unsigned long pgd[2]; } pgd_t;
+typedef struct { unsigned long pgprot; } pgprot_t;
+
+arch/arm/include/asm/pgtable.h
+/* to find an entry in a page-table-directory */
+#define PGDIR_SHIFT		21
+#define PGDIR_SIZE		(1UL << PGDIR_SHIFT)
+#define pgd_index(addr)         ((addr) >> PGDIR_SHIFT)
+
+#define pgd_offset(mm, addr)    ((mm)->pgd + pgd_index(addr))
+
+/* to find an entry in a kernel page-table-directory */
+#define pgd_offset_k(addr)      pgd_offset(&init_mm, addr)
+
+/* Find an entry in the second-level page table.. */
+#define pmd_offset(dir, addr)   ((pmd_t *)(dir))
+]]></programlisting>
+pgd_index根据虚拟地址计算该地址对应的全局页目录索引，直接取高位11位，而全局页表定义为init_mm.pgd，显然为swapper_pg_dir。这里为0xc0004000。内核在kernel/head.S中通过__create_page_tables创建的段页表就从这里开始。首先将0-0xc0000000对应的段页表清零，这是为了建立全局页目录索引做准备。这里需要注意到pgd_offset的运算，由于pgd，为pgd_t*类型，所以偏移值总是按照sizeof(pgd_t)的值8来偏移，而非简单的相加。由于PGDIR_SIZE的值为2M，所以这里每次偏移8，正好对应段页表的表项。
+<programlisting><![CDATA[
+arch/arm/kernel/head.S
+#define KERNEL_RAM_VADDR	(PAGE_OFFSET + TEXT_OFFSET)
+......
+.globl  swapper_pg_dir
+.equ    swapper_pg_dir, KERNEL_RAM_VADDR - 0x4000
+
+.macro  pgtbl, rd
+ldr     \rd, =(KERNEL_RAM_PADDR - 0x4000)
+.endm
+]]></programlisting>
+<figure><title>内核PGD初始化</title><graphic fileref="images/kernelpgd.gif"/></figure>
+</para>	
+</sect2>
+<sect2><title>bootmem_init</title>
+<para>
+bootmem_init为主内存创建映射关系。这个函数遍历所有节点，为每个节点调用bootmem_init_node()，完成指定节点内存的映射创建。
+<programlisting><![CDATA[
+/*
+ * This is used to pass memory configuration data from paging_init
+ * to mem_init, and by show_mem() to skip holes in the memory map.
+ */
+
+arch/arm/mm/init.c
+static struct meminfo meminfo = { 0, };
+......
+void __init bootmem_init(struct meminfo *mi)
+{
+        unsigned long memend_pfn = 0;
+        int node, initrd_node;
+
+        memcpy(&meminfo, mi, sizeof(meminfo));
+
+        /*
+         * Locate which node contains the ramdisk image, if any.
+         */
+        initrd_node = check_initrd(mi);
+]]></programlisting>
+首先将备份传入的参数mi到static类型的meminfo中，它被用来从paging_init传递内存配置信息给mem_init和show_mem使用。check_initrd在配置CONFIG_BLK_DEV_INITRD时用来检查ramdisk镜像所在的内存bank，否则返回-2。
+<programlisting><![CDATA[
+        /*
+         * Run through each node initialising the bootmem allocator.
+         */
+        for_each_node(node) {
+                unsigned long end_pfn = bootmem_init_node(node, mi);
+
+                /*
+                 * Reserve any special node zero regions.
+                 */
+                if (node == 0)
+                        reserve_node_zero(NODE_DATA(node));
+
+                /*
+                 * If the initrd is in this node, reserve its memory.
+                 */
+                if (node == initrd_node)
+                        bootmem_reserve_initrd(node);
+
+                /*
+                 * Remember the highest memory PFN.
+                 */
+                if (end_pfn > memend_pfn)
+                        memend_pfn = end_pfn;
+        }
+]]></programlisting>
+，bootmem_init_node()遍历整个meminfo 结构，为指定节点类型的Bank创建映射。为一个Bank 创建映射是通过函数map_mamory_bank()实现的。
+<programlisting><![CDATA[
+static unsigned long __init bootmem_init_node(int node, struct meminfo *mi)
+{
+	unsigned long start_pfn, end_pfn, boot_pfn;
+	unsigned int boot_pages;
+	pg_data_t *pgdat;
+	int i;
+
+	start_pfn = -1UL;
+	end_pfn = 0;
+
+	/*
+	 * Calculate the pfn range, and map the memory banks for this node.
+	 */
+	for_each_nodebank(i, mi, node) {
+		struct membank *bank = &mi->bank[i];
+		unsigned long start, end;
+
+		start = bank_pfn_start(bank);
+		end = bank_pfn_end(bank);
+
+		if (start_pfn > start)
+			start_pfn = start;
+		if (end_pfn < end)
+			end_pfn = end;
+
+		map_memory_bank(bank);
+	}
+]]></programlisting>
+bank_pfn_start和bank_pfn_end均为宏定义，它们实现将bank中的物理地址转换到页帧。
+<programlisting><![CDATA[
+arch/arm/include/asm/memory.h
+#define __phys_to_pfn(paddr)    ((paddr) >> PAGE_SHIFT)
+#define __pfn_to_phys(pfn)      ((pfn) << PAGE_SHIFT)
+
+arch/arm/include/asm/setup.h
+#define bank_pfn_start(bank)    __phys_to_pfn((bank)->start)
+#define bank_pfn_end(bank)      __phys_to_pfn((bank)->start + (bank)->size)
+#define bank_pfn_size(bank)     ((bank)->size >> PAGE_SHIFT)
+#define bank_phys_start(bank)   (bank)->start
+#define bank_phys_end(bank)     ((bank)->start + (bank)->size)
+#define bank_phys_size(bank)    (bank)->size
+]]></programlisting>
+map_memory_bank()调用create_mapping()完成映射的创建工作。create_mapping()函数用于为一个物理存储空间创建映射，实际上就是填充页表。
+<programlisting><![CDATA[
+arch/arm/mm/init.c
+static inline void map_memory_bank(struct membank *bank)
+{
+#ifdef CONFIG_MMU
+        struct map_desc map;
+
+        map.pfn = bank_pfn_start(bank);
+        map.virtual = __phys_to_virt(bank_phys_start(bank));
+        map.length = bank_phys_size(bank);
+        map.type = MT_MEMORY;
+
+        create_mapping(&map);
+#endif
+}
+]]></programlisting>
+TASK_SIZE定义了一个进程的最大用户空间，显然它最大只能为MODULES_VADDR，也即0xbf000000。首先判断它不属于用户空间，因为用户空间的地址在范围0x0-0xbeffffff之间，其余地址要么为内核空间，要么为特定用途而占用。紧接着根据内存类型做检查，因为这里定义的是MT_MEMORY，所以不会被匹配。
+<programlisting><![CDATA[
+arch/arm/include/asm/memory.h
+#define TASK_SIZE   (UL(CONFIG_PAGE_OFFSET) - UL(0x01000000))
+
+arch/arm/mm/mmu.c
+void __init create_mapping(struct map_desc *md)
+{
+	unsigned long phys, addr, length, end;
+	const struct mem_type *type;
+	pgd_t *pgd;
+
+	if (md->virtual != vectors_base() && md->virtual < TASK_SIZE) {
+		printk(KERN_WARNING "BUG: not creating mapping for "
+		       "0x%08llx at 0x%08lx in user region\n",
+		       __pfn_to_phys((u64)md->pfn), md->virtual);
+		return;
+	}
+
+	if ((md->type == MT_DEVICE || md->type == MT_ROM) &&
+	    md->virtual >= PAGE_OFFSET && md->virtual < VMALLOC_END) {
+		printk(KERN_WARNING "BUG: mapping for 0x%08llx at 0x%08lx "
+		       "overlaps vmalloc space\n",
+		       __pfn_to_phys((u64)md->pfn), md->virtual);
+	}
+
+	type = &mem_types[md->type];
+
+	/*
+	 * Catch 36-bit addresses
+	 */
+	if (md->pfn >= 0x100000) {
+		create_36bit_mapping(md, type);
+		return;
+	}
+
+	addr = md->virtual & PAGE_MASK;
+	phys = (unsigned long)__pfn_to_phys(md->pfn);
+	length = PAGE_ALIGN(md->length + (md->virtual & ~PAGE_MASK));
+
+	if (type->prot_l1 == 0 && ((addr | phys | length) & ~SECTION_MASK)) {
+		printk(KERN_WARNING "BUG: map for 0x%08lx at 0x%08lx can not "
+		       "be mapped using pages, ignoring.\n",
+		       __pfn_to_phys(md->pfn), addr);
+		return;
+	}
+
+	pgd = pgd_offset_k(addr);
+	end = addr + length;
+	do {
+		unsigned long next = pgd_addr_end(addr, end);
+
+		alloc_init_section(pgd, addr, next, phys, type);
+
+		phys += next - addr;
+		addr = next;
+	} while (pgd++, addr != end);
+}
+]]></programlisting>
+alloc_init_section当大小和地址1MB对齐时，使用段映射。
+<programlisting><![CDATA[
+arch/arm/include/asm/pgtable.h
+#define SECTION_SHIFT           20
+#define SECTION_SIZE            (1UL << SECTION_SHIFT)
+#define SECTION_MASK            (~(SECTION_SIZE-1))
+]]></programlisting>
+<programlisting><![CDATA[
+include/asm-generic/pgtable.h
+#define pgd_addr_end(addr, end)                                         \
+({      unsigned long __boundary = ((addr) + PGDIR_SIZE) & PGDIR_MASK;  \
+        (__boundary - 1 < (end) - 1)? __boundary: (end);                \
+})
+
+static void __init alloc_init_section(pgd_t *pgd, unsigned long addr,
+                                      unsigned long end, unsigned long phys,
+                                      const struct mem_type *type)
+{
+        pmd_t *pmd = pmd_offset(pgd, addr);
+
+        /*
+         * Try a section mapping - end, addr and phys must all be aligned
+         * to a section boundary.  Note that PMDs refer to the individual
+         * L1 entries, whereas PGDs refer to a group of L1 entries making
+         * up one logical pointer to an L2 table.
+         */
+        if (((addr | end | phys) & ~SECTION_MASK) == 0) {
+                pmd_t *p = pmd;
+
+                if (addr & SECTION_SIZE)
+                        pmd++;
+
+                do {
+                        *pmd = __pmd(phys | type->prot_sect);
+                        phys += SECTION_SIZE;
+                } while (pmd++, addr += SECTION_SIZE, addr != end);
+
+                flush_pmd_entry(p);
+        } else {
+                /*
+                 * No need to loop; pte's aren't interested in the
+                 * individual L1 entries.
+                 */
+                alloc_init_pte(pmd, addr, end, __phys_to_pfn(phys), type);
+        }
+}
+]]></programlisting>
+由于当前仅仅定义了一个内存Bank，所以以上过程处理后，将对物理FLASH地址所占的地址进行页表映射，如下图所示：
+<figure><title>内核FLASH地址对应的页表</title><graphic fileref="images/kernel_flash_map.gif"/></figure>
+reserve_node_zero函数的作用是保留一部分内存使之不能被动态分配。这些内存块包括：内核所占用地址空间和bootmem结构所占用地址空间。
+<programlisting><![CDATA[
+mm/bootmem.c
+int __init reserve_bootmem_node(pg_data_t *pgdat, unsigned long physaddr,
+                                 unsigned long size, int flags)
+{
+        unsigned long start, end;
+
+        start = PFN_DOWN(physaddr);
+        end = PFN_UP(physaddr + size);
+
+        return mark_bootmem_node(pgdat->bdata, start, end, 1, flags);
+}
+
+reserve_bootmem_node(pgdat, __pa(&_stext), &_end - &_stext,	BOOTMEM_DEFAULT);
+......
+reserve_bootmem_node(pgdat, __pa(swapper_pg_dir), PTRS_PER_PGD * sizeof(pgd_t), BOOTMEM_DEFAULT);
+]]></programlisting>
+注意到start_pfn和end_pfn它们在循环中找出最小的物理起始地址和最大地址，然后记录物理内存对应页帧的编号。由于每个页帧大小和内存页大小相同（这是为了方便换页），也即4K，所以bank_pfn_xxx中通过右移PAGE_SHIFT来获取页帧的编号。继续看bootmem_init_node后半部分代码，它们对物理页框所对应的页面进行了保留处理。bootmem是内核中使用的一种较简单的内存分配策略，它用于在系统启动时使用，在 buddy等内存分配系统初始化完成后将不再使用。其基本思想是将SDRAM的可用存储空间分成许多页，每页的大小为4K，在分配时以页为单位分配，分配方法是从低往高找直到找到一块或连续多块满足大小要求的空闲页面为止。linux启动时，在为每个物理页面建立对应的page之前，需要将已经使用过的、保留的物理页面（例如内核代码区、数据区、bss区、BIOS映射区、存放3-4G的页目录页表区等所占据的物理页面）记下来，记在哪里呢？就是记载node_bootmem_map中，建立page映射之后，将使用过的、保留的物理页面序号属性都通过page数组记住了下来，随后就释放掉bootmem。
+<programlisting><![CDATA[
+	/*
+	 * If there is no memory in this node, ignore it.
+	 */
+	if (end_pfn == 0)
+		return end_pfn;
+
+	/*
+	 * Allocate the bootmem bitmap page.
+	 */	
+	boot_pages = bootmem_bootmap_pages(end_pfn - start_pfn);
+	boot_pfn = find_bootmap_pfn(node, mi, boot_pages);
+]]></programlisting>
+首先判断该Node中是否提供了物理内存。接着bootmem_bootmap_pages计算页帧编号位图所需占用的页面。物理内存开始地址0x50000000，大小0x10000000，所以页帧编号为0x50000-0x60000。bootmem_bootmap_pages首先根据bootmap_bytes计算所有页帧所需占用的bytes数，为0x2000然后右移PAGE_SHIFT得到页帧位图所占的页面数。这里的boot_pages被赋值为2。
+<programlisting><![CDATA[
+mm/bootmem.c
+static unsigned long __init bootmap_bytes(unsigned long pages)
+{
+        unsigned long bytes = (pages + 7) / 8;
+
+        return ALIGN(bytes, sizeof(long));
+}
+
+/**
+ * bootmem_bootmap_pages - calculate bitmap size in pages
+ * @pages: number of pages the bitmap has to represent
+ */
+unsigned long __init bootmem_bootmap_pages(unsigned long pages)
+{
+        unsigned long bytes = bootmap_bytes(pages);
+
+        return PAGE_ALIGN(bytes) >> PAGE_SHIFT;
+}
+]]></programlisting>
+find_bootmap_pfn查找存放位图管理页的物理页帧号，实际是存放到_end后的后续页中。假如_end的地址对应0xc0539c2e，那么物理页帧地址为
+0x50539c2e右移12位得到0x50539，那么boot_pfn代表了下一页，所以值为0x5053a。此时的位图所在内存分配如下图所示：
+<figure><title>内存位图RAM布局</title><graphic fileref="images/m_map.gif"/></figure>
+<programlisting><![CDATA[
+mm/page_alloc.c
+struct pglist_data __refdata contig_page_data = { .bdata = &bootmem_node_data[0] };
+EXPORT_SYMBOL(contig_page_data);
+
+include/linux/bootmem.h
+typedef struct bootmem_data {
+        unsigned long node_min_pfn;
+        unsigned long node_low_pfn;
+        void *node_bootmem_map;
+        unsigned long last_end_off;
+        unsigned long hint_idx;
+        struct list_head list;
+} bootmem_data_t;
+
+mm/bootmem.c
+bootmem_data_t bootmem_node_data[MAX_NUMNODES] __initdata;
+
+include/linux/mmzone.h
+typedef struct pglist_data {
+        struct zone node_zones[MAX_NR_ZONES];
+        struct zonelist node_zonelists[MAX_ZONELISTS];
+        int nr_zones;
+        ......
+} pg_data_t;
+
+extern struct pglist_data contig_page_data;
+#define NODE_DATA(nid)          (&contig_page_data)
+#define NODE_MEM_MAP(nid)       mem_map
+]]></programlisting>
+<programlisting><![CDATA[
+mm/bootmem.c
+unsigned long __init init_bootmem_node(pg_data_t *pgdat, unsigned long freepfn,
+				unsigned long startpfn, unsigned long endpfn)
+{
+	return init_bootmem_core(pgdat->bdata, freepfn, startpfn, endpfn);
+}
+
+static unsigned long __init init_bootmem_core(bootmem_data_t *bdata,
+        unsigned long mapstart, unsigned long start, unsigned long end)
+{
+        unsigned long mapsize;
+
+        mminit_validate_memmodel_limits(&start, &end);
+        bdata->node_bootmem_map = phys_to_virt(PFN_PHYS(mapstart));
+        bdata->node_min_pfn = start;
+        bdata->node_low_pfn = end;
+        link_bootmem(bdata);
+
+        /*
+         * Initially all pages are reserved - setup_arch() has to
+         * register free RAM areas explicitly.
+         */
+        mapsize = bootmap_bytes(end - start);
+        memset(bdata->node_bootmem_map, 0xff, mapsize);
+
+        bdebug("nid=%td start=%lx map=%lx end=%lx mapsize=%lx\n",
+                bdata - bootmem_node_data, start, mapstart, end, mapsize);
+
+        return mapsize;
+}
+
+	node_set_online(node);
+	pgdat = NODE_DATA(node);
+	init_bootmem_node(pgdat, boot_pfn, start_pfn, end_pfn);
+]]></programlisting>
+NODE_DATA在多节点数组中取出为nid 的节点的描述数据结构，这里直接获取contig_page_data。init_bootmem_node通过直接调用init_bootmem_core将map_pg开始的位图管理空间全部置0xff，(pgdat->bdata即为bootmem_node_data[0]。mminit_validate_memmodel_limits用来验证物理页框的大小，对于32位的4G空间来说，物理页框的范围为0-0x100000。显然这里的start为0x50000和end为0x60000，它们落在该地址范围内。phys_to_virt将位图页开始的页号转换为虚拟地址，这里既是将0x5053a转换为0xc053a000。node_min_pfn和node_low_pfn分别记录了最小和最大物理页框。所有的bdata类型都被link_bootmem放入名为bdata_list的链表中统一管理。
+<programlisting><![CDATA[
+static struct list_head bdata_list __initdata = LIST_HEAD_INIT(bdata_list);
+
+static void __init link_bootmem(bootmem_data_t *bdata)
+{
+        struct list_head *iter;
+
+        list_for_each(iter, &bdata_list) {
+                bootmem_data_t *ent;
+
+                ent = list_entry(iter, bootmem_data_t, list);
+                if (bdata->node_min_pfn < ent->node_min_pfn)
+                        break;
+        }
+        list_add_tail(&bdata->list, iter);
+}
+]]></programlisting>
+如果打开了bdebug，那么将可以得到如下输出。
+<programlisting><![CDATA[
+bootmem::init_bootmem_core nid=0 start=50000 map=5053a end=60000 mapsize=2000
+]]></programlisting>
+free_bootmem_node释放虚拟地址bank_phys_start(bank)开始大小为bank_phys_size(bank)所有物理地址对应的位图，这里也即为0x50000000，大小为0x10000000。
+<programlisting><![CDATA[
+	for_each_nodebank(i, mi, node) {
+		struct membank *bank = &mi->bank[i];
+		free_bootmem_node(pgdat, bank_phys_start(bank), bank_phys_size(bank));
+		memory_present(node, bank_pfn_start(bank), bank_pfn_end(bank));
+	}
+]]></programlisting>
+mark_bootmem_node的reserve参数表明是保留还是可用。free_bootmem_node在调用它是该值为0，所以为可用。
+<programlisting><![CDATA[
+void __init free_bootmem_node(pg_data_t *pgdat, unsigned long physaddr,
+                              unsigned long size)
+{
+        unsigned long start, end;
+
+        start = PFN_UP(physaddr);
+        end = PFN_DOWN(physaddr + size);
+
+        mark_bootmem_node(pgdat->bdata, start, end, 0, 0);
+}
+
+static int __init mark_bootmem_node(bootmem_data_t *bdata,
+                                unsigned long start, unsigned long end,
+                                int reserve, int flags)
+{
+        unsigned long sidx, eidx;
+
+        bdebug("nid=%td start=%lx end=%lx reserve=%d flags=%x\n",
+                bdata - bootmem_node_data, start, end, reserve, flags);
+
+        BUG_ON(start < bdata->node_min_pfn);
+        BUG_ON(end > bdata->node_low_pfn);
+
+        sidx = start - bdata->node_min_pfn;
+        eidx = end - bdata->node_min_pfn;
+
+        if (reserve)
+                return __reserve(bdata, sidx, eidx, flags);
+        else
+                __free(bdata, sidx, eidx);
+        return 0;
+}
+]]></programlisting>
+<programlisting><![CDATA[
+bootmem::mark_bootmem_node nid=0 start=50000 end=60000 reserve=0 flags=0
+]]></programlisting>
+sidx和eidx分别表示物理页框位图的开始和结束的索引，也即相对于node_min_pfn的偏移。由于有0x10000个页框，sidx这里为0，而eidx为0x10000。
+<programlisting><![CDATA[
+static int __init __reserve(bootmem_data_t *bdata, unsigned long sidx,
+                        unsigned long eidx, int flags)
+{
+        unsigned long idx;
+        int exclusive = flags & BOOTMEM_EXCLUSIVE;
+
+        bdebug("nid=%td start=%lx end=%lx flags=%x\n",
+                bdata - bootmem_node_data,
+                sidx + bdata->node_min_pfn,
+                eidx + bdata->node_min_pfn,
+                flags);
+
+        for (idx = sidx; idx < eidx; idx++)
+                if (test_and_set_bit(idx, bdata->node_bootmem_map)) {
+                        if (exclusive) {
+                                __free(bdata, sidx, idx);
+                                return -EBUSY;
+                        }
+                        bdebug("silent double reserve of PFN %lx\n",
+                                idx + bdata->node_min_pfn);
+                }
+        return 0;
+}
+]]></programlisting>
+__reserve调用test_and_set_bit，也即设置sidx和eidx之间的所有比特位为1。注意它的flags参数，当flags的BOOTMEM_EXCLUSIVE位是能使，如果在设置比特位时发生EBUSY错误，那么直接返回。
+<programlisting><![CDATA[
+static void __init __free(bootmem_data_t *bdata,
+                        unsigned long sidx, unsigned long eidx)
+{
+        unsigned long idx;
+
+        bdebug("nid=%td start=%lx end=%lx\n", bdata - bootmem_node_data,
+                sidx + bdata->node_min_pfn,
+                eidx + bdata->node_min_pfn);
+
+        if (bdata->hint_idx > sidx)
+                bdata->hint_idx = sidx;
+
+        for (idx = sidx; idx < eidx; idx++)
+                if (!test_and_clear_bit(idx, bdata->node_bootmem_map))
+                        BUG();
+}
+]]></programlisting>
+hint_idx则记录了最小的可用的索引位置。__free与__reserve正好相反，它调用test_and_clear_bit，也即清除sidx和eidx之间的所有比特位为1。
+<programlisting><![CDATA[
+bootmem::__free nid=0 start=50000 end=60000
+]]></programlisting>
+如果没有定义这个   CONFIG_HAVE_MEMORY_PRESENT 宏定义，这个函数为空函数，这里未定义。
+<programlisting><![CDATA[
+#ifdef CONFIG_HAVE_MEMORY_PRESENT
+void memory_present(int nid, unsigned long start, unsigned long end);
+#else
+static inline void memory_present(int nid, unsigned long start, unsigned long end) {}
+#endif
+]]></programlisting>
+<programlisting><![CDATA[
+	/*
+	 * Reserve the bootmem bitmap for this node.
+	 */
+	reserve_bootmem_node(pgdat, boot_pfn << PAGE_SHIFT,
+			     boot_pages << PAGE_SHIFT, BOOTMEM_DEFAULT);
+
+	return end_pfn;
+}
+]]></programlisting>
+bootmem_init_node的最后预留物理位图所占用的两个页框的位图为1，此时可以尝试读取0xc053a000[41]，它的值为0xc000000，显然其中的bit 1对应到的索引为0x5053a和0x5053b。<figure><title>位图布局</title><graphic fileref="images/m_bitmap.gif"/></figure>
+</para>
+<para>
+bootmem_init在调用bootmem_init_node初始化一个内存节点后，将会进行一些预留操作。
+<programlisting><![CDATA[
+      /*
+       * Reserve any special node zero regions.
+       */
+      if (node == 0)
+              reserve_node_zero(NODE_DATA(node));
+]]></programlisting>
+reserve_node_zero对NODE 0做一系列的保留动作。
+<programlisting><![CDATA[
+/*
+ * Reserve the various regions of node 0
+ */
+void __init reserve_node_zero(pg_data_t *pgdat)
+{
+	unsigned long res_size = 0;
+
+	/*
+	 * Register the kernel text and data with bootmem.
+	 * Note that this can only be in node 0.
+	 */
+#ifdef CONFIG_XIP_KERNEL
+	reserve_bootmem_node(pgdat, __pa(&__data_start), &_end - &__data_start,
+			BOOTMEM_DEFAULT);
+#else
+	reserve_bootmem_node(pgdat, __pa(&_stext), &_end - &_stext,
+			BOOTMEM_DEFAULT);
+#endif
+]]></programlisting>
+由于没有定义CONFIG_XIP_KERNEL，所以直接执行对_stext和_end区域对应物理页框的保留，也即对内核所在的内存镜像区进行保留处理。
+<programlisting><![CDATA[
+bootmem::mark_bootmem_node nid=0 start=50008 end=5053a reserve=1 flags=0
+]]></programlisting>
+
+<programlisting><![CDATA[
+	/*
+	 * Reserve the page tables.  These are already in use,
+	 * and can only be in node 0.
+	 */
+	reserve_bootmem_node(pgdat, __pa(swapper_pg_dir),
+			     PTRS_PER_PGD * sizeof(pgd_t), BOOTMEM_DEFAULT);
+]]></programlisting>	
+保留页表所在的区域0x50004000到0x50008000区域。
+<programlisting><![CDATA[
+	bootmem::mark_bootmem_node nid=0 start=50004 end=50008 reserve=1 flags=0
+]]></programlisting>
+接下来对特定的机器架构做一些特殊的区域保留，S3C6410没有用到。
+<programlisting><![CDATA[
+	/*
+	 * Hmm... This should go elsewhere, but we really really need to
+	 * stop things allocating the low memory; ideally we need a better
+	 * implementation of GFP_DMA which does not assume that DMA-able
+	 * memory starts at zero.
+	 */
+	if (machine_is_integrator() || machine_is_cintegrator())
+		res_size = __pa(swapper_pg_dir) - PHYS_OFFSET;
+
+	/*
+	 * These should likewise go elsewhere.  They pre-reserve the
+	 * screen memory region at the start of main system memory.
+	 */
+	if (machine_is_edb7211())
+		res_size = 0x00020000;
+	if (machine_is_p720t())
+		res_size = 0x00014000;
+
+	/* H1940 and RX3715 need to reserve this for suspend */
+
+	if (machine_is_h1940() || machine_is_rx3715()) {
+		reserve_bootmem_node(pgdat, 0x30003000, 0x1000,
+				BOOTMEM_DEFAULT);
+		reserve_bootmem_node(pgdat, 0x30081000, 0x1000,
+				BOOTMEM_DEFAULT);
+	}
+]]></programlisting>
+CONFIG_SA1111也未定义，所以这里直接跳过。
+<programlisting><![CDATA[
+#ifdef CONFIG_SA1111
+	/*
+	 * Because of the SA1111 DMA bug, we want to preserve our
+	 * precious DMA-able memory...
+	 */
+	res_size = __pa(swapper_pg_dir) - PHYS_OFFSET;
+#endif
+	if (res_size)
+		reserve_bootmem_node(pgdat, PHYS_OFFSET, res_size,
+				BOOTMEM_DEFAULT);
+}
+]]></programlisting>	
+接下来对initrd区域进行保留处理，由于没有使用initrd，所以这里的initrd_node值为-2，直接跳过。
+<programlisting><![CDATA[
+		if (node == initrd_node)
+			bootmem_reserve_initrd(node);
+]]></programlisting>	
+接着记录最大的内存PFN，即最大页框编号。显然这里的memend_pfn为0x60000。
+<programlisting><![CDATA[
+		/*
+		 * Remember the highest memory PFN.
+		 */		
+		if (end_pfn > memend_pfn)
+			memend_pfn = end_pfn;
+}			
+]]></programlisting>
+到这里bootmem_init中的主循环就处理完毕了，实际上由于只有一个内存Bank，对应了一个Node，这里的循环只处理了一次。
+被保存的区域如下所示：
+<programlisting><![CDATA[
+bootmem::mark_bootmem_node nid=0 start=5053a end=5053c reserve=1 flags=0
+bootmem::mark_bootmem_node nid=0 start=50008 end=5053a reserve=1 flags=0
+bootmem::mark_bootmem_node nid=0 start=50004 end=50008 reserve=1 flags=0
+]]></programlisting>
+</para>
+下图中可以看到3个保留区是连续的它们对应到的位图在c053a000:0xf0和c053a0a7:0x0f范围内，以及端点bytes中的4bits。
+<figure><title>内存位图保留区</title><graphic fileref="images/m_map1.gif"/></figure>
+<programlisting><![CDATA[
+	sparse_init();
+	
+	/*
+	 * Now free memory in each node - free_area_init_node needs
+	 * the sparse mem_map arrays initialized by sparse_init()
+	 * for memmap_init_zone(), otherwise all PFNs are invalid.
+	 */
+	for_each_node(node)
+		bootmem_free_node(node, mi);	
+]]></programlisting>
+sparse_init只有在配置CONFIG_SPARSEMEM时才有效，否则为空函数。bootmem_free_node为mem_map保持物理页框。zone_size[n]对应NODE n，这里的zone_size[0]即为当前系统中物理内存的页帧数0x10000。zhole_size用来存储该NODE中孔洞的大小，它通过总大小减去该NODE中bank的大小，由于这里只有一个bank，所以不存在孔洞。也即zhole_size[0]为0。arch_adjust_zones用来处理特定机器架构的特殊需求，这里为空。
+<programlisting><![CDATA[
+mm/init.c
+static void __init bootmem_free_node(int node, struct meminfo *mi)
+{
+	unsigned long zone_size[MAX_NR_ZONES], zhole_size[MAX_NR_ZONES];
+	unsigned long start_pfn, end_pfn;
+	pg_data_t *pgdat = NODE_DATA(node);
+	int i;
+
+	start_pfn = pgdat->bdata->node_min_pfn;
+	end_pfn = pgdat->bdata->node_low_pfn;
+
+  ......
+
+	/*
+	 * The size of this node has already been determined.  If we need
+	 * to do anything fancy with the allocation of this memory to the
+	 * zones, now is the time to do it.
+	 */
+	zone_size[0] = end_pfn - start_pfn;
+
+	/*
+	 * For each bank in this node, calculate the size of the holes.
+	 *  holes = node_size - sum(bank_sizes_in_node)
+	 */
+	zhole_size[0] = zone_size[0];
+	for_each_nodebank(i, mi, node)
+		zhole_size[0] -= bank_pfn_size(&mi->bank[i]);
+
+	/*
+	 * Adjust the sizes according to any special requirements for
+	 * this machine type.
+	 */
+	arch_adjust_zones(node, zone_size, zhole_size);
+
+	free_area_init_node(node, zone_size, start_pfn, zhole_size);
+}
+]]></programlisting>
+MAX_NR_ZONES在编译时自动生成，它的值与__MAX_NR_ZONES保持相等。ZONE用于管理内存的用途。每一个ZONE区都有自己的buddy system来管理属于自己的连续内存页，根据内核配置可以选择使能ZONE_DMA和ZONE_HIGHMEM。当前系统只使用了ZONE_DMA，ZONE_NORMAL和ZONE_MOVABLE区。
+<programlisting><![CDATA[
+include/linux/bounds.h
+#define NR_PAGEFLAGS 22 /* __NR_PAGEFLAGS       @ */
+#define MAX_NR_ZONES 3 /* __MAX_NR_ZONES        @ */
+
+include/linux/mmzone.h
+enum zone_type {
+#ifdef CONFIG_ZONE_DMA
+        ZONE_DMA,
+#endif
+ 	ZONE_NORMAL,
+ #ifdef CONFIG_HIGHMEM
+        ZONE_HIGHMEM,
+#endif
+        ZONE_MOVABLE,
+        __MAX_NR_ZONES
+};	
+]]></programlisting>
+calculate_node_totalpages进行一些页面统计的运算并存入pgdat结构成员中。
+<programlisting><![CDATA[
+mm/page_alloc.c
+void __paginginit free_area_init_node(int nid, unsigned long *zones_size,
+                unsigned long node_start_pfn, unsigned long *zholes_size)
+{
+        pg_data_t *pgdat = NODE_DATA(nid);
+
+        pgdat->node_id = nid;
+        pgdat->node_start_pfn = node_start_pfn;
+        calculate_node_totalpages(pgdat, zones_size, zholes_size);
+
+        alloc_node_mem_map(pgdat);
+#ifdef CONFIG_FLAT_NODE_MEM_MAP
+        printk(KERN_DEBUG "free_area_init_node: node %d, pgdat %08lx, node_mem_map %08lx\n",
+                nid, (unsigned long)pgdat,
+                (unsigned long)pgdat->node_mem_map);
+#endif
+
+        free_area_init_core(pgdat, zones_size, zholes_size);
+}
+]]></programlisting>
+<programlisting><![CDATA[
+free_area_init_node: node 0, pgdat c04ed144, node_mem_map c053e000
+]]></programlisting>
+calculate_node_totalpages计算本NODE所有内存页数总和（包括内存孔洞的）存入node_spanned_pages，所有内存页区的实际页数（不包括内存孔洞的）存入node_present_pages。
+<programlisting><![CDATA[
+static void __meminit calculate_node_totalpages(struct pglist_data *pgdat,
+		unsigned long *zones_size, unsigned long *zholes_size)
+{
+	unsigned long realtotalpages, totalpages = 0;
+	enum zone_type i;
+
+	for (i = 0; i < MAX_NR_ZONES; i++)
+		totalpages += zone_spanned_pages_in_node(pgdat->node_id, i,
+								zones_size);
+	pgdat->node_spanned_pages = totalpages;
+
+	realtotalpages = totalpages;
+	for (i = 0; i < MAX_NR_ZONES; i++)
+		realtotalpages -=
+			zone_absent_pages_in_node(pgdat->node_id, i,
+								zholes_size);
+	pgdat->node_present_pages = realtotalpages;
+	printk(KERN_DEBUG "On node %d totalpages: %lu\n", pgdat->node_id,
+							realtotalpages);
+}
+]]></programlisting>
+<programlisting><![CDATA[
+calculate_node_totalpages= On node 0 totalpages: 65536
+]]></programlisting>
+每一个物理页框对应一个struct page结构，alloc_node_mem_map就用来为所有的物理页面分配该结构体空间。
+<programlisting><![CDATA[
+static void __init_refok alloc_node_mem_map(struct pglist_data *pgdat)
+{
+	/* Skip empty nodes */
+	if (!pgdat->node_spanned_pages)
+		return;
+
+#ifdef CONFIG_FLAT_NODE_MEM_MAP
+	/* ia64 gets its own node_mem_map, before this, without bootmem */
+	if (!pgdat->node_mem_map) {
+		unsigned long size, start, end;
+		struct page *map;
+
+		/*
+		 * The zone's endpoints aren't required to be MAX_ORDER
+		 * aligned but the node_mem_map endpoints must be in order
+		 * for the buddy allocator to function correctly.
+		 */
+		start = pgdat->node_start_pfn & ~(MAX_ORDER_NR_PAGES - 1);
+		end = pgdat->node_start_pfn + pgdat->node_spanned_pages;
+		end = ALIGN(end, MAX_ORDER_NR_PAGES);
+		size =  (end - start) * sizeof(struct page);
+		map = alloc_remap(pgdat->node_id, size);
+		if (!map)
+			map = alloc_bootmem_node(pgdat, size);
+		pgdat->node_mem_map = map + (pgdat->node_start_pfn - start);
+	}
+]]></programlisting>
+start和end分别代表了起止页帧0x50000和0x60000，size则代表了当前所有页帧对应的struct page结构体的大小。只有定义了CONFIG_HAVE_ARCH_ALLOC_REMAP，alloc_remap才有意义，否则为空函数，此时调用alloc_bootmem_node。
+<programlisting><![CDATA[
+include/linux/bootmem.h
+#ifdef CONFIG_HAVE_ARCH_ALLOC_REMAP
+extern void *alloc_remap(int nid, unsigned long size);
+#else
+static inline void *alloc_remap(int nid, unsigned long size)
+{
+        return NULL;
+}
+#endif /* CONFIG_HAVE_ARCH_ALLOC_REMAP */
+......
+
+#define MAX_DMA_ADDRESS			0x40000000
+#define alloc_bootmem_node(pgdat, x) \
+        __alloc_bootmem_node(pgdat, x, SMP_CACHE_BYTES, __pa(MAX_DMA_ADDRESS))
+
+mm/bootmem.c
+void * __init __alloc_bootmem_node(pg_data_t *pgdat, unsigned long size,
+				   unsigned long align, unsigned long goal)
+{
+	return ___alloc_bootmem_node(pgdat->bdata, size, align, goal, 0);
+}
+
+static void * __init ___alloc_bootmem_node(bootmem_data_t *bdata,
+				unsigned long size, unsigned long align,
+				unsigned long goal, unsigned long limit)
+{
+	void *ptr;
+
+	ptr = alloc_bootmem_core(bdata, size, align, goal, limit);
+	if (ptr)
+		return ptr;
+
+	return ___alloc_bootmem(size, align, goal, limit);
+}
+]]></programlisting>
+alloc_bootmem_node调用__alloc_bootmem_node，从而调用___alloc_bootmem_node。alloc_bootmem_node是一个相当复杂的函数。
+<programlisting><![CDATA[	
+#ifndef CONFIG_NEED_MULTIPLE_NODES
+	/*
+	 * With no DISCONTIG, the global mem_map is just set as node 0's
+	 */
+	if (pgdat == NODE_DATA(0)) {
+		mem_map = NODE_DATA(0)->node_mem_map;
+#ifdef CONFIG_ARCH_POPULATES_NODE_MAP
+		if (page_to_pfn(mem_map) != pgdat->node_start_pfn)
+			mem_map -= (pgdat->node_start_pfn - ARCH_PFN_OFFSET);
+#endif /* CONFIG_ARCH_POPULATES_NODE_MAP */
+	}
+#endif
+#endif /* CONFIG_FLAT_NODE_MEM_MAP */
+}
+]]></programlisting>
+
+<programlisting><![CDATA[
+static void * __init alloc_bootmem_core(struct bootmem_data *bdata,
+				unsigned long size, unsigned long align,
+				unsigned long goal, unsigned long limit)
+{
+	unsigned long fallback = 0;
+	unsigned long min, max, start, sidx, midx, step;
+
+	BUG_ON(!size);
+	BUG_ON(align & (align - 1));
+	BUG_ON(limit && goal + size > limit);
+
+	if (!bdata->node_bootmem_map)
+		return NULL;
+
+	bdebug("nid=%td size=%lx [%lu pages] align=%lx goal=%lx limit=%lx\n",
+		bdata - bootmem_node_data, size, PAGE_ALIGN(size) >> PAGE_SHIFT,
+		align, goal, limit);
+	
+	min = bdata->node_min_pfn;
+	max = bdata->node_low_pfn;
+
+	goal >>= PAGE_SHIFT;
+	limit >>= PAGE_SHIFT;
+
+	if (limit && max > limit)
+		max = limit;
+	if (max <= min)
+		return NULL;
+
+	step = max(align >> PAGE_SHIFT, 1UL);  
+	if (goal && min < goal && goal < max)
+		start = ALIGN(goal, step);
+	else
+		start = ALIGN(min, step);
+
+	sidx = start - bdata->node_min_pfn;
+	midx = max - bdata->node_min_pfn;
+	
+	if (bdata->hint_idx > sidx) {
+		/*
+		 * Handle the valid case of sidx being zero and still
+		 * catch the fallback below.
+		 */
+		fallback = sidx + 1;
+		sidx = align_idx(bdata, bdata->hint_idx, step);
+	}
+]]></programlisting>
+goal的值代表了指定的虚地址，如果该地址对应的物理地址落在实际的RAM地址范围内，那么使用该地址作为struct page分配的地址，否则使用node_min_pfn计算开始地址。ALIGN根据SMP_CACHE_BYTES做对齐，它的值通常为32。以上的计算最终目的是为了获取sidx和midx。
+<programlisting><![CDATA[
+bootmem::alloc_bootmem_core nid=0 size=200000 [512 pages] align=20 goal=d0000000 limit=0
+]]></programlisting>
+接下来的find_block将尝试在bitmap中查找一块连续的可使用的区域，如果不能满足连续的要求，那么将持续跳转到find_block。这里查找到0x53e-0x73e项的bitmap为空，它们紧接在bitmap所在页的后面。所以对应的页地址从0xc053c000开始，大小为512个页面。
+<programlisting><![CDATA[
+	while (1) {
+		int merge;
+		void *region;
+		unsigned long eidx, i, start_off, end_off;
+find_block:
+		sidx = find_next_zero_bit(bdata->node_bootmem_map, midx, sidx);
+		sidx = align_idx(bdata, sidx, step);
+		eidx = sidx + PFN_UP(size);
+
+		if (sidx >= midx || eidx > midx)
+			break;
+
+		for (i = sidx; i < eidx; i++)
+			if (test_bit(i, bdata->node_bootmem_map)) {
+				sidx = align_idx(bdata, i, step);
+				if (sidx == i)
+					sidx += step;
+				goto find_block;
+			}
+
+		if (bdata->last_end_off & (PAGE_SIZE - 1) &&
+				PFN_DOWN(bdata->last_end_off) + 1 == sidx)
+			start_off = align_off(bdata, bdata->last_end_off, align);
+		else
+			start_off = PFN_PHYS(sidx);
+
+		merge = PFN_DOWN(start_off) < sidx;
+		end_off = start_off + size;
+
+		bdata->last_end_off = end_off;
+		bdata->hint_idx = PFN_UP(end_off);
+
+		/*
+		 * Reserve the area now:
+		 */
+		if (__reserve(bdata, PFN_DOWN(start_off) + merge,
+				PFN_UP(end_off), BOOTMEM_EXCLUSIVE))
+			BUG();
+
+		region = phys_to_virt(PFN_PHYS(bdata->node_min_pfn) +
+				start_off);
+		memset(region, 0, size);
+		return region;
+	}
+
+	if (fallback) {
+		sidx = align_idx(bdata, fallback - 1, step);
+		fallback = 0;
+		goto find_block;
+	}
+
+	return NULL;
+}
+]]></programlisting>
+__reserve的区间如下所示，紧接着调用memset将这些区域清零。
+<programlisting><![CDATA[
+bootmem::__reserve nid=0 start=5053e end=5073e flags=1
+]]></programlisting>
+此时内存的分布如下图所示：
+<figure><title>内存分布图</title><graphic fileref="images/m_map2.gif"/></figure>
+继续观察free_area_init_node的最后部分。
+<programlisting><![CDATA[
+#ifdef CONFIG_FLAT_NODE_MEM_MAP
+        printk(KERN_DEBUG "free_area_init_node: node %d, pgdat %08lx, node_mem_map %08lx\n",
+                nid, (unsigned long)pgdat,
+                (unsigned long)pgdat->node_mem_map);
+#endif
+
+        free_area_init_core(pgdat, zones_size, zholes_size);
+]]></programlisting>
+free_area_init_core 定义在page_alloc.c中，它被用来初始化管理区zone。
+<para>
+在传统的计算机结构中，整个物理内存都是均匀一致的，CPU访问这个空间中的任何一个地址所需要的时间都相同，所以把这种内存称为“一致存储结构（Uniform Memory Architecture）”，简称UMA。可是，在一些新的系统结构中，特别是多CPU结构的系统中，物理存储空间在这方面的一致性却成了问题。这是因为，在多CPU结构中，系统中只有一条总线（例如，PCI总线），有多个CPU模块连接在系统总线上，每个CPU模块都有本地的物理内存，但是也可以通过系统总线访问其它CPU模块上的内存。另外，系统总线上还连接着一个公用的存储模块，所有的CPU模块都可以通过系统总线来访问它。因此，所有这些物理内存的地址可以互相连续而形成一个连续的物理地址空间。</para>
+<para>
+显然，就某个特定的CPU而言，访问其本地的存储器速度是最快的，而穿过系统总线访问公用存储模块或其它CPU模块上的存储器就比较慢，而且还面临因可能的竞争而引起的不确定性。也就是说，在这样的系统中，其物理存储空间虽然地址连续，但因为所处“位置”不同而导致的存取速度不一致，所以称为“非一致存储结构（Non-Uniform Memory Architecture），简称NUMA。</para>
+<para>事实上，严格意义上的UMA结构几乎不存在。就拿配置最简单的单CPU来说，其物理存储空间就包括了RAM、ROM（用于BIOS），还有图形卡上的静态RAM。但是，在UMA中，除主存RAM之外的存储器空间都很小，因此可以把它们放在特殊的地址上，在编程时加以特别注意就行，那么，可以认为以RAM为主体的主存是UMA结构。</para>
+<para>由于NUMA的引入，就需要存储管理机制的支持，因此，Linux内核从2.4版本开始就提供了对NUMA的支持（作为一个编译可选项）。为了对NUMA进行描述，引入一个新的概念－“存储节点(或叫节点)”，把访问时间相同的存储空间就叫做一个“存储节点”。一般来说，连续的物理页面应该分配在相同的存储节点上。例如，如果CPU模块1要求分配5个页面，但是由于本模块上的存储空间已经不够，只能分配3个页面，那么此时，是把另外两个页面分配在其它CPU模块上呢，还是把5个页面干脆分配在一个模块上？显然，合理的分配方式因该是将这5个页面都分配在公用模块上。</para>
+<para>Linux把物理内存划分为三个层次来管理：存储节点（Node）、管理区（Zone）和页面（Page），并用三个相应的数据结构来描述。它们的关系如下图所示：
+</para>
+<para>Linux用一个struct pg_data_t结构来描述系统的内存，系统中每个结点都挂接在一个pgdat_list列表中，对UMA体系结构，则只有一个静态的pg_data_t结构contig_page_data。</para>
+</sect2>
+<sect2><title>devicemaps_init</title>
+<para>
+bootmem_init为内存创建页表映射，devicemaps_init的作用则是创建设备相关的I/O区的页表映射，也即设备页表。
+<programlisting><![CDATA[
+static void __init devicemaps_init(struct machine_desc *mdesc)
+{
+	struct map_desc map;
+	unsigned long addr;
+	void *vectors;
+
+	/*
+	 * Allocate the vector page early.
+	 */
+	vectors = alloc_bootmem_low_pages(PAGE_SIZE);
+	BUG_ON(!vectors);
+
+	for (addr = VMALLOC_END; addr; addr += PGDIR_SIZE)
+		pmd_clear(pmd_off_k(addr));
+]]></programlisting>
+首先清除[VMALLOC_END, 0xffffffff]虚拟地址区对应的一级页表并在TLB清除对应的页表缓存。PGDIR_SIZE大小被定义为2M，pmd_clear每次处理两个页表。
+<programlisting><![CDATA[
+	/*
+	 * Create a mapping for the machine vectors at the high-vectors
+	 * location (0xffff0000).  If we aren't using high-vectors, also
+	 * create a mapping at the low-vectors virtual address.
+	 */
+	map.pfn = __phys_to_pfn(virt_to_phys(vectors));
+	map.virtual = 0xffff0000;
+	map.length = PAGE_SIZE;	
+	map.type = MT_HIGH_VECTORS;	
+	create_mapping(&map);
+	
+	if (!vectors_high()) {
+		map.virtual = 0;
+		map.type = MT_LOW_VECTORS;		
+		create_mapping(&map);
+	}
+]]></programlisting>
+接着创建异常向量表的页面映射。对于ARMv4以下的版本，这个地址固定为0；ARMv4及其以上的版本，ARM异常向量表的地址受协处理器CP15 的c1 寄存器(control register)中V 位(bit[13]) 的控制， 如果V=1 ， 则异常向量表的地址为0x00000000~0x0000001C；如果V=0，则为:0xffff0000~0xffff001C。cr_alignment在entry-armv.S中定义，在内核初始化时保存CP15的控制寄存器c1的值，参考arch/arm/kernel/head-common.S中的__mmap_switched调用过程。
+<programlisting><![CDATA[
+arch/arm/include/asm/system.h
+
+extern unsigned long cr_alignment;	/* defined in entry-armv.S */
+#if __LINUX_ARM_ARCH__ >= 4
+#define vectors_high()  (cr_alignment & CR_V)
+#else
+#define vectors_high()  (0)
+#endif
+]]></programlisting>
+然后执行机器描述符mdesc参数中提供的map_io函数。
+<programlisting><![CDATA[
+	/*
+	 * Ask the machine support to map in the statically mapped devices.
+	 */
+	if (mdesc->map_io)
+		mdesc->map_io();
+
+]]></programlisting>
+对于s3c6410，mdesc的定义参考<xref linkend="mach_type"/>，该函数被定义为smdk6410_map_io。首先调用s3c64xx_init_io初始化内存映射。
+<programlisting><![CDATA[
+arch/arm/mach-s3c6410/mach-smdk6410.c
+struct map_desc smdk6410_iodesc[] = {
+{
+        .virtual        = (u32)S3C64XX_VA_DM9000,
+        .pfn            = __phys_to_pfn(S3C64XX_PA_DM9000),
+        .length         = S3C64XX_SZ_DM9000,
+        .type           = MT_DEVICE,
+},};
+static void __init smdk6410_map_io(void)
+{
+        s3c_device_nand.name = "s3c6410-nand";
+
+        s3c64xx_init_io(smdk6410_iodesc, ARRAY_SIZE(smdk6410_iodesc));
+        s3c24xx_init_clocks(12000000);
+        s3c24xx_init_uarts(smdk6410_uartcfgs, ARRAY_SIZE(smdk6410_uartcfgs));
+        s3c64xx_reserve_bootmem();
+}
+]]></programlisting>
+s3c64xx_init_io最终会调用iotable_init-&lt;create_mapping来创建设备页表。传递的smdk6410_iodesc参数用来实现DM9000A网卡外设的地址映射。
+<programlisting><![CDATA[
+arch/arm/plat-s3c64xx/cpu.c
+static struct map_desc s3c_iodesc[] __initdata = {
+	{
+		.virtual	= (unsigned long)S3C_VA_SYS,
+		.pfn		= __phys_to_pfn(S3C64XX_PA_SYSCON),
+		.length		= SZ_4K,
+		.type		= MT_DEVICE,
+	}, {......
+	
+arch/arm/mm/mmu.c
+void __init iotable_init(struct map_desc *io_desc, int nr)
+{
+	int i;
+
+	for (i = 0; i < nr; i++)
+		create_mapping(io_desc + i);
+}
+
+arch/arm/plat-s3c64xx/cpu.c
+void __init s3c64xx_init_io(struct map_desc *mach_desc, int size)
+{
+  unsigned long idcode;
+	
+  /* initialise the io descriptors we need for initialisation */
+  iotable_init(s3c_iodesc, ARRAY_SIZE(s3c_iodesc));
+  iotable_init(mach_desc, size);
+  
+  idcode = __raw_readl(S3C_SYS_ID);
+  s3c_init_cpu(idcode, cpu_ids, ARRAY_SIZE(cpu_ids));
+}
+]]></programlisting>
+<itemizedlist> 
+	<listitem>首先iotable_init注册S3C64xx系列CPU通用的iomap，它们被定义在s3c_iodesc数组中。</listitem>
+	<listitem>接着将传递来的smdk6410_iodesc进行映射，它针对DM9000A网卡。</listitem>
+	<listitem>最后读取S3C_SYS_ID，然后s3c_init_cpu函数从64xx系列CPU数组cpu_ids中选择对应的CPU，并执行了特定CPU的map_io函数。</listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+static struct cpu_table cpu_ids[] __initdata = {
+	......
+	{
+		.idcode		= 0x36410100,
+		.idmask		= 0xffffff00,
+		.map_io		= s3c6410_map_io,
+		.init_clocks	= s3c6410_init_clocks,
+		.init_uarts	= s3c6410_init_uarts,
+		.init		= s3c6410_init,
+		.name		= name_s3c6410,
+	},
+};
+
+void __init s3c_init_cpu(unsigned long idcode,
+			 struct cpu_table *cputab, unsigned int cputab_size)
+{
+	cpu = s3c_lookup_cpu(idcode, cputab, cputab_size);
+......
+	cpu->map_io();
+}
+]]></programlisting>
+s3c6410_map_io对s3c6410_iodesc定义数组进行映射。主要针对LCD，SROM控制器和USB外设映射地址。
+<programlisting><![CDATA[
+arch/arm/mach-s3c6410/cpu.c
+static struct map_desc s3c6410_iodesc[] __initdata = {
+	IODESC_ENT(LCD),
+	IODESC_ENT(SROMC),
+	IODESC_ENT(HOSTIFB),
+	IODESC_ENT(OTG),
+	IODESC_ENT(OTGSFR),
+};
+
+void __init s3c6410_map_io(void)
+{
+	iotable_init(s3c6410_iodesc, ARRAY_SIZE(s3c6410_iodesc));
+
+	/* initialise device information early */
+	s3c6410_default_sdhci0();
+	s3c6410_default_sdhci1();
+	s3c6410_default_sdhci2();
+
+	/* the i2c devices are directly compatible with s3c2440 */
+	s3c_i2c0_setname("s3c2440-i2c");
+	s3c_i2c1_setname("s3c2440-i2c");
+
+	/* set our idle function */
+	s3c64xx_idle = s3c6410_idle;
+}
+]]></programlisting>
+对应s3c_iodesc数组来说，做了如下映射：
+<table><title>页表设备列表</title>
+<tgroup cols="2">
+<thead><row><entry>虚拟地址</entry><entry>物理地址</entry><entry>大小</entry><entry>映射类型</entry></row></thead>
+<tbody>
+<row><entry>S3C_VA_SYS</entry><entry>S3C64XX_PA_SYSCON</entry><entry>SZ_4K</entry><entry>MT_DEVICE</entry></row>		
+<row><entry>3C_VA_UART + UART_OFFS</entry><entry>S3C_PA_UART</entry><entry>SZ_4K</entry><entry>MT_DEVICE</entry></row>
+<row><entry>S3C_VA_VIC0</entry><entry>S3C64XX_PA_VIC0</entry><entry>SZ_16K</entry><entry>MT_DEVICE</entry></row>		
+<row><entry>S3C_VA_VIC1</entry><entry>S3C64XX_PA_VIC1</entry><entry>SZ_16K</entry><entry>MT_DEVICE</entry></row>		
+<row><entry>S3C_VA_TIMER</entry><entry>S3C_PA_TIMER</entry><entry>SZ_16K</entry><entry>MT_DEVICE</entry></row>		
+<row><entry>S3C64XX_VA_GPIO</entry><entry>S3C64XX_PA_GPIO</entry><entry>SZ_4K</entry><entry>MT_DEVICE</entry></row>		
+</tbody>
+</tgroup>
+</table>
+s3c24xx_init_clocks用来设置PLL晶振值为12MHz。s3c24xx_init_uarts初始化串口，所有在Bootloader移交内核启动的打印信息都是在该函数执行后才真正输出到终端的，将时钟和终端初始化放在map_io函数中显然不是好的选择。s3c64xx_reserve_bootmem为定义在s3c_mdevs中的DMA设备列表通过Bootmem机制预留一些内存。
+<programlisting><![CDATA[
+arch/arm/plat-s3c64xx/bootmem.c
+void s3c64xx_reserve_bootmem(void)
+{
+        struct s3c_media_device *mdev;
+        int i;
+
+        for(i = 0; i < sizeof(s3c_mdevs) / sizeof(s3c_mdevs[0]); i++) {
+                mdev = &s3c_mdevs[i];
+                if (mdev->memsize > 0) {
+                        mdev->paddr = virt_to_phys(alloc_bootmem_low(mdev->memsize));
+                        printk(KERN_INFO \
+                                "s3c64xx: %lu bytes SDRAM reserved "
+                                "for %s at 0x%08x\n",
+                                (unsigned long) mdev->memsize, \
+                                mdev->name, mdev->paddr);
+                }
+        }
+}
+]]></programlisting>
+最后刷新TLB以及Cache。
+<programlisting><![CDATA[
+	/*
+	 * Finally flush the caches and tlb to ensure that we're in a
+	 * consistent state wrt the writebuffer.  This also ensures that
+	 * any write-allocated cache lines in the vector page are written
+	 * back.  After this point, we can start to touch devices again.
+	 */
+	local_flush_tlb_all();
+	flush_cache_all();
+}
+]]></programlisting>
+</para>
+</sect2>
+<sect2><title>0页</title>
+paging_init的最后部分的代码比较简单。
+<programlisting><![CDATA[
+	top_pmd = pmd_off_k(0xffff0000);
+
+	/*
+	 * allocate the zero page.  Note that we count on this going ok.
+	 */
+	zero_page = alloc_bootmem_low_pages(PAGE_SIZE);
+	memzero(zero_page, PAGE_SIZE);
+	empty_zero_page = virt_to_page(zero_page);
+	flush_dcache_page(empty_zero_page);
+}
+]]></programlisting>
+top_pmd引用了32位4G虚拟地址空间最高处的页表，它被用在高端内存访问中。
+<programlisting><![CDATA[
+/*
+ * The pmd table for the upper-most set of pages.
+ */
+pmd_t *top_pmd;
+]]></programlisting>
+接下来分配1个页面大小的0页，该区域被memzero函数初始化为全0。0页被用作0页拷贝，可以快速初始化需要清0的内存页面。
+<programlisting><![CDATA[
+arch/arm/include/asm/pgtable.h
+
+/*
+ * ZERO_PAGE is a global shared page that is always zero: used
+ * for zero-mapped memory areas etc..
+ */
+extern struct page *empty_zero_page;
+#define ZERO_PAGE(vaddr)        (empty_zero_page)
+]]></programlisting>
+</sect2>
+</sect1>

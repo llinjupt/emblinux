@@ -1,0 +1,5 @@
+arm-linux-as ldr.S -o ldr.o
+arm-linux-cc -c print.c -o print.o
+arm-linux-ld ldr.o print.o -o test -Ttext=0x50008000 
+#arm-linux-strip test
+arm-linux-objdump -D test >./tmp

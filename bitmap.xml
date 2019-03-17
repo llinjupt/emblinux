@@ -1,0 +1,412 @@
+<sect1><title>Bootmem机制</title>
+<sect2><title>简介</title>
+	<para>
+Bootmem机制是内核在启动时对内存的一种简单的页面管理方式。	它为建立页表管理代码中的数据结构提供动态分配内存的支持，为了对页面管理机制作准备，Linux使用了一种叫bootmem分配器(bootmem allocator)的机制，这种机制仅仅用在系统引导时，它为整个物理内存建立起一个页面位图。这个位图建立在内核代码映象终点_end上方的地方。这个位图用来管理低区（可被直接一一映射的物理内存区，小于896Mb）。因为在0到896Mb的范围内，有些页面可能保留给内核代码，页目录，以及当前的位图使用，有些页面可能有空洞，因此，建立这个位图的目的就是要用一个比特位的两种状态标记物理页面的状态：已被保留；可被动态分配。Bootmem机制的核心是对Bitmap的操作，相关代码位于mm/bootmem.c和include/linux/bootmem.h中。
+<figure><title>ARM上的Linux地址空间分布</title><graphic fileref="images/ram_map.gif"/></figure>
+	</para>	
+	<para>
+在介绍Bootmem机制之前需要对内核的地址空间分布做一个深入的了解：
+<itemizedlist> 
+	<listitem>32位操作系统只有4G的虚拟地址空间，通常Linux将最上的1G用于内核虚拟地址。ARM上将用户空间的3G最高处的16M用来给内核的模块使用。</listitem>
+	<listitem>Linux将物理内存完全一一映射到内核空间，这样很方便管理内存，任何页面的虚拟地址减去一个PAGE_OFFSET(0xc0000000)的偏移r然后加上物理地址的偏移PHYS_OFFSET就可以得到物理地址。</listitem>
+	<listitem>内核还需要动态管理一些内存用于vmalloc或者设备临时映射等，因此不能将1G的虚拟空间完全一一映射物理内存，因此权衡了一个896M的大小，0xc0000000到0xc0000000 + 896M的虚拟地址空间一一映射物理内存，从0xc0000000+896M到0xffffffff的地址空间作为动态映射的需要。</listitem>
+</itemizedlist>
+对于大于896M的物理内存，是无法通过一一映射来访问的，通过vmalloc可以访问它们，但是对于大于4G的内存需要PAE的支持，否则无法访问。
+	</para>
+</sect2>
+<sect2><title>bootmem_data</title>
+用来存放位图的数据结构为bootmem_data。
+<programlisting><![CDATA[
+include/linux/bootmem.h
+
+typedef struct bootmem_data {
+        unsigned long node_min_pfn;
+        unsigned long node_low_pfn;
+        void *node_bootmem_map;
+        unsigned long last_end_off;
+        unsigned long hint_idx;
+        struct list_head list;
+} bootmem_data_t;
+]]></programlisting>
+
+<itemizedlist> 
+<listitem>node_min_pfn/node_low_pfn表示最小和最大的物理内存页框，node_low_pfn-node_min_pfn代表物理内存的页框数，最大不能超过896Mb对应的页框数目0x38000。</listitem>
+<listitem>node_bootmem_map表示存放bootmem位图的地址，即内核映象结束处的第一个页面的所在地址。</listitem>
+<listitem>last_end_off记录的是上次申请的空间后的第一个相对于0偏移的物理地址。</listitem>
+<listitem>hint_idx记录了最后一次申请的空间后的一个物理页框的地址。它方便下一次申请内存是使用。</listitem>
+<listitem>list被用来连接到bdata_list。</listitem>
+<programlisting><![CDATA[
+在RAM为256M的ARM板上的测试结果输出如下
+.node_min_pfn:0x50000, node_low_pfn:0x60000
+.node_bootmem_map:      c053c000
+.last_end_off:  0x0
+.hint_idx:      0x0
+]]></programlisting>
+</itemizedlist> 
+
+</sect2>
+<sect2><title>UMA和NUMA</title>
+<para>Linux对物理内存的描述机制有两种：UMA和NUMA。</para>
+<para>在传统的计算机结构中，整个物理内存都是均匀一致的，CPU访问这个空间中的任何一个地址所需要的时间都相同，所以把这种内存称为“一致存储结构（Uniform Memory Architecture），简称UMA。可是，在一些新的系统结构中，特别是多CPU结构的系统中，物理存储空间在这方面的一致性却成了问题。这是因为，在多CPU结构中，系统中只有一条总线（例如，PCI总线），有多个CPU模块连接在系统总线上，每个CPU模块都有本地的物理内存，但是也可以通过系统总线访问其它CPU模块上的内存。另外，系统总线上还连接着一个公用的存储模块，所有的CPU模块都可以通过系统总线来访问它。因此，所有这些物理内存的地址可以互相连续而形成一个连续的物理地址空间。</para>
+<para>
+显然，就某个特定的CPU而言，访问其本地的存储器速度是最快的，而穿过系统总线访问公用存储模块或其它CPU模块上的存储器就比较慢，而且还面临因可能的竞争而引起的不确定性。也就是说，在这样的系统中，其物理存储空间虽然地址连续，但因为所处“位置”不同而导致的存取速度不一致，所以称为“非一致存储结构（Non-Uniform Memory Architecture），简称NUMA。</para>
+<para>
+事实上，严格意义上的UMA结构几乎不存在。就拿配置最简单的单CPU来说，其物理存储空间就包括了RAM、ROM（用于BIOS），还有图形卡上的静态RAM。但是，在UMA中，除主存RAM之外的存储器空间都很小，因此可以把它们放在特殊的地址上，在编程时加以特别注意就行，那么，可以认为以RAM为主体的主存是UMA结构。</para>
+<para>
+由于NUMA的引入，就需要存储管理机制的支持，因此，Linux内核从2.4版本开始就提供了对NUMA的支持（作为一个编译可选项）。为了对NUMA进行描述，引入一个新的概念－“存储节点(或叫节点)，把访问时间相同的存储空间就叫做一个“存储节点”。一般来说，连续的物理页面应该分配在相同的存储节点上。例如，如果CPU模块1要求分配5个页面，但是由于本模块上的存储空间已经不够，只能分配3个页面，那么此时，是把另外两个页面分配在其它CPU模块上呢，还是把5个页面干脆分配在一个模块上？显然，合理的分配方式因该是将这5个页面都分配在公用模块上。
+</para>
+<programlisting><![CDATA[
+mm/bootmem.c
+bootmem_data_t bootmem_node_data[MAX_NUMNODES] __initdata;
+]]></programlisting>
+Linux定义了一个大小为MAX_NUMNODES类型为bootmem_data_t的bootmem_node_data数组，数组的大小根据CONFIG_NODES_SHIFT的配置决定。对于UMA来说，NODES_SHIFT为0，所以MAX_NUMNODES的值为1。
+<para>Linux把物理内存划分为三个层次来管理：存储节点（Node）、管理区（Zone）和页面（Page）。为了支持NUMA模型，也即CPU对不同内存单元的访问时间可能不同，此时系统的物理内存被划分为几个节点(node)。在一个单独的节点内，任一给定CPU访问页面所需的时间都是相同的。然而，对不同的CPU，这个时间可能就不同。对每个CPU而言，内核都试图把耗时节点的访问次数减到最少这就要小心地选择CPU最常引用的内核数据结构的存放位置。
+</para><para>
+另外，linux内核在一些特殊的单处理器上使用NUMA，这些系统的物理地址空间中拥有巨大的"洞"。内核通过将有效物理地址的连续附属区域分配给不同的内存几点来处理这些体系结构。
+</para><para>
+每个节点中的物理内存又可以分为几个管理区(Zone)。每个节点都有一个类型为pg_data_t的描述符。对于UMA模式来说，系统中只需要描述符来定义一个节点，它被定义在mm/page_allloc.c中，名为contig_page_data。
+<programlisting><![CDATA[
+#ifndef CONFIG_NEED_MULTIPLE_NODES
+struct pglist_data __refdata contig_page_data = { .bdata = &bootmem_node_data[0] };
+EXPORT_SYMBOL(contig_page_data);
+#endif
+]]></programlisting>
+对于NUMA来说，Linux在arch/arm/mm/discontig.c中定义了一个名为discontig_node_data的数组。contig_page_data和discontig_node_data均被EXPORT_SYMBOL出来，作为全局变量使用。另外注意到contig_page_data和discontig_node_data在被定义时都是指定了成员bdata的值。pg_data_t结构体中的struct bootmem_data类型成员bdata被用来在系统启动时通过bitmap管理该节点代表的内存。
+<programlisting><![CDATA[
+pg_data_t discontig_node_data[MAX_NUMNODES] = {
+  { .bdata = &bootmem_node_data[0] },
+  { .bdata = &bootmem_node_data[1] },
+  { .bdata = &bootmem_node_data[2] },
+  { .bdata = &bootmem_node_data[3] },
+  ......
+]]></programlisting>
+</para>
+</sect2>
+<sect2><title>Debug机制</title>
+bootmem.c中定义了bootmem_debug，将其置1，则可以查看Linux在使用bootmem机制时输出的信息。
+<programlisting><![CDATA[
+mm/bootmem.c
+
+static int bootmem_debug = 1;
+]]></programlisting>
+bootmem.c中提供了一个名为bootmem_debug_setup的函数，它被用来在系统引导期间解析Bootloader传递来的参数行，如果提供了bootmem_debug=1，那么这里的bootmem_debug开关将被置为1。
+<programlisting><![CDATA[
+static int __init bootmem_debug_setup(char *buf)
+{
+	bootmem_debug = 1;
+	return 0;
+}
+early_param("bootmem_debug", bootmem_debug_setup);
+]]></programlisting>
+如果开启bootmem_debug，Bootloader中的bootargs参数看起来应该如下所示：
+<programlisting><![CDATA[
+bootargs=mem=64M console=ttyS1,115200n8 root=/dev/ram0 rw initrd=0xc1180000,4M bootmem_debug=1
+]]></programlisting>
+</sect2>
+<sect2><title>初始化函数</title>
+init_bootmem_core是bootmem机制中的核心函数，如果需要使用bootmem机制来管理内存，那么首先需要使用该函数来建立Bootmem allocator，并初始化位图。并且该函数只在初始化时使用。
+<programlisting><![CDATA[
+static unsigned long __init init_bootmem_core(bootmem_data_t *bdata,
+	unsigned long mapstart, unsigned long start, unsigned long end);
+]]></programlisting>
+<itemizedlist> 
+	<listitem>bdata存放初始化后的位图信息。</listitem>
+	<listitem>mapstart指明位图所要存放的物理页框。</listitem>
+	<listitem>start和end指明该分配器所要管理的物理内存的起止页框。</listitem>
+</itemizedlist>
+init_bootmem_core完成了以下工作：
+<itemizedlist> 
+	<listitem>根据mapstart指定的物理页框，计算bdata中的node_bootmem_map所应该对应的虚拟地址。首先将mapstart物理页框通过PFN_PHYS转换为对应的物理地址，然后通过phys_to_virt转换为虚拟地址。</listitem>
+	<listitem>bdata中的node_min_pfn和node_low_pfn被分别赋值为start和end。它们记录了当前bdata可以管理的物理内存范围的起止页框。</listitem>
+	<listitem>使用link_bootmem函数将bdata挂载到bdata_list全局变量中，Linux中所有的bdata都被链入bdata_list进行统一管理。链入时将根据node_min_pfn的值来确定挂载点。整个链表中的bdata节点内node_min_pfn总是从小到大排列的。</listitem>
+	<listitem>最后物理页框对应的bitmap，也即node_bootmem_map指向的地址，大小为bitmap大小的区域全部置为0xff，也即全部保留。bitmap大小由bootmap_bytes计算出，其中会考虑到字节圆整，通常的公式为(pages + 7) / 8，另外要保证对齐到32。对于256M的内存来说，正好是0x2000。</listitem>	
+</itemizedlist>
+对于一个使用UMA机制，物理内存为256Mb，且物理内存所在起始地址为0x50000000的系统，init_bootmem_core将打印以下信息：
+<programlisting><![CDATA[
+bootmem::init_bootmem_core nid=0 start=50000 map=5053c end=60000 mapsize=2000
+]]></programlisting>
+nid=0，指明当前操作的bdata对应到bootmem_node_data的数组索引，start=50000，即为0x50000000对应的物理页框。
+<figure><title>初始化后的位图</title><graphic fileref="images/bitmap0.gif"/></figure>
+<para>
+为了针对特定的内存节点应用Bootmem机制，bootmem.c中在init_bootmem_core的基础上封装了针对特定节点操作的init_bootmem_node函数。另外还有针对默认节点操作的init_bootmem函数，它们的调用关系如图所示：
+<figure><title>初始化函数调用</title><graphic fileref="images/bootmem_init.gif"/></figure>
+<programlisting><![CDATA[
+unsigned long __init init_bootmem_node(pg_data_t *pgdat, unsigned long freepfn,
+				unsigned long startpfn, unsigned long endpfn)
+{
+	return init_bootmem_core(pgdat->bdata, freepfn, startpfn, endpfn);
+}
+]]></programlisting>
+注意到init_bootmem_node的第一个参数为pg_data_t类型。init_bootmem只需要两个参数，bitmap的物理页框地址start和物理页面数pages。NODE_DATA的作用就是取contig_page_data节点，而这里的所处理的物理页框起始地址永远为0。
+<programlisting><![CDATA[
+include/linux/mmzone.h
+#define NODE_DATA(nid)          (&contig_page_data)
+
+unsigned long __init init_bootmem(unsigned long start, unsigned long pages)
+{
+	max_low_pfn = pages;
+	min_low_pfn = start;
+	return init_bootmem_core(NODE_DATA(0)->bdata, start, 0, pages);
+}
+]]></programlisting>
+通常在系统引导的时候调用init_bootmem_node来针对特定的节点初始化bootmem，而不是直接调用init_bootmem，这是因为很少有物理地址从0开始，它是由CPU的物理地址分配决定的，通常RAM占用的物理地址空间总是有一定的偏移，比如0x50000000。
+</para>
+</sect2>
+<sect2><title>__reserve和__free</title>
+<para>
+不管是何种内存管理方式，最基本的功能就是内存的分发和回收，比如malloc和free。在bootmem机制中被称为__reserve和__free，分别对应bitmap中的比特位的状态1和0。所以__reserve的作用就是将对应的物理页框的比特位置为1，相当于malloc。
+<programlisting><![CDATA[
+static int __init __reserve(bootmem_data_t *bdata, unsigned long sidx,
+			unsigned long eidx, int flags);
+]]></programlisting>
+<itemizedlist> 
+	<listitem>bdata指明当前的保留操作作用在哪个bootmem_data区。</listitem>
+	<listitem>sidx和eidx代表的是需要预留的物理页框对应的bit位在bdata中的node_min_pfn的索引值。</listitem>
+	<listitem>flags标志，当前只支持BOOTMEM_DEFAULT和BOOTMEM_EXCLUSIVE。BOOTMEM_EXCLUSIVE可以保证在将要保留的整个页框中都是可以使用的，也即这些页框对应的bitmap连续为0，否则遇到已保留的页框，将释放已经获取的页框，并返回EBUSY。BOOTMEM_DEFAULT则不考虑这一情况。</listitem>
+</itemizedlist>
+__reserve调用test_and_set_bit来设置这一区域中的比特位，注意区域范围为[sidx + bdata->node_min_pfn， eidx + bdata->node_min_pfn)。
+</para>
+<para>
+<programlisting><![CDATA[
+static void __init __free(bootmem_data_t *bdata,
+			unsigned long sidx, unsigned long eidx);
+]]></programlisting>
+__free函数在bootmeme机制中相当于通常使用的free函数。与__reserve相似，但是它调用test_and_clear_bit对需要释放的页框区对应的位图进行清零，如果在清零过程中发现该函数返回0，说明该区域中的比特位有异常翻转，调用BUG()抛出并将系统挂起。它的作用区域与__reserve一致。
+</para>
+<para>
+注意：test_and_set_bit(0, start_addr)中，"0"不是要设置的值，而是表示start_addr中第0位需要被设置为"1"。此函数返回相应比特位上一次被设置的值。test_and_clear_bit与此相同。
+</para>
+</sect2>
+<sect2><title>alloc_bootmem_core</title>
+<para>
+alloc_bootmem_core是使用bitmap分配内存空间的核心接口。
+<programlisting><![CDATA[
+static void * __init alloc_bootmem_core(struct bootmem_data *bdata,
+				unsigned long size, unsigned long align,
+				unsigned long goal, unsigned long limit);
+]]></programlisting>
+<itemizedlist> 
+	<listitem>bdata指明当前的内存申请操作作用在哪个bootmem_data区。</listitem>
+	<listitem>size指明所要申请的内存空间大小，它的单位是bytes。</listitem>
+	<listitem>align指明申请的内存空间的边界大小，通常为32，PAGE_SIZE(4K)等。</listitem>
+	<listitem>goal代表从bdata中node_min_pfn搜索空闲内存的开始地址，如果为0，则默认从node_min_pfn开始。goal应该位于node_min_pfn和node_low_pfn所对应的页框所代表的地址之间，否则按0处理。</listitem>
+	<listitem>limit代表从bdata中node_min_pfn搜索空闲内存的终点地址，如果为0，则搜索到node_low_pfn结束。</listitem>
+</itemizedlist>	
+alloc_bootmem_core尝试在goal和limit指定的虚拟地址范围[goal/node_min_pfn，limit/node_low_pfn]中分配size字节的内存，并且获取的内存与align对齐：
+<itemizedlist>
+	<listitem>首先检查参数的合法性。size不可为0；align必须为2的整数倍；如果limit不为0，那么需满足<![CDATA[goal + size < limit]]>。</listitem>
+	<listitem>根据bdata中提供的node_min_pfn和node_low_pfn，以及goal和limit的值确定需要搜索的物理页框范围。最大页框max由node_low_pfn和limit共同确定，如果limit不为0，则取最小者。最小页框min取node_min_pfn和goal中最大值，并且对齐到align参数决定的step。</listitem>
+	<listitem>根据公式step = max(align >> PAGE_SHIFT, 1UL)得到步进大小。右移PAGE_SHIFT用来计算align相对于PAGE_SIZE的倍数。step参数用来在搜索失败的情况下，搜索下一页框时增加的页框数目：步进大小为1，则当bitmap中bit i为占用状态时搜索bit i + 1的状态，步进大小为2则当bitmap中一个bit i为占用状态时搜索bit i + 2的状态。</listitem>
+	<listitem>比较起点和上一次搜索结束的位置,从较小的位置开始搜索,如从上一次搜索结束的位置开始搜索,则设置回滚标识,如到终点还找不到合适的空间则从之前的起点开始进行搜索。</listitem>
+	<listitem>根据搜索的区域和申请的内存大小，通过find_next_zero_bit函数来查找一个连续的并满足size要求的空闲内存块。如果有足够的空闲bit则将这些bit设为占用状态，并清空bit所对应的空间的数据，返回空闲空间的起始地址。</listitem>
+	<listitem>更新last_end_off和hint_idx，以备下次申请内存时快速定位空闲的内存区。其中last_end_off记录了上次申请的空间后的第一个相对于0偏移的物理地址，所以本次申请的内存总是紧邻此后的并满足goal和align要求的内存。</listitem>
+	<listitem>函数执行成功则通过__reserve及BOOTMEM_EXCLUSIVE标志预留对应的bitmap，memset置该区域为0，并返回申请到的内存的虚拟地址，否则返回NULL。</listitem>
+</itemizedlist>
+bootmem.c中对alloc_bootmem_core进行了一系列的扩展以完成丰富的功能。
+<figure><title>alloc_bootmem_core调用</title><graphic fileref="images/bootmem_calls.gif"/></figure>
+</para><para>bootmem机制中提供的__alloc_bootmem_node和__alloc_bootmem_low_node函数被用来针对特定的节点进行内存管理。它们均通过调用___alloc_bootmem_node来实现。它们的第一个参数均为pg_data_t类型。
+<programlisting><![CDATA[
+void * __init __alloc_bootmem_node(pg_data_t *pgdat, unsigned long size,
+				   unsigned long align, unsigned long goal)
+{
+	return ___alloc_bootmem_node(pgdat->bdata, size, align, goal, 0);
+}
+]]></programlisting>
+__alloc_bootmem_low_node和__alloc_bootmem_node类似，唯一区别在于limit参数。ARCH_LOW_ADDRESS_LIMIT只在特定的体系架构上起作用，也即申请的内存被限制在ARCH_LOW_ADDRESS_LIMIT之下的内存中。通常它被定义为0xffffffffUL，也即是32位系统可以支持的最大虚拟地址，此时它的作用与0参数相同。
+<programlisting><![CDATA[
+void * __init __alloc_bootmem_low_node(pg_data_t *pgdat, unsigned long size,
+				       unsigned long align, unsigned long goal)
+{
+	return ___alloc_bootmem_node(pgdat->bdata, size, align,
+				goal, ARCH_LOW_ADDRESS_LIMIT);
+}
+]]></programlisting>
+___alloc_bootmem_node在节点内存分配中是一个关键的函数。
+<itemizedlist> 
+	<listitem>首先通过alloc_bootmem_core在给定的节点中进行内存分配。</listitem>
+	<listitem>如果分配失败，则调用___alloc_bootmem尝试在bdata_list链表中的所有bdata中分配内存。</listitem>
+</itemizedlist>
+___alloc_bootmem_nopanic是一个通用的，一个用来尽力而为分配内存的函数，它通过list_for_each_entry在全局链表bdata_list中分配内存。___alloc_bootmem和___alloc_bootmem_nopanic类似，它首先通过___alloc_bootmem_nopanic函数分配内存，但是一旦内存分配失败，系统将通过panic("Out of memory")抛出信息，并停止运行。
+</para><para>
+___alloc_bootmem_nopanic尽管通过alloc_bootmem_core来实现，它和alloc_bootmem_core可以看作工作在同一层次上。alloc_bootmem_core工作于特定的bdata。而___alloc_bootmem_nopanic则是工作在bdata_list链表中的所有bdata。
+</para>
+</sect2>
+<sect2><title>Bootmem alloc宏</title>
+<para>尽管bootmem.c中提供了一些了的内存分配函数，但是特定于某个体系架构的代码并没有直接调用它们，而是通过Linux提供的一系列的宏。</para>
+<para>
+<programlisting><![CDATA[
+include/linux/bootmem.h
+
+#define alloc_bootmem(x) \
+        __alloc_bootmem(x, SMP_CACHE_BYTES, __pa(MAX_DMA_ADDRESS))
+#define alloc_bootmem_nopanic(x) \
+        __alloc_bootmem_nopanic(x, SMP_CACHE_BYTES, __pa(MAX_DMA_ADDRESS))
+#define alloc_bootmem_low(x) \
+        __alloc_bootmem_low(x, SMP_CACHE_BYTES, 0)
+#define alloc_bootmem_pages(x) \
+        __alloc_bootmem(x, PAGE_SIZE, __pa(MAX_DMA_ADDRESS))
+#define alloc_bootmem_pages_nopanic(x) \
+        __alloc_bootmem_nopanic(x, PAGE_SIZE, __pa(MAX_DMA_ADDRESS))
+#define alloc_bootmem_low_pages(x) \
+        __alloc_bootmem_low(x, PAGE_SIZE, 0)
+#define alloc_bootmem_node(pgdat, x) \
+        __alloc_bootmem_node(pgdat, x, SMP_CACHE_BYTES, __pa(MAX_DMA_ADDRESS))
+#define alloc_bootmem_pages_node(pgdat, x) \
+        __alloc_bootmem_node(pgdat, x, PAGE_SIZE, __pa(MAX_DMA_ADDRESS))
+#define alloc_bootmem_low_pages_node(pgdat, x) \
+        __alloc_bootmem_low_node(pgdat, x, PAGE_SIZE, 0)
+]]></programlisting>
+一些系统引导时使用的临时结构体通常通过alloc_bootmem_low来分配内存，获取的内存相对于SMP_CACHE_BYTES对齐，通常为32。在创建系统页面机制时，将会用到alloc_bootmem_pages和alloc_bootmem_low_pages，它们分配的内存相对于PAGE_SIZE对齐。针对特定节点的内存分配使用alloc_bootmem_pages_node和alloc_bootmem_low_pages_node进行。
+ </para>
+</sect2>
+<sect2><title>标记函数</title>
+<para>为了方便对bitmap的操作，bootmeme.c中对__reserve和__free函数又进行了进一步的封装。</para>
+<para><figure><title>bootmem标记函数</title><graphic fileref="images/bootmem_mark.gif"/></figure>
+从函数的调用关系看，mark_bootmem_node处于标记函数的核心，所有的预留和释放均是通过它来实现。它的声明如下所示：
+<programlisting><![CDATA[
+static int __init mark_bootmem_node(bootmem_data_t *bdata,
+				unsigned long start, unsigned long end,
+				int reserve, int flags);
+]]></programlisting>
+<itemizedlist> 
+	<listitem>bdata指明当前标记操作作用在哪个bootmem_data区。</listitem>
+	<listitem>start和end指明了需要标记的区域的起止物理页框。</listitem>
+	<listitem>reserve的值可以取1和0，分别对应到__reserve和__free操作。</listitem>	
+	<listitem>flags当前只支持BOOTMEM_DEFAULT和BOOTMEM_EXCLUSIVE，参考对__reserve和__free函数的分析。</listitem>	
+</itemizedlist>
+mark_bootmem_node完成了以下工作：
+<itemizedlist> 
+	<listitem>判断start和end的合法性，它们应该位于参数bdata成员node_min_pfn和node_low_pfn之间。</listitem>
+	<listitem>根据start和end计算bitmap的中的起止索引。</listitem>
+	<listitem>根据reserve和索引值调用__reserve或__free函数进行标记操作。</listitem>		
+	<listitem>操作成功返回0，否则返回错误号。</listitem>
+</itemizedlist>
+mark_bootmem与mark_bootmem_node的关系，类似于___alloc_bootmem_nopanic和alloc_bootmem_core的关系。它通过list_for_each_entry遍历bdata_list，根据start和end查找所在的bdata，然后调用mark_bootmem_node在特定的bdata上完成标记操作。如果start和end指明的区域跨越多个bdata，那么通过mark_bootmem操作是非常方便的。
+</para>
+<para>reserve_bootmem和free_bootmem与reserve_bootmem_node和free_bootmem_node的关系与mark_bootmem和mark_bootmem_node的关系类似。reserve_bootmem和free_bootmem调用mark_bootmem，只是reserve参数分别为1和0。reserve_bootmem_node和free_bootmem_node调用mark_bootmem_node，同样reserve参数分别为1和0。</para>
+<para></para>
+</sect2>
+<sect2><title>Bootmem机制的应用</title>
+<para>这里以ARM体系为例介绍Bootmem机制在系统引导时的应用。在系统初始化内存页管理功能之前会首先启用Bootmem，相关代码位于特定架构的kernel/setup.c中的setup_arch调用的paging_init之中。它被定义在特定于系统架构的代码中。</para>
+<programlisting><![CDATA[
+arch/arm/mm/mmu.c
+void __init paging_init(struct meminfo *mi, struct machine_desc *mdesc)
+{
+	void *zero_page;
+
+	build_mem_type_table();
+	sanity_check_meminfo(mi);
+	prepare_page_table(mi);
+	
+	bootmem_init(mi);
+	devicemaps_init(mdesc);
+
+	top_pmd = pmd_off_k(0xffff0000);
+
+	zero_page = alloc_bootmem_low_pages(PAGE_SIZE);
+	memzero(zero_page, PAGE_SIZE);
+	empty_zero_page = virt_to_page(zero_page);
+	flush_dcache_page(empty_zero_page);
+}
+]]></programlisting>
+注意到bootmem_init函数，它用来初始化bootmem，参数为struct meminfo类型。
+<programlisting><![CDATA[
+arch/arm/mm/init.c
+
+void __init bootmem_init(struct meminfo *mi);
+]]></programlisting>
+struct meminfo这个结构体定义在特定架构中的include/asm/setup.h中，这是一个对物理内存区间描述的结构体，它将整个地址空间分为NR_BANKS(通常为8)个区间，通常一个区必须是连续的地址并且是同一类型的设备，而用于特殊目的的地址将划分为一个独立的区。首先定义nr_banks，它记录了当前系统的内存块的个数，然后是结构体bank[NR_BANKS]。struct membank结构中的start指明了RAM的起始物理地址，size指明了大小，node则指明了内存块号，对于UMA模式(未配置CONFIG_DISCONTIGMEM)来说，它永远被置为0。
+<programlisting><![CDATA[
+arch/arm/include/asm/setup.h
+
+struct membank {
+        unsigned long start;
+        unsigned long size;
+        int           node;
+};
+
+struct meminfo {
+        int nr_banks;
+        struct membank bank[NR_BANKS];
+};
+]]></programlisting>
+<sect3><title>mem参数的传递</title>
+内核在启动过程中通过一个全局变量"meminfo"来配置内存。它被定义为static，所以是一个局部的全局变量，仅限制于setup.c内部使用。__initdata限定meminfo被编译到data数据段。
+<programlisting><![CDATA[
+arch/arm/kernel/setup.c
+
+static struct meminfo meminfo __initdata = { 0, };
+]]></programlisting>
+meminfo被初始化为0，那么其中的数据是合适填充的呢？Bootloader在引导时通过两种方式像内核提供参数的传递：
+<itemizedlist> 
+	<listitem>通过tags数组来传递内存信息，在Bootloader中通过setup_memory_tags函数填充内存相关的信息，这些信息通过宏定义保存到类型为ATAG_MEM的tags中，然后通过寄存器传递给内核这些参数的地址。在内核的setup_arch中的parse_tags中不同类型的tags由不同的函数解析。其中ATAG_MEM类型的tags被parse_tag_mem32解析。</listitem>
+	<listitem>通过内核配置中的CONFIG_CMDLINE指定mem参数，可以通过mem=size@addr(ex. mem=128M@0xb0000000)的方式同时指定大小和物理RAM的地址，如果只指定了大小，物理RAM的地址在内核中使用PHYS_OFFSET定义的值。CONFIG_CMDLINE在setup.c中首先被赋值给default_command_line，接着在setup_arch中的parse_cmdline中被解析。pase_cmdline调用一系列名为early_开始的函数解析对应的参数。mem参数由early_mem解析。</listitem>
+</itemizedlist>
+通常setup_arch会首先解析tags中的参数，然后解析CONFIG_CMDLIN中由eraly_开头的解析函数来解析的参数。无论是通过何种方式，最终都将调用统一的arm_add_memory函数将内存信息转换为struct membank类型并存放到meminfo中。
+<programlisting><![CDATA[
+static void __init arm_add_memory(unsigned long start, unsigned long size)
+{
+	struct membank *bank;
+
+	/*
+	 * Ensure that start/size are aligned to a page boundary.
+	 * Size is appropriately rounded down, start is rounded up.
+	 */
+	size -= start & ~PAGE_MASK;
+
+	bank = &meminfo.bank[meminfo.nr_banks++];
+
+	bank->start = PAGE_ALIGN(start);
+	bank->size  = size & PAGE_MASK;
+	
+	/* if not define CONFIG_DISCONTIGMEM then #define PHYS_TO_NID(addr) (0) */
+	bank->node  = PHYS_TO_NID(start);
+}
+]]></programlisting>
+注意当通过CONFIG_CMDLINE传递mem参数时，early_mem在一次处理mem参数时会将meminfo.nr_banks置为0，由于两种方式的解析先后顺序，导致CONFIG_CMDLINE传递mem参数时，由Bootloader通过tags方式传递的内存参数将失效。所以如果需要指明多个mem参数信息，那么通过CONFIG_CMDLINE传递是方便的。如果通过CONFIG_CMDLINE指定了mem=256M，PHYS_OFFSET被定义为0x50000000的系统，将得到如下的meminfo信息。
+<programlisting><![CDATA[
+struct meminfo {
+  .nr_banks = 1;
+  bank[8] = 
+  {
+    {
+      .start = 0x50000000;
+      .size = 0x10000000;
+      .node = 0;
+    };
+   ...
+  }
+};
+]]></programlisting>
+</sect3>
+<sect3><title>bootmem_init</title>
+<para>
+bootmem_init是一个举足轻重的函数，它是特定体系架构实现Bootmem机制的入口。参数mi传递系统中所有的RAM信息给该函数，函数中将针对所有的内存node(这里用bank来表示)做处理，并在每一个node中建立位图映射。
+</para><para>
+bootmem_init完成了以下功能，但不返回任何信息:
+</para><para>
+<itemizedlist> 
+	<listitem>首先通过check_initrd查找包含ramdisk的内存node，以备在bitmap中保留该node中的内存。</listitem>
+	<listitem>通过for_each_node遍历当前系统中的MAX_NUMNODES个内存node，然后通过bootmem_init_node函数对每一个node进行初始化和预留的处理。</listitem>
+	<listitem>通过for_each_node调用bootmem_free_node为每一个node通过Bootmem机制申请strcut page数据区，每一个物理页框都由一个对应的struct page结构管理。显然从此功能可以看到Bootmem在系统引导过程中是为了页面管理起到的准备作用。</listitem>
+	<listitem>统计最大物理页帧memend_pfn，并据公式<![CDATA[high_memory = __va(memend_pfn << PAGE_SHIFT)计算high_memory以及公式max_pfn = max_low_pfn = memend_pfn - PHYS_PFN_OFFSET]]>计算当前系统中所有node的物理页框总数。</listitem>
+</itemizedlist>
+一个物理RAM为256Mb(0x10000000)，起始物理地址为0x50000000的系统，将得到以下值，memend_pfn记录了最大的物理页框，PHYS_PFN_OFFSET则由PHYS_OFFSET取页框地址得到。
+<programlisting><![CDATA[
+high_memory = 0xd0000000, max_pfn = 0x10000, memend_pfn = 0x60000 PHYS_PFN_OFFSET = 0x50000
+]]></programlisting>
+</para><para>
+对于Bootmem机制是如何通过bootmem_init实现，并在此基础上实现了内存页表管理，将在页表机制中详细说明。
+</para>
+</sect3>
+<sect3><title>bootmem_init_node</title>
+<para>
+bootmem_init_node根据参数mi中的bank数据结构，为每一个node内存节点分配位图空间，并初始化相关信息。
+<programlisting><![CDATA[
+arch/arm/mm/init.c
+
+static unsigned long __init bootmem_init_node(int node, struct meminfo *mi);
+]]></programlisting>
+</para></sect3>
+</sect2>
+</sect1>

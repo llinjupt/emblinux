@@ -1,0 +1,262 @@
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>17. &#20869;&#26680;&#21442;&#25968;&#35299;&#26512;</title><link rel="stylesheet" href="styles.css" type="text/css"><meta name="generator" content="DocBook XSL-NS Stylesheets V1.75.2"><link rel="home" href="index.html" title="Linux&#20869;&#26680;&#23398;&#20064;&#21644;&#30740;&#31350;&#21450;&#23884;&#20837;&#24335;(ARM)&#23398;&#20064;&#21644;&#30740;&#31350;&#30340;&#24320;&#25918;&#25991;&#26723;"><link rel="up" href="index.html" title="Linux&#20869;&#26680;&#23398;&#20064;&#21644;&#30740;&#31350;&#21450;&#23884;&#20837;&#24335;(ARM)&#23398;&#20064;&#21644;&#30740;&#31350;&#30340;&#24320;&#25918;&#25991;&#26723;"><link rel="prev" href="ar01s16.html" title="16. &#20013;&#26029;&#22788;&#29702;"><link rel="next" href="ar01s18.html" title="18. &#26102;&#38047;&#31649;&#29702;"></head><body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF"><div class="navheader"><table width="100%" summary="Navigation header"><tr><th colspan="3" align="center">17. &#20869;&#26680;&#21442;&#25968;&#35299;&#26512;</th></tr><tr><td width="20%" align="left"><a accesskey="p" href="ar01s16.html">&#19978;&#19968;&#39029;</a> </td><th width="60%" align="center"> </th><td width="20%" align="right"> <a accesskey="n" href="ar01s18.html">&#19979;&#19968;&#39029;</a></td></tr></table><hr></div><div class="sect1" title="17. &#20869;&#26680;&#21442;&#25968;&#35299;&#26512;"><div class="titlepage"><div><div><h2 class="title" style="clear: both"><a name="idp81207452"></a>17. &#20869;&#26680;&#21442;&#25968;&#35299;&#26512;</h2></div></div></div>
+<div class="sect2" title="17.1. &#21069;&#35328;"><div class="titlepage"><div><div><h3 class="title"><a name="idp81415228"></a>17.1. &#21069;&#35328;</h3></div></div></div>
+	<p>
+&#23613;&#31649;&#20869;&#26680;&#23545;&#20256;&#36882;&#32473;&#23427;&#30340;&#21442;&#25968;&#36827;&#34892;&#35299;&#26512;&#30340;&#20195;&#30721;&#30456;&#23545;&#31616;&#21333;&#65292;&#20294;&#26159;&#36825;&#24182;&#19981;&#24847;&#21619;&#30528;&#23427;&#20204;&#19981;&#37325;&#35201;&#12290;&#20869;&#26680;&#24182;&#19981;&#26159;&#19968;&#27425;&#24615;&#23601;&#23436;&#25104;&#23545;&#25152;&#26377;&#30340;&#21442;&#25968;&#35299;&#26512;&#65292;&#32780;&#26159;&#32463;&#21382;&#20102;&#19977;&#20010;&#38454;&#27573;&#12290;
+</p><div class="itemizedlist"><ul class="itemizedlist" type="disc"><li class="listitem">&#31532;&#19968;&#20010;&#38454;&#27573;&#20301;&#20110;&#29305;&#23450;&#26550;&#26500;&#30340;setup_arch&#35843;&#29992;&#30340;parse_cmdline&#20989;&#25968;&#20013;&#12290;&#23427;&#29992;&#26469;&#35299;&#26512;&#25152;&#26377;__early_begin&#21644;__early_end&#22320;&#22336;&#20043;&#38388;&#30340;&#21442;&#25968;&#12290;&#36825;&#20123;&#21442;&#25968;__early_param&#26469;&#23450;&#20041;&#65292;&#36890;&#24120;&#23427;&#20204;&#26159;&#20869;&#23384;&#37197;&#32622;&#30456;&#20851;&#30340;&#65292;&#22240;&#20026;&#36825;&#26159;&#20026;&#20102;&#29983;&#25104;&#39029;&#34920;&#20197;&#21450;&#23454;&#29616;&#20869;&#23384;&#31649;&#29702;&#20570;&#20934;&#22791;&#12290;</li><li class="listitem">&#22238;&#21040;start_kernel&#20989;&#25968;&#65292;&#25152;&#26377;&#26410;&#34987;parse_cmdline&#20989;&#25968;&#35299;&#26512;&#30340;&#21442;&#25968;&#22343;&#34987;&#20256;&#36882;&#32473;setup_command_line&#20989;&#25968;&#65292;&#35813;&#20989;&#25968;&#20027;&#35201;&#29992;&#26469;&#20445;&#23384;&#36825;&#20123;&#21442;&#25968;&#22791;&#29992;&#12290;&#25509;&#30528;parse_early_param&#23558;&#32487;&#32493;&#35299;&#26512;&#21097;&#19979;&#30340;&#21442;&#25968;&#12290;</li><li class="listitem"></ul></div><p>
+ARM&#20307;&#31995;&#20013;&#36890;&#36807;__early_param&#22768;&#26126;&#30340;&#21442;&#25968;&#30340;&#19968;&#20010;&#31034;&#20363;&#65306;
+</p><pre class="programlisting">
+./mm/mmu.c:125:__early_param("cachepolicy=", early_cachepolicy);
+./mm/mmu.c:133:__early_param("nocache", early_nocache);
+./mm/mmu.c:141:__early_param("nowb", early_nowrite);
+./mm/mmu.c:153:__early_param("ecc=", early_ecc);
+./mm/mmu.c:655:__early_param("vmalloc=", early_vmalloc);
+./mm/init.c:46:__early_param("initrd=", early_initrd);
+./kernel/setup.c:415:__early_param("mem=", early_mem);
+</pre><p>
+setup_command_line&#30340;&#25191;&#34892;&#20301;&#20110;setup_arch&#20043;&#21518;&#65292;&#20294;&#26159;&#26089;&#20110;parse_cmdline&#12290;&#25152;&#26377;&#26410;&#34987;__early_param&#23450;&#20041;&#30340;&#21442;&#25968;&#36890;&#36807;command_line&#20256;&#36882;&#32473;&#23427;&#12290;
+</p><pre class="programlisting">
+static void __init setup_command_line(char *command_line)
+{
+	saved_command_line = alloc_bootmem(strlen (boot_command_line)+1);
+	static_command_line = alloc_bootmem(strlen (command_line)+1);
+	strcpy (saved_command_line, boot_command_line);
+	strcpy (static_command_line, command_line);
+}
+</pre><p>
+&#22312;setup_command_line&#20013;saved_command_line&#21644;static_command_line&#39318;&#20808;&#36890;&#36807;Bootmem&#26426;&#21046;&#20998;&#37197;&#20869;&#23384;&#65292;&#28982;&#21518;&#20998;&#21035;&#20445;&#23384;&#26410;&#22788;&#29702;&#30340;&#21407;&#22987;&#21629;&#20196;&#34892;&#65292;&#20197;&#21450;&#36890;&#36807;parse_cmdline&#22788;&#29702;&#36807;&#30340;&#21629;&#20196;&#34892;&#65292;&#19968;&#20010;&#23454;&#38469;&#30340;&#31034;&#20363;&#22914;&#19979;&#65306;
+</p><pre class="programlisting">
+CONFIG_CMDLINE="root=/dev/mtdblock2 rootfstype=cramfs init=/linuxrc console=ttySAC0,115200 mem=256M"
+
+saved_command_line:root=/dev/mtdblock2 rootfstype=cramfs console=ttySAC0,115200 mem=256M bootmem_debug=1
+static_command_line:root=/dev/mtdblock2 rootfstype=cramfs console=ttySAC0,115200 bootmem_debug=1
+</pre><p>
+</p>
+</div>
+<div class="sect2" title="17.2. parse_args"><div class="titlepage"><div><div><h3 class="title"><a name="idp81419868"></a>17.2. parse_args</h3></div></div></div>
+&#22312;start_kernel&#20013;&#36890;&#36807;parse_args&#23545;&#21097;&#19979;&#30340;&#21442;&#25968;&#32487;&#32493;&#35299;&#26512;&#12290;&#20195;&#30721;&#22914;&#19979;&#65292;&#26174;&#28982;&#21448;&#20998;&#20026;&#20004;&#20010;&#38454;&#27573;&#65292;&#31532;&#19968;&#20010;&#38454;&#27573;&#21483;"early options"&#65292;&#20301;&#20110;parse_early_param&#65292;&#23454;&#38469;&#19978;&#23427;&#20063;&#26159;&#23545;parse_args&#20989;&#25968;&#30340;&#35843;&#29992;&#12290;&#31532;&#20108;&#20010;&#38454;&#27573;&#21483;"Booting kernel"&#12290;
+<pre class="programlisting">
+	parse_early_param();
+	parse_args("Booting kernel", static_command_line, __start___param,
+		   __stop___param - __start___param,
+		   &amp;unknown_bootoption);
+</pre>
+parse_early_param&#20989;&#25968;&#33258;&#36523;&#20250;&#20570;&#19968;&#20010;&#26816;&#26597;&#65292;&#20197;&#38450;&#27490;&#20989;&#25968;&#34987;&#22810;&#27425;&#35843;&#29992;&#12290;boot_command_line&#26159;&#21407;&#22987;&#21442;&#25968;&#65292;&#25152;&#20197;"early options"&#38454;&#27573;&#26159;&#23545;&#25152;&#26377;&#21442;&#25968;&#23581;&#35797;&#35299;&#26512;&#65292;&#32780;&#23454;&#38469;&#30340;&#35299;&#26512;&#20989;&#25968;&#23601;&#26159;do_early_param&#12290;
+<pre class="programlisting">
+void __init parse_early_param(void)
+{
+	static __initdata int done = 0;
+	static __initdata char tmp_cmdline[COMMAND_LINE_SIZE];
+
+	if (done)
+		return;
+
+	/* All fall through to do_early_param. */
+	strlcpy(tmp_cmdline, boot_command_line, COMMAND_LINE_SIZE);
+	parse_args("early options", tmp_cmdline, NULL, 0, do_early_param);
+	done = 1;
+}
+</pre>
+do_early_param&#23581;&#35797;&#23545;&#25152;&#26377;__setup_start&#21644;__setup_end&#38388;&#30340;struct obs_kernel_param&#31867;&#22411;&#20013;&#25152;&#26377;early&#25104;&#21592;&#20026;1&#30340;&#39033;&#36827;&#34892;&#21305;&#37197;&#12290;&#36825;&#38656;&#35201;&#26597;&#30475;&#19968;&#19979;&#20869;&#26680;&#30340;&#38142;&#25509;&#33050;&#26412;&#65306;
+<pre class="programlisting">
+arch/arm/kernel/vmlinux.lds.S
+      __setup_start = .;
+              *(.init.setup)
+      __setup_end = .;
+</pre>
+&#26174;&#28982;&#21306;&#38388;&#20013;&#30340;&#20869;&#23481;&#20026;.init.setup&#23450;&#20041;&#30340;&#27573;&#65292;&#25152;&#26377;&#20351;&#29992;&#35813;&#27573;&#30340;&#25968;&#25454;&#22343;&#30001;__setup_param&#65292;__setup&#21644;early_param&#23450;&#20041;&#12290;&#20294;&#26159;&#27880;&#24847;&#21040;__setup_param&#30340;&#26368;&#21518;&#19968;&#20010;&#21442;&#25968;&#65292;&#23427;&#20915;&#23450;&#20102;&#26159;&#22312;&#31532;&#19968;&#38454;&#27573;&#34987;&#35299;&#26512;&#65306;early_param&#65292;&#36824;&#26159;&#31532;&#20108;&#38454;&#27573;&#26469;&#35299;&#26512;&#65306;__setup&#12290;
+<pre class="programlisting">
+include/linux/init.h
+#define __setup_param(str, unique_id, fn, early)                        \
+        static char __setup_str_##unique_id[] __initdata __aligned(1) = str; \
+        static struct obs_kernel_param __setup_##unique_id      \
+                __used __section(.init.setup)                   \
+                __attribute__((aligned((sizeof(long)))))        \
+                = { __setup_str_##unique_id, fn, early }
+
+#define __setup(str, fn)                                        \
+        __setup_param(str, fn, fn, 0)
+
+/* NOTE: fn is as per module_param, not __setup!  Emits warning if fn
+ * returns non-zero. */
+#define early_param(str, fn)                                    \
+        __setup_param(str, fn, fn, 1)
+</pre>
+&#36890;&#36807;early_param&#22768;&#26126;&#30340;&#26089;&#26399;&#21464;&#37327;&#20027;&#35201;&#38598;&#20013;&#22312;mm&#25991;&#20214;&#22841;&#21644;init&#25991;&#20214;&#22841;&#19979;&#30340;&#20195;&#30721;&#20013;&#65306;
+<pre class="programlisting">
+mm/
+./page_alloc.c:2084:early_param("numa_zonelist_order", setup_numa_zonelist_order);
+./page_alloc.c:4119:early_param("kernelcore", cmdline_parse_kernelcore);
+./page_alloc.c:4120:early_param("movablecore", cmdline_parse_movablecore);
+./bootmem.c:46:early_param("bootmem_debug", bootmem_debug_setup);
+./mm_init.c:137:early_param("mminit_loglevel", set_mminit_loglevel);
+</pre>
+<pre class="programlisting">
+./init/main.c:158:early_param("nosmp", nosmp);
+./init/main.c:169:early_param("maxcpus", maxcpus);
+./init/main.c:249:early_param("debug", debug_kernel);
+./init/main.c:250:early_param("quiet", quiet_kernel);
+./init/main.c:258:early_param("loglevel", loglevel);
+</pre>
+&#27880;&#24847;&#21040;debug&#65292;quiet&#21644;loglevel&#65292;&#23427;&#20204;&#37117;&#26159;&#29992;&#26469;&#25511;&#21046;&#20869;&#26680;&#30340;&#26085;&#24535;&#32423;&#21035;&#65292;&#20854;&#20013;quiet&#20351;&#20869;&#26680;&#36755;&#20986;&#36739;&#23569;&#37327;&#20449;&#24687;&#65292;debug&#21017;&#36755;&#20837;&#24456;&#22810;&#35843;&#35797;&#20449;&#24687;&#12290;&#23427;&#20204;&#23545;&#24212;&#21040;&#20869;&#26680;&#20013;&#30340;console_printk[0]&#21464;&#37327;&#12290;
+<pre class="programlisting">
+include/linux/kernel.h
+#define console_loglevel (console_printk[0])
+#define default_message_loglevel (console_printk[1])
+#define minimum_console_loglevel (console_printk[2])
+#define default_console_loglevel (console_printk[3])
+</pre>
+&#20026;&#20102;&#26356;&#22909;&#22320;&#25511;&#21046;&#19981;&#21516;&#32423;&#21035;&#30340;&#20449;&#24687;&#26174;&#31034;&#22312;&#25511;&#21046;&#21488;&#19978;&#65292;&#20869;&#26680;&#35774;&#32622;&#20102;&#25511;&#21046;&#21488;&#30340;&#26085;&#24535;&#32423;&#21035;console_loglevel&#12290;printk&#26085;&#24535;&#32423;&#21035;&#30340;&#20316;&#29992;&#26159;&#25171;&#21360;&#19968;&#23450;&#32423;&#21035;&#30340;&#28040;&#24687;&#65292;&#19982;&#20043;&#31867;&#20284;&#65292;&#25511;&#21046;&#21488;&#21482;&#26174;&#31034;&#19968;&#23450;&#32423;&#21035;&#30340;&#28040;&#24687;&#12290;&#24403;&#26085;&#24535;&#32423;&#21035;&#23567;&#20110;console_loglevel&#26102;&#65292;&#28040;&#24687;&#25165;&#33021;&#26174;&#31034;&#20986;&#26469;&#12290;&#25511;&#21046;&#21488;&#30456;&#24212;&#30340;&#26085;&#24535;&#32423;&#21035;&#23450;&#20041;&#22914;&#19979;:
+<pre class="programlisting">
+kernel/printk.c
+/* printk's without a loglevel use this.. */
+#define DEFAULT_MESSAGE_LOGLEVEL 4 /* KERN_WARNING */
+
+/* We show everything that is MORE important than this.. */
+#define MINIMUM_CONSOLE_LOGLEVEL 1 /* Minimum loglevel we let people use */
+#define DEFAULT_CONSOLE_LOGLEVEL 7 /* anything MORE serious than KERN_DEBUG */
+
+int console_printk[4] = {
+	DEFAULT_CONSOLE_LOGLEVEL,	/* console_loglevel */
+	DEFAULT_MESSAGE_LOGLEVEL,	/* default_message_loglevel */
+	MINIMUM_CONSOLE_LOGLEVEL,	/* minimum_console_loglevel */
+	DEFAULT_CONSOLE_LOGLEVEL,	/* default_console_loglevel */
+};
+</pre>
+&#21464;&#37327;console_loglevel&#30340;&#21021;&#22987;&#20540;&#26159;DEFAULT_CONSOLE_LOGLEVEL&#65292;&#21487;&#20197;&#36890;&#36807;sys_syslog&#31995;&#32479;&#35843;&#29992;&#36827;&#34892;&#20462;&#25913;&#12290;&#35843;&#29992;klogd&#26102;&#21487;&#20197;&#25351;&#23450;-c&#24320;&#20851;&#36873;&#39033;&#26469;&#20462;&#25913;&#36825;&#20010;&#21464;&#37327;&#12290;&#22914;&#26524;&#35201;&#20462;&#25913;&#23427;&#30340;&#24403;&#21069;&#20540;&#65292;&#24517;&#39035;&#20808;&#26432;&#25481;klogd&#65292;&#20877;&#21152;-c&#36873;&#39033;&#37325;&#26032;&#21551;&#21160;&#23427;&#12290;&#36890;&#36807;&#35835;&#20889;/proc/sys/kernel/printk&#25991;&#20214;&#21487;&#35835;&#21462;&#21644;&#20462;&#25913;&#25511;&#21046;&#21488;&#30340;&#26085;&#24535;&#32423;&#21035;&#12290;&#26597;&#30475;&#36825;&#20010;&#25991;&#20214;&#30340;&#26041;&#27861;&#22914;&#19979;&#65306;
+<pre class="programlisting">
+# cat /proc/sys/kernel/printk
+4       4       1       7
+</pre>
+&#19978;&#38754;&#26174;&#31034;&#30340;4&#20010;&#25968;&#25454;&#20998;&#21035;&#23545;&#24212;&#24403;&#21069;&#25511;&#21046;&#21488;&#26085;&#24535;&#32423;&#21035;&#12289;&#40664;&#35748;&#30340;&#28040;&#24687;&#26085;&#24535;&#32423;&#21035;&#12289;&#26368;&#20302;&#30340;&#25511;&#21046;&#21488;&#26085;&#24535;&#32423;&#21035;&#21644;&#40664;&#35748;&#30340;&#25511;&#21046;&#21488;&#26085;&#24535;&#32423;&#21035;&#12290;&#21487;&#29992;&#19979;&#38754;&#30340;&#21629;&#20196;&#35774;&#32622;&#24403;&#21069;&#26085;&#24535;&#32423;&#21035;&#65292;&#36825;&#26679;&#25152;&#26377;&#32423;&#21035;&#23567;&#20110;8&#65292;&#20063;&#21363;0-7&#30340;&#28040;&#24687;&#37117;&#21487;&#20197;&#26174;&#31034;&#22312;&#25511;&#21046;&#21488;&#19978;&#12290;
+<pre class="programlisting">
+# echo 8 &gt; /proc/sys/kernel/printk
+</pre>
+</div>
+<div class="sect2" title="17.3. &#31532;&#20108;&#38454;&#27573;"><div class="titlepage"><div><div><h3 class="title"><a name="idp81419932"></a>17.3. &#31532;&#20108;&#38454;&#27573;</h3></div></div></div>
+&#31532;&#20108;&#20010;&#38454;&#27573;"Booting kernel"&#65292;&#29992;&#26469;&#35299;&#26512;__start___param&#19982;__stop___param&#20043;&#38388;&#30340;struct kernel_param&#25104;&#21592;&#65292;&#32487;&#32493;&#26597;&#30475;&#19968;&#19979;&#20869;&#26680;&#30340;&#38142;&#25509;&#33050;&#26412;&#65306;
+<pre class="programlisting">
+include/asm-generic/vmlinux.lds.h
+        /* Built-in module parameters. */                               \
+        __param : AT(ADDR(__param) - LOAD_OFFSET) {                     \
+                VMLINUX_SYMBOL(__start___param) = .;                    \
+                *(__param)                                              \
+                VMLINUX_SYMBOL(__stop___param) = .;                     \
+                . = ALIGN((align));                                     \
+                VMLINUX_SYMBOL(__end_rodata) = .;                       \
+        }   
+
+arch/arm/kernel/vmlinux.lds
+ __start___param = .; *(__param) __stop___param = .;
+</pre>
+&#25152;&#20197;&#23427;&#20204;&#20043;&#38388;&#21253;&#21547;&#30340;&#27573;&#30001;__param&#22768;&#26126;&#65306;
+<pre class="programlisting">
+include/linux/moduleparam.h
+
+#define __module_param_call(prefix, name, set, get, arg, perm)          \
+        /* Default value instead of permissions? */                     \
+        static int __param_perm_check_##name __attribute__((unused)) =  \
+        BUILD_BUG_ON_ZERO((perm) &lt; 0 || (perm) &gt; 0777 || ((perm) &amp; 2))  \
+        + BUILD_BUG_ON_ZERO(sizeof(""prefix) &gt; MAX_PARAM_PREFIX_LEN);   \
+        static const char __param_str_##name[] = prefix #name;          \
+        static struct kernel_param __moduleparam_const __param_##name   \
+        __used                                                          \
+    __attribute__ ((unused,__section__ ("__param"),aligned(sizeof(void *)))) \
+        = { __param_str_##name, perm, set, get, { arg } }
+</pre>
+&#36825;&#26159;&#19968;&#20010;&#38750;&#24120;&#22797;&#26434;&#30340;&#23439;&#65292;&#26174;&#28982;&#23427;&#38024;&#23545;&#27169;&#22359;&#21442;&#25968;&#12290;&#23427;&#23450;&#20041;&#20102;&#19968;&#20010;kernel_param&#31867;&#22411;&#30340;&#21464;&#37327;&#65292;&#36825;&#20010;&#21464;&#37327;&#34987;&#25918;&#21040;&#20102;&#27573;__param&#12290;
+<pre class="programlisting">
+struct kernel_param {
+	const char *name;
+	unsigned int perm;
+	param_set_fn set;
+	param_get_fn get;
+	union {
+		void *arg;
+		const struct kparam_string *str;
+		const struct kparam_array *arr;
+	};
+};
+</pre>
+&#20869;&#26680;&#20013;&#24182;&#19981;&#25512;&#33616;&#30452;&#25509;&#20351;&#29992;__module_param_call&#23439;&#26469;&#23450;&#20041;kernel_param&#30340;&#23454;&#20363;&#65292;&#32780;&#26159;&#21448;&#25193;&#23637;&#20102;&#20004;&#20010;&#23439;module_param_named&#21644;module_param&#12290;
+<pre class="programlisting">
+#define module_param_call(name, set, get, arg, perm)                          \
+        __module_param_call(MODULE_PARAM_PREFIX, name, set, get, arg, perm)
+
+/* Helper functions: type is byte, short, ushort, int, uint, long,
+   ulong, charp, bool or invbool, or XXX if you define param_get_XXX,
+   param_set_XXX and param_check_XXX. */
+#define module_param_named(name, value, type, perm)                        \
+        param_check_##type(name, &amp;(value));                                \
+        module_param_call(name, param_set_##type, param_get_##type, &amp;value, perm); \
+        __MODULE_PARM_TYPE(name, #type)
+
+#define module_param(name, type, perm)                          \
+        module_param_named(name, name, type, perm)
+</pre>
+&#36890;&#24120;&#27169;&#22359;&#20013;&#20351;&#29992;module_param_named&#21644;module_param&#22768;&#26126;&#21442;&#25968;&#21464;&#37327;&#12290;&#20026;&#20102;&#29702;&#35299;&#19978;&#38754;&#30340;&#25152;&#20570;&#25152;&#20026;&#65292;&#36825;&#37324;&#23545;&#20869;&#26680;&#27169;&#22359;&#30340;&#32534;&#35793;&#20570;&#19968;&#20010;&#35814;&#23613;&#30340;&#20998;&#26512;&#21644;&#35828;&#26126;&#12290;Linux&#32534;&#35793;&#20869;&#26680;&#27169;&#22359;&#30340;&#21629;&#20196;&#20026;make modules(&#22914;&#26524;&#19981;&#26159;&#22312;&#20869;&#26680;&#26681;&#25991;&#20214;&#22841;&#19979;&#32534;&#35793;&#65292;&#37027;&#20040;&#38656;&#35201;-C&#21442;&#25968;&#25351;&#23450;&#20869;&#26680;&#25991;&#20214;&#22841;)&#12290;&#22312;Linux&#30340;Makefile&#20013;&#23545;&#24212;&#30340;&#21160;&#20316;&#22914;&#19979;&#65306;
+<pre class="programlisting">
+modules: $(vmlinux-dirs) $(if $(KBUILD_BUILTIN),vmlinux)
+        $(Q)$(AWK) '!x[$$0]++' $(vmlinux-dirs:%=$(objtree)/%/modules.order) &gt; $(objtree)/modules.order
+        @echo '  Building modules, stage 2.';
+        $(Q)$(MAKE) -f $(srctree)/scripts/Makefile.modpost
+        $(Q)$(MAKE) -f $(srctree)/scripts/Makefile.fwinst obj=firmware __fw_modbuild
+</pre>
+&#27880;&#24847;&#21040;&#23427;&#26159;&#36890;&#36807;Makefile.modpost&#36827;&#34892;&#32534;&#35793;&#21644;&#38142;&#25509;&#30340;&#65292;&#24635;&#20849;&#20998;&#20026;&#20845;&#20010;&#27493;&#39588;&#12290;&#20854;&#20013;&#32534;&#35793;&#26102;&#30340;&#21629;&#20196;&#20026;&#65306;
+<pre class="programlisting">
+quiet_cmd_cc_o_c = CC      $@
+      cmd_cc_o_c = $(CC) $(c_flags) $(CFLAGS_MODULE)    \
+                   -c -o $@ $&lt;
+</pre>
+CFLAGS_MODULE&#21442;&#25968;&#22312;Makefile&#20013;&#34987;&#36171;&#20540;&#20026;-DMODULE&#65292;&#23427;&#23558;&#34987;Makefile&#21521;&#19979;&#20256;&#36882;&#65292;&#23545;&#20110;&#27169;&#22359;&#32534;&#35793;&#65292;&#23427;&#26159;&#38750;&#24120;&#37325;&#35201;&#30340;&#19968;&#20010;&#24320;&#20851;&#21442;&#25968;&#12290;&#27169;&#22359;&#30456;&#20851;&#30340;&#23439;&#34987;&#32479;&#19968;&#23450;&#20041;&#22312;&#22836;&#25991;&#20214;moduleparam.h&#20013;&#65292;&#36825;&#37324;&#23601;&#20250;&#30475;&#21040;MODULE&#30340;&#20316;&#29992;&#12290;
+<pre class="programlisting">
+#ifdef MODULE
+#define ___module_cat(a,b) __mod_ ## a ## b
+#define __module_cat(a,b) ___module_cat(a,b)
+#define __MODULE_INFO(tag, name, info)					  \
+static const char __module_cat(name,__LINE__)[]				  \
+  __used								  \
+  __attribute__((section(".modinfo"),unused)) = __stringify(tag) "=" info
+#else  /* !MODULE */
+#define __MODULE_INFO(tag, name, info)
+#endif
+</pre>
+&#33258;&#27492;&#65292;&#27169;&#22359;&#32534;&#35793;&#21644;&#32534;&#35793;&#20837;&#20869;&#26680;&#30340;&#20004;&#31181;&#26041;&#24335;&#20174;&#36825;&#37324;&#24320;&#22987;&#30456;&#25558;&#21035;&#12290;&#23545;&#23427;&#20204;&#30340;&#22788;&#29702;&#23436;&#20840;&#19981;&#21516;&#12290;&#39318;&#20808;&#23545;&#27169;&#22359;&#32534;&#35793;&#30456;&#20851;&#30340;&#23439;&#20570;&#19968;&#35299;&#37322;&#65306;__MODULE_INFO&#65292;&#23427;&#29992;&#26469;&#35760;&#24405;&#27169;&#22359;&#30340;&#30456;&#20851;&#20449;&#24687;&#65292;&#24182;&#19988;&#25918;&#22312;.ko&#25991;&#20214;&#30340;.modinfo&#20195;&#30721;&#33410;&#20013;&#12290;__MODULE_INFO&#36890;&#24120;&#24182;&#19981;&#30001;&#27169;&#22359;&#30452;&#25509;&#35843;&#29992;&#65292;&#32780;&#26159;&#36890;&#36807;&#23439;&#20877;&#27425;&#23545;&#23427;&#36827;&#34892;&#20102;&#23553;&#35013;&#12290;
+<pre class="programlisting">
+#define __MODULE_PARM_TYPE(name, _type)                                   \
+  __MODULE_INFO(parmtype, name##type, #name ":" _type)
+</pre>
+&#32780;module_param_string&#65292;module_param_named&#21644;module_param&#21448;&#26159;&#23545;&#23427;&#30340;&#23553;&#35013;&#65292;&#29992;&#26469;&#23450;&#20041;&#21442;&#25968;&#12290;&#36825;&#19977;&#20010;&#23439;&#34987;&#24320;&#25918;&#32473;&#27169;&#22359;&#20351;&#29992;&#12290;&#21478;&#22806;&#26368;&#36890;&#29992;&#30340;&#20960;&#20010;&#20013;&#22312;module.h&#20013;&#23450;&#20041;&#65306;
+<pre class="programlisting">
+/* Generic info of form tag = "info" */
+#define MODULE_INFO(tag, info) __MODULE_INFO(tag, tag, info)
+
+#define MODULE_ALIAS(_alias) MODULE_INFO(alias, _alias)
+#define MODULE_LICENSE(_license) MODULE_INFO(license, _license)
+#define MODULE_DESCRIPTION(_description) MODULE_INFO(description, _description)
+#define MODULE_PARM_DESC(_parm, desc) \
+        __MODULE_INFO(parm, _parm, #_parm ":" desc)
+#define MODULE_VERSION(_version) MODULE_INFO(version, _version)
+#define MODULE_AUTHOR(_author) MODULE_INFO(author, _author)
+</pre>
+&#20026;&#20102;&#28145;&#20837;&#23545;&#23427;&#30340;&#20102;&#35299;&#65292;&#19968;&#20010;__MODULE_PARM_TYPE(bisa, "string")&#30340;&#23450;&#20041;&#34987;&#25193;&#23637;&#25104;&#22914;&#19979;&#20449;&#24687;&#65292;&#26174;&#28982;&#23427;&#34987;&#23450;&#20041;&#25104;&#19968;&#20010;&#38745;&#24577;&#25968;&#32452;&#65292;&#25968;&#32452;&#20013;&#23450;&#20041;&#20102;&#21442;&#25968;&#21517;&#65292;&#20197;&#21450;&#21442;&#25968;&#31867;&#22411;&#12290;
+<pre class="programlisting">
+#define __stringify_1(x)        #x
+#define __stringify(x)          __stringify_1(x)
+
+static const char __mod_bisatype29[] __used __attribute__((section(".modinfo"),unused)) = "parmtype" "=" "bisa" ":" "string"
+</pre>
+&#36890;&#36807;modinfo&#21629;&#20196;&#21487;&#20197;&#26597;&#30475;&#20869;&#26680;&#27169;&#22359;&#30340;&#36825;&#20123;&#25968;&#32452;&#30340;&#20869;&#23481;&#65306;
+<pre class="programlisting">
+# modinfo xt_MARK.ko 
+filename:       xt_MARK.ko
+alias:          ip6t_MARK
+alias:          ipt_MARK
+description:    Xtables: packet mark modification
+author:         Marc Boucher &lt;marc@mbsi.ca&gt;
+license:        GPL
+depends:        
+vermagic:       2.6.28.6 preempt mod_unload ARMv6 
+</pre>
+&#32780;&#31532;&#20108;&#31181;&#24773;&#20917;__MODULE_INFO&#23439;&#34987;&#23450;&#20041;&#25104;&#31354;&#65292;&#25152;&#20197;&#34987;&#32534;&#35793;&#36827;&#20869;&#26680;&#30340;&#27169;&#22359;&#20195;&#30721;&#26159;&#27809;&#26377;&#23545;&#24212;&#30340;.modinfo&#33410;&#20449;&#24687;&#30340;&#12290;&#23427;&#20351;&#29992;struct kernel_param&#26469;&#34920;&#31034;&#21442;&#25968;&#30340;&#30456;&#20851;&#20449;&#24687;&#12290;&#24182;&#19988;&#36825;&#20123;&#20449;&#24687;&#34987;&#25918;&#22312;&#21517;&#20026;__param&#30340;&#33410;&#20013;&#12290;&#32780;&#20869;&#26680;&#22312;&#35299;&#26512;&#21442;&#25968;&#21040;"Booting kernel"&#38454;&#27573;&#26102;&#65292;&#23601;&#20250;&#23545;&#36825;&#20123;&#33410;&#20013;&#30340;&#21442;&#25968;&#21517;&#19968;&#19968;&#21305;&#37197;&#65292;&#22914;&#26524;&#36890;&#36807;Bootloader&#25110;&#32773;&#22312;CONFIG_CMDLINE&#20013;&#23450;&#20041;&#20102;&#35813;&#21442;&#25968;&#65292;&#37027;&#20040;&#27492;&#26102;&#23558;&#34987;&#35299;&#26512;&#65292;&#20197;&#22791;&#23558;&#26469;&#30340;&#20869;&#23884;&#30340;&#27169;&#22359;&#36827;&#34892;&#21152;&#36733;&#12290;
+</div>
+</div><div class="navfooter"><hr><table width="100%" summary="Navigation footer"><tr><td width="40%" align="left"><a accesskey="p" href="ar01s16.html">&#19978;&#19968;&#39029;</a> </td><td width="20%" align="center"> </td><td width="40%" align="right"> <a accesskey="n" href="ar01s18.html">&#19979;&#19968;&#39029;</a></td></tr><tr><td width="40%" align="left" valign="top">16. &#20013;&#26029;&#22788;&#29702; </td><td width="20%" align="center"><a accesskey="h" href="index.html">&#36215;&#22987;&#39029;</a></td><td width="40%" align="right" valign="top"> 18. &#26102;&#38047;&#31649;&#29702;</td></tr></table></div></body></html>

@@ -1,0 +1,400 @@
+<sect1><title>ATPCS和内嵌汇编</title>
+<para>
+ATPCS(ARM-Thumb Produce Call Standard)是ARM程序和Thumb程序中子程序调用的基本规则，这些
+基本规则包括子程序调用过程中寄存器的使用规则，数据栈的使用规则和参数的传递规则。
+</para>
+<sect2><title>ARM寄存器</title>
+<para>
+在了解寄存器的使用规则之前，首先看一下ARM的寄存器。
+<figure><title>arm 寄存器和对应的汇编描述符</title><imagedata fileref="images/arm_regs.jpg"/></figure>		
+</para>
+<para>
+图中缩写如下：
+<itemizedlist>
+<listitem>R：Register；寄存器</listitem>
+<listitem>PC：Program Counter；程序计数器</listitem>
+<listitem>CPSR：Current Program Status Register；当前程序状态寄存器</listitem>
+<listitem>SPSR：Saved Program Status Register；保存的程序状态寄存器</listitem>
+<listitem>SP：Stack Pointer；数据栈指针</listitem>
+<listitem>LR：Link Register；连接寄存器</listitem>
+<listitem>SB：静态基址寄存器</listitem>
+<listitem>SL：数据栈限制指针</listitem>
+<listitem>FP：帧指针</listitem>
+<listitem>IP：Intra-Procedure-call Scratch Register；内部程序调用暂存寄存器</listitem>
+</itemizedlist>
+</para>
+<para>
+ARM共有37个寄存器，可以工作在7种不同的模式。以下根据上图进行分类的说明：
+<itemizedlist>
+<listitem>未分组寄存器r0-r7为所有模式共用，共8个。</listitem>
+<listitem>分组寄存器中r8-r12，快速中断模式有自己的一组寄存器，其他模式共用，所以有10个。</listitem>
+<listitem>分组寄存器中r13，r14，除了用户模式和系统模式共用外，其他模式各一组，所以共有2*7 - 2 = 12个。</listitem>
+<listitem>r15和CPSR共用，共2个；SPSR除了用户模式和系统模式没有外，其他模式各一个，共5个。</listitem>
+</itemizedlist>
+所以总数为8+10+12+2+5 = 37个。与此对应的汇编名称表明了它们通常的约定用法。
+<note>汇编中对于寄存器名的表示(比如r0)和ATPCS约定标记(比如a0)的大小写是不敏感的</note>
+<figure><title>程序状态寄存器CPSR</title><imagedata fileref="images/arm_cpsr.gif"/></figure>
+<itemizedlist><title id="cpsr_state">状态位</title>
+<listitem>N：运算结果符号位，1：负数，0：正数或0</listitem>
+<listitem>Z：运算结果是否为0，1：运算结果为0，0：运算结果为1</listitem>
+<listitem>C：可以有4种方法设置C的值：<?linebreak?>
+　　─ 加法运算（包括比较指令CMN）：当运算结果产生了进位时（无符号数溢出），C=1，否则C=0。<?linebreak?>
+　　─ 减法运算（包括比较指令CMP）：当运算时产生了借位，C=0，否则C=1。<?linebreak?>
+　　─ 对于包含移位操纵的非加/减运算指令，C为移出值的最后一位。<?linebreak?>
+　　─ 对于其他的非加/减运算指令，C的值通常不改变。</listitem>
+<listitem>V：对于加/减法运算指令，当操纵数和运算结果为二进制的补码表示的带符号数时，V=1表示符号位溢出。对于其他的非加/减运算指令，V的值通常不改变</listitem>
+</itemizedlist>
+控制位：
+<itemizedlist>
+<listitem>I：IRQ使能位，当I=1 时，禁止IRQ 中断；否则，允许IRQ 中断。</listitem>
+<listitem>F：FIQ使能位，当F=1 时，禁止FIQ 中断；否则，允许FIQ 中断。</listitem>
+<listitem>T：状态位，用于指明指令执行的状态，即说明本指令是ARM 指令，还是Thumb 指令。</listitem>
+<listitem>M：控制位M[4：0]控制处理器的7种工作模式</listitem>
+</itemizedlist>
+
+	<table><title>ARM CPU的7种工作模式</title>
+	<tgroup cols="2">
+	<thead><row><entry>模式</entry><entry>缩写</entry><entry>M控制位</entry><entry>描述</entry></row></thead>
+	<tbody>
+	<row><entry>用户模式</entry><entry>usr</entry><entry>0b10000</entry><entry><literallayout>正常的程序执行模式</literallayout></entry></row>		
+	<row><entry>快速中断模式</entry><entry>fiq</entry><entry>0b10001</entry><entry><literallayout></literallayout></entry>
+	</row>
+	<row><entry>中断模式</entry><entry>irq</entry><entry>0b10010</entry><entry><literallayout></literallayout></entry></row>		
+	<row><entry>管理模式</entry><entry>svc</entry><entry>0b10011</entry><entry><literallayout>运行具有特权的操作系统任务</literallayout></entry></row>		
+	<row><entry>数据访问终止模式</entry><entry>abt</entry><entry>0b10111</entry><entry><literallayout>数据或指令预取终止时进入该模式</literallayout></entry></row>		
+	<row><entry>未定义模式</entry><entry>und</entry><entry>0b11011</entry><entry><literallayout>未定义的指令执行时进入该模式</literallayout></entry></row>		
+	<row><entry>系统模式</entry><entry>sys</entry><entry>0b11111</entry><entry><literallayout>操作系统使用的保护模式</literallayout></entry></row>		
+	</tbody>
+	</tgroup>
+	</table>
+可以通过汇编指令来进行模式切换，或者发生各类中断、异常时CPU自动进入相应的模式；除用户模式外，其余6种工作模式都属于特权模式；
+特权模式中除了系统模式以外的其余5种模式称为异常模式。
+</para>
+</sect2>
+<sect2><title>寄存器使用规则</title>
+	<para>
+子程序间通过寄存器r0-r3来传递参数<footnote><para>它的多数表现形式是汇编程序使用svc
+实现系统调用和b/bl指令调用C语言中的函数；C语言中调用汇编子程序。</para></footnote>。
+这时，寄存器r0-r3可记作a1-a4。被调用的子程序在返回前无须恢复寄存器r0-r3的内容。如果参数个数多于4个，将剩余的字数据通过数据栈来传递。
+我们的Hello World!示例就是通过r0-r3来分别传递标准输出文件描述，字符串指针和长度给系统调用的。
+	</para>	
+	<para>
+在子程序中，使用寄存器r4-r11来保存局部变量。这时，寄存器r4-r11可以记作v1-v8。如果
+在子程序中使用了寄存器v1-v8中某些寄存器，则子程序进入时必须保存这些寄存器的值，在
+返回前必须恢复这些寄存器的值。在Thumb<footnote><para>Thumb不是讨论的重点，接下会有意忽略对它的论述。</para></footnote>
+程序中，通常只能使用寄存器r4-r7来保存局部变量。另外r9、r10和r11还有一个特殊的作用，
+分别记为：静态基址寄存器sb、数据栈限制指针sl和帧指针fp。	
+	</para>
+寄存器r12用作子程序间调用时临时保存栈指针，函数返回时使用该寄存器进行出栈，记作IP；
+在子程序间的链接代码中常有这种使用规则，被调用函数在返回之前不必恢复 r12。
+	<para>
+寄存器r13用作堆栈指针，记作sp。在子程序中寄存器R13不能用作其他用途。寄存器sp在进入子
+程序时的值和退出子程序的值必须相等。
+	</para>
+	<para>
+寄存器r14称为链接寄存器，记作lr，它用于保存子程序的返回地址。如果在子程序中保存了返回
+地址，寄存器r14则可以用作其他用途，但在程序返回时要恢复。
+	</para>
+	<para>
+寄存器r15为程序计数器，记作pc，它不能用作其他用途。在中断程序中，所有的寄存器都必须保护，编译器会自动保护R4～R11。
+	</para>
+	<para>
+ATPCS中的各寄存器在ARM编译器和汇编器中都是预定义的，也即它们在编译工具集中已经指定，不能改变。
+	</para>
+	<para>
+这里第一次在用户空间结合汇编语言和C语言来编写一个示例，它们用到了上面提到的一些寄存器。
+hello.c包含了一个标准GNU C程序的主函数main，它调用使用汇编语言写子程序strcopy，并返回
+从源字符串到目的字符串复制的字符个数。
+
+hello.c的内容如下：
+<programlisting><![CDATA[
+#include <stdio.h>
+
+extern int strcopy(char *dst, const char *src);
+int main()
+{
+        int ret = 0;
+        const char *src = "Hello world!";
+        char dst[] = "World hello!";
+
+        printf("dst string is \"%s\" and src string is \"%s\"\n", dst, src);
+
+        ret = strcopy(dst, src);
+
+        printf("After copying %d chars and now dst string is \"%s\"\n", ret, dst);
+
+        return 0;
+}
+]]></programlisting>
+C程序调用汇编子程序应首先通过extern声明要调用的汇编子程序名，它就是汇编语言使用.global标签
+所定义的符号，它告知连接程序该子程序的地址，相当于C语言中的函数名。声明中形参个数要与汇编子
+程序中需要的变量个数一致，且参数传递要满足ATPCS规则。这里传递了两个指针参数，在strcopy.S中
+将通过寄存器r0和r1引用它们。
+	</para>	
+	<para>
+strcopy.S的内容如下：
+<programlisting><![CDATA[
+.section .text
+.align 2
+
+.global strcopy
+strcopy:
+/*let r4 as a counter and return*/
+ push {r4}
+ mov r4, #0
+1:
+ ldrb r2, [r1], #1
+ strb r2, [r0], #1 
+ cmp r2, #0  
+ add r4, r4, #1 
+ bne 1b
+
+ mov r0, r4     @as a return value
+ pop {r4}
+
+ mov pc, lr     @continue to exe next instruction
+]]></programlisting>
+strcopy.S使用了r2寄存器，它在子程序中使用，无需保存即可返回；r4作为计数器，统计复制字符的个数，
+它在程序的开始被保存到栈中，并在结束时弹出，它的统计值通过寄存器r0返回。另一个重要的寄存器是lr，
+它在C程序调用函数时，被填入函数时需要执行的下一条指令的地址，所以子程序执行结束后，需要把它赋
+值给程序计数器pc。
+	</para>
+	<para>	
+尝试如下的方法进行编译，它让我们更好的理解GCC编译的本质。
+<programlisting><![CDATA[
+# arm-linux-gcc -c hello.c -o hello.o 
+# arm-linux-as -c strcopy.S -o strcopy.o
+# arm-linux-ld  hello.o strcpy.o -o hello
+arm-linux-ld: warning: cannot find entry symbol _start; defaulting to 00008080
+hello.o: In function `main':
+hello.c:(.text+0x38): undefined reference to `memcpy'
+hello.c:(.text+0x4c): undefined reference to `printf'
+hello.c:(.text+0x78): undefined reference to `printf'
+]]></programlisting>
+arm-linux-ld并不能自己找到所需动态库以及路径，而这些事情gcc帮我们集成在了一起。一个简介而有效的命令
+如下，为了打印出整个编译的实际过程，使用参数-v：
+<programlisting><![CDATA[
+# arm-linux-gcc  hello.o strcpy.o -o hello -v
+arm-linux-gcc  hello.o strcpy.o -o hello -v
+Using built-in specs.
+Target: arm-unknown-linux-gnueabi
+Configured with: ......
+Thread model: posix
+gcc version 4.2.2
+ /usr/local/arm/4.2.2-eabi/usr/bin-ccache/../libexec/gcc/arm-unknown-linux-gnueabi/4.2.2/collect2 
+ --sysroot=/usr/local/arm/4.2.2-eabi/ --eh-frame-hdr -dynamic-linker /lib/ld-linux.so.3 -X -m armelf_linux_eabi 
+ -o hello /usr/local/arm/4.2.2-eabi//usr/lib/crt1.o /usr/local/arm/4.2.2-eabi//usr/lib/crti.o 
+ /usr/local/arm/4.2.2-eabi/usr/bin-ccache/../lib/gcc/arm-unknown-linux-gnueabi/4.2.2/crtbegin.o 
+ -L/usr/local/arm/4.2.2-eabi/usr/bin-ccache/../lib/gcc/arm-unknown-linux-gnueabi/4.2.2 
+ -L/usr/local/arm/4.2.2-eabi/usr/bin-ccache/../lib/gcc 
+ -L/usr/local/arm/4.2.2-eabi//lib -L/usr/local/arm/4.2.2-eabi//usr/lib hello.o strcpy.o 
+ -lgcc --as-needed -lgcc_s --no-as-needed -lc -lgcc --as-needed -lgcc_s --no-as-needed 
+ /usr/local/arm/4.2.2-eabi/usr/bin-ccache/../lib/gcc/arm-unknown-linux-gnueabi/4.2.2/crtend.o 
+ /usr/local/arm/4.2.2-eabi//usr/lib/crtn.o
+]]></programlisting>
+注意到collect2命令，它类似于ld，但是它首先从相关的目录中查找需要的.o文件和动态库再把它们链接起来。应用程序的结果执行如下：
+<programlisting><![CDATA[
+# ./hello 
+dst string is "World hello!" and src string is "Hello world!"
+After copying 13 chars and now dst string is "Hello world!"
+]]></programlisting>
+	</para>	
+</sect2>
+<sect2><title>数据栈的使用</title>
+	<para>
+	<figure><title>数据栈的分类</title><graphic fileref="images/arm_stack.jpg"/></figure>	
+根据堆栈指针指向位置的不同，堆栈可分为满栈和空栈2种。当堆栈指针指向栈顶元素，即指向最后一个入栈的数据元素时，称为满栈；当堆栈指针指向与栈顶元素相邻的一个可用
+数据单元时，称为空栈。
+	</para>	
+	<para>
+根据数据栈增长方向的不同也可分为递增堆栈和递减堆栈2种。当数据栈向内存地址减少的方向增长时，称为递减堆栈，当数据栈向内存地址增加的方向增长时，称为递增堆栈。
+	</para>	
+	<para>
+满栈和空栈以及两种增长方式的组合将可有以下4种数据栈：
+		 FD       满递减，
+     ED       空递减，
+     FA       满递增，
+     EA       空递增。
+ATPCS规定数据栈为FD类型,并且对数据栈的操作是8字节对齐。PUSH和POP指令即采用满降序堆栈，每次在 POP 指令中执行传送后将递增地址，每次在 PUSH 指令中执行传送前
+将递减地址。与其对应的多数据传输指令是STMFD和LDMFD。
+<figure><title>ATPCS数据栈</title><graphic fileref="images/arm_atpcs_stack.jpg"/></figure></para>
+	<para>
+数据栈由以下参数描述：
+<itemizedlist>
+<listitem>数据栈指针SP，指向当前栈的栈顶，或者栈顶的下一个可写入的地址。</listitem> 
+<listitem>数据栈的基地址SB，是指数据栈的最高/最低地址，由于ATPCS中的数据栈是FD类型的，实际上数据栈中最早入栈数据占据的内存单元是基地址的下一个内存单元.
+</listitem> 
+<listitem>数据栈界限SL，指数据栈中可以使用的最低/最高的内存单元地址。</listitem>
+<listitem>已占用的数据栈，是指数据栈的基地址和数据栈栈指针之间的区域。其中包括数据栈栈指针对应的内存单元，不包括基地址对应的内存单元。</listitem>
+<listitem>数据栈中的数据帧SF(stack frames)是指在数据栈中，为子程序分配的用来保存寄存器和局部变量的区域。</listitem>
+</itemizedlist> 
+	</para>
+	<para>
+当函数调用时，如果参数超过4个，数据栈将用来传递函数参数，另外一个重要作用是用来存储局部变量。ATPCS对参数传递的有以下规定。
+根据参数个数是否固定可将子程序分为参数个数固定的子程序和参数个数可变的子程序.这2种子程序的参数传递规则是不同的。
+
+<itemizedlist><title>参数个数可变的子程序参数传递规则</title>
+<listitem>当参数不超过4个时,可以使用寄存器R0~R3来进行参数传递。</listitem>
+<listitem>当参数超过4个时，使用数据栈来传递参数。</listitem><listitem>在参数传递时,将所有参数看做是存放在连续的内存单元中的字数据。然后,依次将各名字数据传送到寄存器R0,R1,R2,R3; 如果参数多于4个,将剩余的字数据传送到数据栈中,入栈的顺序与参数顺序相反,即最后一个字数据先入栈。</listitem>
+<listitem>按照上面的规则,一个浮点数参数可以通过寄存器传递，也可以通过数据栈传递,也可能一半通过寄存器传递，另一半通过数据栈传递。</listitem>
+</itemizedlist>
+<itemizedlist><title>参数个数固定的子程序参数传递规则</title>
+<listitem>对于参数个数固定的子程序,参数传递与参数个数可变的子程序参数传递规则不同,如果系统包含浮点运算的硬件部件,浮点参数将按照下面的规则传递: 各个浮点参数按顺序处理;为每个浮点参数分配FP寄存器;分配的方法是,满足该浮点参数需要的且编号最小的一组连续的FP寄存器。第一个整数参数通过寄存器R0~R3来传递,其他参数通过数据栈传递。</listitem>
+</itemizedlist>
+一个使用堆栈传递参数的例子如下，它使用汇编计算6个整型数的和并返回，通过C语言中的printf函数打印出结果。它包含两个文件:prt.c和sum.S。
+<programlisting><![CDATA[
+#include <stdio.h>
+
+extern int sum(int a, int b, int c, int d, int e, int f);
+int main()
+{
+        printf("sum is :%d\n", sum(1, 2, 3, 4, 5, 6));
+        return 0;
+}
+]]></programlisting>	
+<programlisting><![CDATA[
+.section .text
+.global sum
+sum:
+ add r0, r0, r1
+ add r0, r0, r2
+ add r0, r0, r3
+ pop {r1, r2}
+ add r0, r0, r1
+ add r0, r0, r2
+ mov pc, lr     @continue to exe next instruction
+]]></programlisting>	
+为了验证参数传递确实使用了堆栈，通过gdb来对程序进行单步调试。
+<programlisting><![CDATA[
+(gdb) b main	//在main和sum处设置程序断点
+Note: breakpoint 1 also set at pc 0x8394.
+Breakpoint 2 at 0x8394
+(gdb) b sum
+Breakpoint 3 at 0x8368
+(gdb) r  
+Starting program: /tmp/asm 
+//查看运行到main之前的寄存器状态
+Breakpoint 1, 0x00008394 in main ()
+(gdb) show reg
+Undefined show command: "reg".  Try "help show".
+(gdb) info reg
+r0             0x1      1
+r1             0xbedb3e94       3202039444
+r2             0xbedb3e9c       3202039452
+r3             0x0      0
+......
+sp             0xbedb3d30       0xbedb3d30
+lr             0x4003b004       1073983492
+pc             0x8394   0x8394 <main+16>
+fps            0x1001000        16781312
+cpsr           0x60000010       1610612752
+(gdb) n   
+Single stepping until exit from function main,
+which has no line number information.
+//查看运行到sum之前的寄存器状态，可以看出此时r0-r1对应参数1-4
+Breakpoint 3, 0x00008368 in sum ()
+(gdb) info reg
+r0             0x1      1
+r1             0x2      2
+r2             0x3      3
+r3             0x4      4
+......
+sp             0xbedb3d30       0xbedb3d30
+lr             0x83b8   33720
+pc             0x8368   0x8368 <sum>
+fps            0x1001000        16781312
+cpsr           0x60000010       1610612752
+(gdb) x/2 $sp	// 查看堆栈中数据，栈顶数据为5，也即参数6先入栈
+0xbedb3d30:     5       6
+(gdb)c
+sum is :21
+]]></programlisting>
+	</para>		
+</sect2>
+<sect2><title>返回值与寄存器</title>
+<para>
+<itemizedlist><title>子程序结果返回规则：</title>
+<listitem>结果为一个32位的整数时，通过寄存器r0返回；结果为一个64位整数时，通过寄存器r0，r1返回。</listitem> 
+<listitem>结果为一个浮点数时，可以通过浮点运算部件的寄存器f0、d0或者s0来返回；结果为复合型的浮点数（如复数）时，可以通过寄存器f0～fn或者d0～dn来返回。</listitem> 
+<listitem>对于位数更多的结果，需要通过内存来传递。</listitem>
+</itemizedlist> 
+	</para>
+</sect2>
+<sect2><title>内嵌汇编</title>
+通过ATPCS可以实现C语言和汇编语言代码的互相调用，但是如果汇编代码较少，或者需要在C语言中直接读取或者设置寄存器值，那么就需要内嵌汇编了。在C中内嵌的汇编指令包含大部分的ARM和Thumb指令，不过其使用与汇编文件中的指令有些不同，存在一些限制：
+<itemizedlist> 
+<listitem>不可直接写pc寄存器，程序跳转要使用b或者bl指令。</listitem>
+<listitem>在使用物理寄存器时，不要使用过于复杂的C表达式，避免物理寄存器冲突。</listitem>
+<listitem>不能直接引用C语言中的变量。</listitem>
+</itemizedlist>
+ARM Gcc内嵌汇编语法如下：
+<programlisting><![CDATA[
+__asm__(code : output operand list : input operand list : clobber list); 
+/* or in chinese */
+__asm__(汇编语句模板: 输出部分: 输入部分: 修改部分)
+]]></programlisting>
+共四个部分：汇编语句模板，输出部分，输入部分，修改部分，各部分使用":"格开，汇编语句模板必不可少，其他三部分可选，如果使用了后面的部分，而前面部分为空，也需要用":"格开，相应部分内容为空。例如：
+<programlisting><![CDATA[
+__asm__ __volatile__("cli": : :"memory")
+]]></programlisting>
+<sect3><title>汇编语句模板</title>
+汇编语句模板由汇编语句序列组成，语句之间使用“;”、“\n”、“\r\n”或“\n\t”分开。也可以为何美观和阅读将语句序列分行书写。
+<programlisting><![CDATA[
+__asm__("mov r0, r0; mov r0, r0"); /* split by ";" */
+__asm__("mov r0, r0\nmov r0, r0"); /* split by "\n" */
+......
+__asm__("mov r0, r0\n"  /* multiple lines */
+        "mov r0, r0"); 
+]]></programlisting>
+指令中的操作数可以使用占位符引用C语言变量，操作数占位符最多10个，名称如下：%0，%1-%9。
+<programlisting><![CDATA[
+"mov %0, %1"
+]]></programlisting>
+指令中使用占位符表示的操作数，总被视为long型（4个字节），但对其施加的操作根据指令可以是字或者字节，当把操作
+数当作字或者字节使用时，默认为低字或者低字节。对字节操作可以显式的指明是低字节还是次字节。方法是在%和序号之间插入一个字母，“b”代表低字节，“h”代表高字节，例如：%h1。
+</sect3>
+<sect3><title>输出部分</title>
+输出部分描述输出操作数，不同的操作数描述符之间用逗号格开，每个操作数描述符由限定字符串和C 语言变量组成。每个输出操作数的限定字符串必须包含“=”表示他是一个输出操作数。
+<programlisting><![CDATA[
+"=r" (result)  /* 'r' is Constraint and result is a C variable */
+]]></programlisting>
+</sect3>
+<sect3><title>输入部分</title>
+输入部分描述输入操作数，不同的操作数描述符之间使用逗号格开，每个操作数描述符由限定字符串和C语言表达式或者C语言变量组成。
+<programlisting><![CDATA[
+"r" (value)   /* 'r' is Constraint and value is a C variable */
+]]></programlisting>
+</sect3>
+<sect3><title>修改部分</title>
+修改部分（modify）:这部分常常以“memory”为约束条件，以表示操作完成后内存中的内容已有改变，如果原来某个寄存器的内容来自内存，那么现在内存中这个单元的内容已经改变。 Linux系统内存屏障就是根据这一约束条件实现的，这组织了编译器对内存屏障前后的语句在优化时改变运行顺序。
+<programlisting><![CDATA[
+include/linux/compiler-gcc.h
+#define barrier() __asm__ __volatile__("": : :"memory")
+]]></programlisting>
+一个完整的例子如下所示：它将输入变量的值移动到输出变量中，并实现内存屏障。__volatile__可以阻止编译器优化汇编代码。
+<programlisting><![CDATA[
+/* %0 refers to "=r" (input) and %1 refers to "r" (output) */
+__asm__ __volatile__("mov %0, %1" : "=r" (output) : "r" (input)："memory");
+]]></programlisting>
+</sect3>
+<sect3><title>限制字符</title>
+<para>
+它们的作用是指示编译器如何处理其后的C语言变量与指令操作数之间的关系。应该知道每一条汇编指令只接受特定类型的操作数。例如：跳转指令期望的跳转目标地址。不是所有的内存地址都是有效的。因为最后的opcode 只接受24位偏移。但矛盾的是跳转指令和数据交换指令都希望寄存器中存储的是32位的目标地址。在所有的例子中，C传给operand 的可能是函数指针。所以面对传给内嵌汇编的常量、指针、变量，编译器必须要知道怎样组织到汇编代码中。
+</para>
+<para>对于ARM 核的处理器，GCC 4 提供了以下的限制。其中一些是不同体系架构通用的，另一些则不是。这可以参考gcc官方手册Constraints相关章节。
+<table><title>内嵌汇编限制符表</title>
+<tgroup cols="2">
+<thead><row><entry>限制符</entry><entry>含义</entry></row></thead>
+<tbody>
+<row><entry>m</entry><entry>内存变量</entry></row>
+<row><entry>o</entry><entry>操作数为内存变量，但是其寻址方式是偏移量类型，所以有大小限制，<?linebreak?>对于ARM来说，其地址必须在当前pc的+-32MB区间内</entry></row>
+<row><entry>V</entry><entry>操作数为内存变量，但寻址方式不是偏移量类型，属于m但不属于o。</entry></row>
+<row><entry>r</entry><entry>将输入变量放入通用寄存器</entry></row>
+<row><entry>I</entry><entry>0-255之间的2的幂指数?</entry></row>
+</tbody>
+</tgroup>
+</table>
+</para>
+</sect3>
+</sect2>
+</sect1>

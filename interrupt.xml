@@ -1,0 +1,1973 @@
+<sect1><title>中断处理</title>
+<sect2><title>概述</title>
+对于中断和异常的定义在ULK中的第4章中给予了非常明确的定义。中断通常分为同步中断和异步中断：
+<itemizedlist> 
+	<listitem>同步中断是党指令执行时由CPU控制单元产生的，之所以称为同步，是因为只有在一条指令中止执行后CPU才会发出中断。</listitem>
+	<listitem>异步中断是由其他硬件设备依照CPU时钟信号随机产生的。</listitem>
+</itemizedlist>
+在Intel微处理器手册中，把同步中断称为异常(Exception)，而异步中断被称为中断(Interrupt)。Linux ARM内核对同步和异步中断作了同一处理，它们被定义在中断向量表中：
+<programlisting><![CDATA[
+arch/arm/kernel/entry-armv.S
+__vectors_start:
+	swi	SYS_ERROR0  
+	b	vector_und + stubs_offset
+	ldr	pc, .LCvswi + stubs_offset
+	b	vector_pabt + stubs_offset
+	b	vector_dabt + stubs_offset
+	b	vector_addrexcptn + stubs_offset
+	b	vector_irq + stubs_offset
+	b	vector_fiq + stubs_offset
+]]></programlisting>
+<para>
+中断向量表中指定了各异常中断及其处理程序的对应关系.它通常存放在存储地址的低端。在ARM 体系中，异常中断向量表的大小为32字节。其中每个异常中断占据4个字节大小,保留了4个字节空间。每个异常中断对应的中断向量表的4个字节的空间中存放了<emphasis>一个跳转指令</emphasis>或者<emphasis>一个向pc寄存器中赋值的数据访问指令</emphasis>。通过这两种指令，程序将跳转到相应的异常中断处理程序处执行。
+</para>
+<para>
+当几个异常中断同时发生时，就必须按照一定的次序来处理这些异常中断。在ARM中通过给各异常中断赋予一定的优先级来实现这种处理次序。当然有些异常中断是不可能同时发生的，如指令预取中止异常中断和软件中断(SWI)是由同一条指令的执行触发的，他们是不可能同时发生的。处理器执行某个特定的异常中断的过程中，称为处理器处于特定的中断模式。各异常中断的中断向量地址以及中断的处理优先级如下表所示。
+<table><title>中断向量表</title>
+<tgroup cols="4">
+<thead><row><entry>中断向量表地址</entry><entry>中断类型</entry><entry>CPU处理中断的模式</entry><entry>优先级(6 最低)</entry><entry>说明</entry></row></thead>
+<tbody>
+<row><entry>0x00</entry><entry>复位(Reset)</entry><entry>特权模式(SVC)</entry><entry>1</entry><entry>当处理器复位电平有效时产生复位中断。</entry></row>
+<row><entry>0x04</entry><entry>未定义的指令(Undefined instructions)</entry><entry>未定义指令中止模式(Und)</entry><entry>6</entry><entry>当CPU或者协处理器遇到无法处理的指令时，产生未定义指令异常。</entry></row>
+<row><entry>0x08</entry><entry>软件中断(SWI)</entry><entry>特权模式(SVC)</entry><entry>6</entry><entry>swi指令产生，用于用户模式下的系统调用。</entry></row>
+<row><entry>0x0c</entry><entry>指令预取终止(Prefetch Abort)</entry><entry>中止模式(Abt)</entry><entry>5</entry><entry>访问指令地址异常</entry></row>
+<row><entry>0x10</entry><entry>数据访问终止(Data Abort)</entry><entry>中止模式(Abt)</entry><entry>2</entry><entry>访问数据空间异常</entry></row>
+<row><entry>0x14</entry><entry>预留</entry><entry></entry><entry></entry></row>
+<row><entry>0x18</entry><entry>外部中断请求(IRQ)</entry><entry>外部中断模式(IRQ)</entry><entry>4</entry><entry>当IRQ请求引脚有效，且CPSR中的I位为0，产生IRQ异常</entry></row>
+<row><entry>0x1c</entry><entry>快速终端请求(FIQ)</entry><entry>快速中断模式(FIQ)</entry><entry>3</entry><entry>当FIR请求引脚有效，且CPSR中的F位为0，产生FIQ异常</entry></row>
+</tbody>
+</tgroup>
+</table>
+ARM中，是否支持IRQ和FIQ中断还与CP15控制寄存器中的中断控制位有关。另外中断向量的地址由基址+Exception_Vector_Address决定，而基地则有CPSR的第13位CR_V决定是0还是0xffff0000。
+</para>
+</sect2>
+<sect2><title>CPU处理</title>
+<para>
+中断发生时，在硬件层面ARM CPU会自动做以下工作：1。将保存的SPSR移到发生中断的模式下的CPSR中，R14移入到PC中。这可以通过：
+<itemizedlist>
+	<listitem>含S的数据处理指令，将目标寄存器指定为PC。</listitem>
+	<listitem>通过LDM指令</listitem>
+</itemizedlist>
+</para>
+<para>
+<emphasis>1.</emphasis>首先将中断处理模式的R14寄存器保存为当前模式的下一条指令<footnote><para>实际上，根据中断类型不同，可能指向引发中断指令的后一条或者多条指令。</para></footnote>。接着将当前模式的CPSR保存到中断处理模式的SPSR中。
+<programlisting><![CDATA[
+R14_<exception_mode> = return link
+SPSR_<exception_mode> = CPSR
+]]></programlisting>
+<emphasis>2.</emphasis>设置CPSR的模式控制位M[4:0]到中断处理模式，同时设置指令集T标志位为0，确保处理中断的指令工作在ARM指令集下。
+<programlisting><![CDATA[
+CPSR[4:0] = exception mode number
+CPSR[5] = 0 /* Execute in ARM state */
+]]></programlisting>
+<emphasis>3.</emphasis>根据发生的中断，来屏蔽掉该中断。如果是Reset/FIQ中断，则屏蔽F快速中断位。接着屏蔽I中断位。
+<programlisting><![CDATA[
+if <exception_mode> == Reset or FIQ then
+    CPSR[6] = 1 /* Disable fast interrupts */
+/* else CPSR[6] is unchanged */
+
+CPSR[7] = 1 /* Disable normal interrupts */
+]]></programlisting>
+如果不是未定义指令或者软中断，那么屏蔽掉A标志位。接着拷贝协处理器Secure Control Register bit[25]字节序位CP15_reg1_EEbit到E标志位。
+<programlisting><![CDATA[
+if <exception_mode> != UNDEF or SWI then
+    CPSR[8] = 1 /* Disable imprecise aborts (v6 only) */
+/* else CPSR[8] is unchanged */
+
+CPSR[9] = CP15_reg1_EEbit /* Endianness on exception entry */
+]]></programlisting>
+<emphasis>4.</emphasis>将PC指向中断向量入口。
+<programlisting><![CDATA[
+PC = exception vector address
+]]></programlisting>
+</para>
+<para>
+中断处理过程总结如下：
+<itemizedlist> 
+	<listitem>将链接寄存器LR_mode(R14)设置成返回地址，R14从R15(pc)中得到下一条将要执行的指令地址。</listitem>
+	<listitem>保存处理器当前状态，中断屏蔽位以及各条件标志位。</listitem>
+	<listitem>设置当前程序cpsr中相应的位：设置控制位，使处理器进入相应的执行模式；设置的F位，禁止FIQ；设置I位，禁止IRQ中断。</listitem>	
+	<listitem>将程序计数器值pc设置成该中断的中断向量地址，从而跳转到相应的中断处理程序处执行。</listitem>
+</itemizedlist>
+关于它们的详细伪代码描述，请参考ARM1176JZF-S R0P7 Technical Reference Manual.pdf的P155。
+</para>
+<para>
+当一个中断异常处理后，将执行以下操作以从中断异常处理程序中返回：
+<itemizedlist> 
+<listitem>从相应模式的spsr寄存器中恢复cpsr寄存器内容。</listitem>
+<listitem>从相应模式的链接寄存器lr中恢复pc寄存器以使程序从中断处重新执行。</listitem>
+</itemizedlist> 
+如果在进入中断时没有使用栈空间来存储普通寄存器数据，则只需执行以上两步即可。如果使用了栈来存储普通寄存器数据，则需要进行相反的出栈指令，通产如以下指令重新加载这些数据：
+<programlisting><![CDATA[
+ldmfd sp!,{r0-r12, pc}^
+]]></programlisting>
+以上指令将从堆栈寄存器所指的栈空间恢复r0-r12寄存器的数据，并从lr寄存器恢复pc寄存器，从spsr_mod中恢复cpsr寄存器。
+</para>
+</sect2>
+<sect2 id="irq_vector"><title>中断向量</title>
+<figure><title>IRQ中断处理流程</title><graphic fileref="images/irq_flow.gif"/></figure>
+如上图所示，从硬件发生中断，首先由ARM CPU进行处理，最终pc指针将跳转到中断向量vector_irq中继续执行，然后根据当前的中断和所处的工作模式分别调用__irq_usr，__irq_svc和irq_invalid。最终的处理均由统一的接口函数asm_do_IRQ来处理。
+<para>
+所有名为vector_xxx的中断向量并不是直接定义，而是通过名为vector_stub的宏来完成。它有三个参数，name表示定义的中断向量名；mode则指明CPU处理该中断所处的模式；correction则用来对返回pc的lr寄存器进行修正，不同的中断类型lr中存储的的指令可能并非相对于当前pc的下一条指令。
+<table><title>中断链接寄存器</title>
+<tgroup cols="3">
+<thead><row><entry>中断类型</entry><entry>lr</entry><entry>spsr</entry></row></thead>
+<tbody>
+<row><entry>复位(Reset)</entry><entry>不确定</entry><entry>不确定</entry></row>
+<row><entry>未定义指令(Und)</entry><entry>Undefined Instruction + 4</entry><entry>cpsr</entry></row>
+<row><entry>软中断(swi)</entry><entry>swi Instruction + 4</entry><entry>cpsr</entry></row>
+<row><entry>指令预取终止(Prefetch Abort)</entry><entry>Aborted Instruction + 4</entry><entry>cpsr</entry></row>
+<row><entry>数据访问终止(Data Abort)</entry><entry>Aborted Instruction + 8</entry><entry>cpsr</entry></row>
+<row><entry>外部中断请求(IRQ)</entry><entry>Next instruction + 4</entry><entry>cpsr</entry></row>
+<row><entry>快速终端请求(FIQ)</entry><entry>Next instruction + 4</entry><entry>cpsr</entry></row>
+</tbody>
+</tgroup>
+</table>
+系统通过vector_stub定义了vector_irq，vector_dabt，vector_pabt和vector_und向量。它们的最后一个参数根据上表中的lr寄存器值用来对返回时的pc进行修正。
+<programlisting><![CDATA[
+	vector_stub	irq, IRQ_MODE, 4
+	vector_stub	dabt, ABT_MODE, 8
+	vector_stub	pabt, ABT_MODE, 4
+	vector_stub	und, UND_MODE
+]]></programlisting>
+但是vector_fiq和vector_swi并没有直接通过vector_stub进行定义，这是由于这类中断的特殊性决定的，后面将会进一步分析它们。
+<programlisting><![CDATA[
+	.macro	vector_stub, name, mode, correction=0
+	.align	5
+
+vector_\name:
+	.if \correction
+	sub	lr, lr, #\correction
+	.endif
+]]></programlisting>
+首先根据correction的值修正返回地址lr。注意取数据异常时，lr存放的是该条异常指令加8，在中断处理后应该重新进行取数据，所以修正值为8，其他模式依次类推。
+<programlisting><![CDATA[
+	@
+	@ Save r0, lr_<exception> (parent PC) and spsr_<exception>
+	@ (parent CPSR)
+	@
+	stmia	sp, {r0, lr}		@ save r0, lr
+	mrs	lr, spsr
+	str	lr, [sp, #8]		@ save spsr
+]]></programlisting>
+保存r0，当前模式的lr，spsr寄存器到处理中断的栈中，比如IRQ的堆栈。另外lr此时保存了刚刚进入时的spsr_mod值，也即发生中断的模式的cpsr的值。
+<programlisting><![CDATA[
+	@
+	@ Prepare for SVC32 mode.  IRQs remain disabled.
+	@
+	mrs	r0, cpsr
+	eor	r0, r0, #(\mode ^ SVC_MODE)
+	msr	spsr_cxsf, r0
+]]></programlisting>
+首先读取cpsr到r0，然后逻辑异或指令eor将传入的模式异或SVC_MODE，并根据结果来操作spsr寄存器中的C,X,S和F位。这个操作将可以验证当前模式是在适当的中断模式下来处理对应的中断，接着切换到中断处理的ISP工作状态在SVC下模式下。理论上将，此时cpsr的模式位应该对应到mode传递模式位，另外异或运算是可以交换位置的，也即A^B^C等价于A^C^B。所以这里的r0^(mode^SVC_MODE)等价于r0^mode^SVC_MODE，由于r0的低5位模式位与mode相同，所以r0^mode的运算结果的低5位全被清零，然后再^SVC_MODE，也即低5位被设置为SVC_MODE，其它位保持不变。eor这行指令相当于以下指令，但是该指令无形中检查了mode参数的正确性。IRQ中断处理时的cpsr和spsr寄存器的模式位如下所示，显然cpsr中的I位是屏蔽掉的：
+<programlisting><![CDATA[
+	and	r0, r0, #0xffffffe0 @~SVC_MODE
+	orr	r0, r0, #SVC_MODE
+
+    31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+     N  Z  C  V  Q        J              |  E  G  |       CV           E  A  I  F  T M4 M3 M2 M1 M0
+cpsr 0  1  1  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  1  1  0  0  1  0  0  1  1
+spsr 0  1  1  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  1  0  0  0  1  0  0  1  1	
+]]></programlisting>
+msr指令改变了spsr寄存器的模式位，这为接下来的模式切换做准备。
+<programlisting><![CDATA[
+	@
+	@ the branch table must immediately follow this code
+	@
+	and	lr, lr, #0x0f
+	mov	r0, sp
+	ldr	lr, [pc, lr, lsl #2]
+	movs	pc, lr			@ branch to handler in SVC mode
+ENDPROC(vector_\name)
+	.endm
+]]></programlisting>
+首先提取发生中断的模式，显然只需提取最后四位即可。然后ldr根据这后四位确定调用不同的中断处理子程序。跳转的基准地址为当前pc，因为ARMv4是三级流水线结构的，它总是指向当前指令的下两条指令的地址，尽管以后版本的指令流水线扩展为5级和8级，但是这一特性一直被兼容处理，也即pc(excute)= pc(fetch) + 8，其中：pc(fetch)：当前正在执行的指令，就是之前取该指令时候的PC的值；pc(execute)：当前指令执行的计算中，如果用到pc，则此时pc的值。
+。跳转增加的指令地址由模式后四位乘以4决定。接着注意r0保存了堆栈地址。最重要的一点是movs指令，它的作用之一是跳转到对应的中断处理子程序中，但是注意到s标志，如果指定了该标志，并且目标寄存器是pc，那么spsr寄存器的内容将被复制到cpsr中，所以这条指令同时完成了模式切换。
+<figure><title>IRQ中断处理跳转示意图</title><graphic fileref="images/inter_irq.gif"/></figure>
+<programlisting><![CDATA[
+arch/arm/include/asm/ptrace.h
+#define USR_MODE        0x00000010
+#define FIQ_MODE        0x00000011
+#define IRQ_MODE        0x00000012
+#define SVC_MODE        0x00000013
+#define ABT_MODE        0x00000017
+
+ 1    0    0    0    0     User 模式
+ 1    0    0    0    1     FIQ 模式
+ 1    0    0    1    0     IRQ 模式
+ 1    0    0    1    1     SVC 模式
+ 1    0    1    1    1     ABT 模式
+ 1    1    0    1    1     UND 模式
+]]></programlisting>
+如果进入中断前是usr，则取出pc + 4*0的内容，即__irq_usr，如果进入中断前是svc，则取出PC + 4 * 3的内容，即__irq_svc。movs用来实现真正的跳转，并影响标志位。
+<programlisting><![CDATA[
+	vector_stub	irq, IRQ_MODE, 4
+	.long	__irq_usr			@  0  (USR_26 / USR_32)
+	.long	__irq_invalid			@  1  (FIQ_26 / FIQ_32)
+	.long	__irq_invalid			@  2  (IRQ_26 / IRQ_32)
+	.long	__irq_svc			@  3  (SVC_26 / SVC_32)	
+]]></programlisting>
+反编译后的汇编代码如下。注意在ldr指令中，pc实际的值已经指向了c000eb4c地址。
+<programlisting><![CDATA[
+c000eb3c:       e20ee00f        and     lr, lr, #15     ; 0xf
+c000eb40:       e1a0000d        mov     r0, sp
+c000eb44:       e79fe10e        ldr     lr, [pc, lr, lsl #2]
+c000eb48:       e1b0f00e        movs    pc, lr
+c000eb4c:       c002dc40        .word   0xc002dc40
+c000eb50:       c002d9e0        .word   0xc002d9e0
+c000eb54:       c002d9e0        .word   0xc002d9e0
+c000eb58:       c002da80        .word   0xc002da80
+]]></programlisting>
+在此时，CPU工作于svc模式，也即内核代码工作的模式，所以这里将借用当前进程的堆栈，当前进程可以是内核线程也可以是用户进程，但是只要是在该进程运行时发生的中断，内核都将借用它的堆栈。关于进程堆栈的初始化见<xref linkend="zero_task"/>和<xref linkend="cpu_init"/>以及进程创建章节。在进入分支处理之前，此时的堆栈如下所示，注意到中断处理会同时使用两个模式的堆栈，一个是中断对应的模式的堆栈，一个是SVC模式的堆栈。
+<figure><title>中断中的堆栈</title><graphic fileref="images/int_stack.gif"/></figure>
+</para>
+<sect3><title>__irq_usr</title>
+注意用户模式发生中断时的处理，首先使用IRQ/ABT等中断模式的中断保存中断时的r0,lr和cpsr，因为借用SVC模式的进行ISP处理，所以保存所有SVC模式寄存器到SVC堆栈，最后才去调用ISP。
+<programlisting><![CDATA[
+  .align 5
+__irq_usr:
+	usr_entry
+	......
+]]></programlisting>
+注意align语句，中断处理程序的入口都是32位对齐的。__irq_usr在处理的开始首先调用usr_entry宏，它是一个非常通用的宏定义，用来初始化在用户模式下发生中断处理时的堆栈，并保存所有SVC态的寄存器到堆栈。
+<programlisting><![CDATA[
+arch/arm/include/asm/ptrace.h
+struct pt_regs {
+        long uregs[18];
+};
+#define ARM_cpsr        uregs[16]
+#define ARM_pc          uregs[15]
+#define ARM_lr          uregs[14]
+#define ARM_sp          uregs[13]
+#define ARM_ip          uregs[12]
+#define ARM_fp          uregs[11]
+#define ARM_r10         uregs[10]
+  ......
+#define ARM_r0          uregs[0]
+#define ARM_ORIG_r0     uregs[17]
+]]></programlisting>
+由于当前是svc模式，所以这里使用的是内核0线程栈。S_FRAME_SIZE被定义为sizeof(struct pt_regs)的大小。所以这里尝试在堆栈上分配一个struct pt_regs结构体的空间，用它存储发生中断时用户模式下的所有寄存器。
+<programlisting><![CDATA[
+	.macro	usr_entry
+	sub	sp, sp, #S_FRAME_SIZE
+	stmib	sp, {r1 - r12}
+]]></programlisting>
+S_PC被定义为offsetof(struct pt_regs, ARM_pc)，所以这里通过add指令将r0指向ARM_pc。此时ARM 所有寄存器
+<programlisting><![CDATA[
+	ldmia	r0, {r1 - r3}
+	add	r0, sp, #S_PC		@ here for interlock avoidance
+	mov	r4, #-1			@  ""  ""     ""        ""
+
+	str	r1, [sp]		@ save the "real" r0 copied
+					@ from the exception stack
+]]></programlisting>
+stmia将svc模式下的寄存器r2-r4保存到ARM_pc，ARM_cpsr和ARM_ORIG_r0，显然ARM_ORIG_r0保存了-1这个常量。stmdb指令的^标志表示存储发生中断的模式下的sp,lr寄存器到ARM_sp和ARM_lr中。
+<programlisting><![CDATA[
+	@
+	@ We are now ready to fill in the remaining blanks on the stack:
+	@
+	@  r2 - lr_<exception>, already fixed up for correct return/restart
+	@  r3 - spsr_<exception>
+	@  r4 - orig_r0 (see pt_regs definition in ptrace.h)
+	@
+	@ Also, separately save sp_usr and lr_usr
+	@
+	stmia	r0, {r2 - r4}
+	stmdb	r0, {sp, lr}^
+]]></programlisting>
+以上的指令的作用可以总结如下，其中将普通寄存器r1到r12保存到ARM_r1- ARM_r12，这相当于把发生中断时的寄存器r1-r12进行了保存。接下来保存中断发生时的r0，lr_irq和spsr_irq保存到r1-r3，r4赋值为-1，它们接下来将被使用。接下来保存r0到ARM_r0，lr_irq，spsr_irq和-1到ARM_pc ARM_cpsr ARM_ORIG_R0，注意到stmdb指令中的"^"，它保存sp_usr和lr_usr分别到ARM_sp和ARM_lr，显然这里将所有中断发生时的寄存器都进行了保存。
+<programlisting><![CDATA[
+stmib  sp, {r1 - r12}		// r1- r12 => ARM_r1- ARM_r12
+ldmia  r0, {r1 - r3}		// r0 lr_mod spsr_mod => r1_svc-r3_svc
+mov    r4, #-1 			// r4 => -1
+str    r1, [sp]			// r0 => ARM_r0
+stmia  r0, {r2 - r4}		// lr_mod spsr_mod -1 => ARM_pc ARM_cpsr ARM_ORIG_R0
+stmdb  r0, {sp, lr}^		// sp_mod lr_mod => ARM_sp ARM_lr
+]]></programlisting>
+<figure><title>保存中断堆栈</title><graphic fileref="images/int_stack1.gif"/></figure>
+alignment_trap在配置CONFIG_ALIGNMENT_TRAP时有效，如果开启了该选项，中断处理中将支持对齐跟踪。
+<programlisting><![CDATA[
+arch/arm/kernel/entry-header.S
+        .macro  alignment_trap, rtemp
+#ifdef CONFIG_ALIGNMENT_TRAP
+        ldr     \rtemp, .LCcralign
+        ldr     \rtemp, [\rtemp]
+        mcr     p15, 0, \rtemp, c1, c0
+#endif
+        .endm
+
+arch/arm/kernel/entry-armv.S
+.LCcralign:
+        .word   cr_alignment
+]]></programlisting>
+zero_fp用来设置fp栈帧寄存器为0，它在配置CONFIG_FRAME_POINTER时才有效。
+<programlisting><![CDATA[
+arch/arm/kernel/entry-header.S
+        .macro  zero_fp
+#ifdef CONFIG_FRAME_POINTER
+        mov     fp, #0
+#endif
+        .endm
+]]></programlisting>
+CONFIG_FRAME_POINTER的配置有利于追踪内核的函数调用。
+<programlisting><![CDATA[
+	@
+	@ Enable the alignment trap while in kernel mode
+	@
+	alignment_trap r0
+
+	@
+	@ Clear FP to mark the first stack frame
+	@
+	zero_fp
+	.endm
+]]></programlisting>
+
+<programlisting><![CDATA[
+	kuser_cmpxchg_check
+]]></programlisting>
+kuser_cmpxchg_check以后再说。
+<programlisting><![CDATA[
+#ifdef CONFIG_TRACE_IRQFLAGS
+	bl	trace_hardirqs_off
+#endif
+	get_thread_info tsk
+]]></programlisting>
+get_thread_info宏用来根据当前的sp值，通过lsr和lsl分别右移左移13位，相当于对sp向下圆整到8K对齐。这里也就是thread_info所在的地址。
+<programlisting><![CDATA[
+arch/arm/kernel/entry-header.S
+  .macro  get_thread_info, rd
+  mov     \rd, sp, lsr #13
+  mov     \rd, \rd, lsl #13
+  .endm
+  
+why	.req	r8		@ Linux syscall (!= 0) 
+tsk .req    r9              @ current thread_info
+]]></programlisting>
+TI_PREEMPT被定义为offsetof(struct thread_info, preempt_count)，显然通过tsk就可以很容易得到进程preempt_count成员的地址了。
+<programlisting><![CDATA[	
+#ifdef CONFIG_PREEMPT
+	ldr	r8, [tsk, #TI_PREEMPT]		@ get preempt count
+	add	r7, r8, #1			@ increment it
+	str	r7, [tsk, #TI_PREEMPT]
+#endif
+]]></programlisting>
+add指令将preempt_count加1，str重新存储回preempt_count。显然在处理中断的时候，当前的内核线程是不能被抢占的。
+<programlisting><![CDATA[	
+	irq_handler
+]]></programlisting>
+这里是处理中断的实际子程序。接下来将r8中记录的原preempt_count值恢复。teq用来比较r0和r7，也即检查进入中断处理的irq_handler之前的preempt_count和之后的preempt_count是否有改变，如果有，那么将地址
+<programlisting><![CDATA[
+#ifdef CONFIG_PREEMPT
+	ldr	r0, [tsk, #TI_PREEMPT]
+	str	r8, [tsk, #TI_PREEMPT]
+	teq	r0, r7
+	strne	r0, [r0, -r0]
+#endif
+#ifdef CONFIG_TRACE_IRQFLAGS
+	bl	trace_hardirqs_on
+#endif
+]]></programlisting>
+why被定义为r8寄存器，所以r8被清零，然后跳转到ret_to_user返回到用户空间。
+<programlisting><![CDATA[
+	mov	why, #0
+	b	ret_to_user
+ENDPROC(__irq_usr)
+]]></programlisting>
+</sect3>
+<sect3><title>irq_handler</title>
+irq_handler是真正的IRQ中断处理入口，在中断处理中需要预留r7，r8和r9寄存器。它们被用来处理内核抢占。
+<programlisting><![CDATA[
+arch/arm/mach-s3c6400/include/mach/entry-macro.S
+        .macro  get_irqnr_preamble, base, tmp
+        ldr     \base, =S3C_VA_VIC0
+        .endm
+]]></programlisting>	
+get_irqnr_preamble用来获取中断状态寄存器基地址，它特定于CPU，所以被定义在mach-xxx中。这里将中断控制器的VIC0 状态寄存器的地址S3C_VA_VIC0存储到r5。
+<programlisting><![CDATA[
+arch/arm/mach-s3c6400/include/mach/entry-macro.S
+.macro  get_irqnr_and_base, irqnr, irqstat, base, tmp
+
+@ check the vic0
+mov     \irqnr, # S3C_IRQ_OFFSET + 31
+ldr     \irqstat, [ \base, # VIC_IRQ_STATUS ]
+teq     \irqstat, #0
+
+@ otherwise try vic1
+addeq   \tmp, \base, #(S3C_VA_VIC1 - S3C_VA_VIC0)
+addeq   \irqnr, \irqnr, #32
+ldreq   \irqstat, [ \tmp, # VIC_IRQ_STATUS ]
+teqeq   \irqstat, #0
+
+clzne   \irqstat, \irqstat
+subne   \irqnr, \irqnr, \irqstat
+.endm
+]]></programlisting>
+为了更深入的理解这段代码，给出对应的反汇编程序：
+<programlisting><![CDATA[
+/*  e3a0533d        mov     r5, #-201326592 ; 0xf4000000　*/
+288:       e3a0003f        mov     r0, #63 ; 0x3f
+28c:       e5956000        ldr     r6, [r5]
+290:       e3360000        teq     r6, #0  ; 0x0
+294:       0285e801        addeq   lr, r5, #65536  ; 0x10000
+298:       02800020        addeq   r0, r0, #32     ; 0x20
+29c:       059e6000        ldreq   r6, [lr]
+2a0:       03360000        teqeq   r6, #0  ; 0x0
+2a4:       116f6f16        clzne   r6, r6
+2a8:       10400006        subne   r0, r0, r6
+]]></programlisting>
+get_irqnr_and_base用来获取中断号，对于S3C6410来说，中断控制器由2个VIC组成，所以读取时首先读取vic0，读取失败则再读取vic1。S3C_IRQ_OFFSET被定义为32是为了给ISA设备预留中断号，该类设备的中断号要求总是从0开始，尽管多数时候它们被淘汰不再使用。所以获取的中断号的范围在32 ~ 96之间。
+<itemizedlist> 
+	<listitem>288：首先将r0赋予中断号63，显然其中包含了S3C_IRQ_OFFSET偏移。</listitem>
+	<listitem>28c：此时r5中存放的是VIC0的状态寄存器地址，所以ldr将VIC0的状态寄存器值存入r6。</listitem>
+	<listitem>290：该行判断r6的值是否为0，如果为0，则继续检测VIC1的状态寄存器值，否则直接执行2a4指令。</listitem>
+	<listitem>294：根据r5中的VIC0状态寄存器地址，向高地址偏移0x10000，获取VIC1的状态寄存器地址。</listitem>
+	<listitem>298：此时更改r0的值63+32，也即95。这是VIC1对应的中断号的最大偏移值。</listitem>
+	<listitem>29c-2a0与28c-290功能一致，只是针对VIC1的状态寄存器操作。</listitem>
+	<listitem>2a4：clz（Count leading zeros）指令用来计算从高位开始的0的个数，并存放到r6，显然它的用意是要根据中断状态寄存器的值得到中断号。</listitem>
+	<listitem>2a8：由于clz获取的是高位0的个数，但是状态寄存器的低位对应小的中断号，所以使用r0减去r6，此时得到含S3C_IRQ_OFFSET的中断号。</listitem>	
+</itemizedlist>
+（注意到这里需要保证r7，r8和r9不被改动，它是通过asm_do_IRQ的asmlinkage声明保证的。？）
+<programlisting><![CDATA[
+/*
+ * Interrupt handling.  Preserves r7, r8, r9
+ */
+	.macro	irq_handler
+	get_irqnr_preamble r5, lr
+1:	get_irqnr_and_base r0, r6, r5, lr
+	movne	r1, sp
+	@
+	@ routine called with r0 = irq number, r1 = struct pt_regs *
+	@
+	adrne	lr, 1b
+	bne	asm_do_IRQ
+
+	.endm
+]]></programlisting>
+</sect3>
+<sect3><title>asm_do_IRQ</title>
+asm_do_IRQ是ARM处理硬件中断的核心函数，第一个参数指定了硬中断的中断号，第二个参数是寄存器备份组成的一个结构体，保存了中断发生时的模式对应的寄存器的值，在中断返回时使用。
+<programlisting><![CDATA[
+asmlinkage void __exception asm_do_IRQ(unsigned int irq, struct pt_regs *regs)
+{
+    struct pt_regs *old_regs = set_irq_regs(regs);
+
+    irq_enter();
+
+    if (irq >= NR_IRQS)
+            handle_bad_irq(irq, &bad_irq_desc);
+    else
+            generic_handle_irq(irq);
+
+    /* AT91 specific workaround */
+    irq_finish(irq);
+
+    irq_exit();
+    set_irq_regs(old_regs);
+}
+]]></programlisting>
+<figure><title>asm_do_IRQ流程图</title><graphic fileref="images/int_do_irq.gif"/></figure>
+这里不对generic_handle_irq多做解释，在中断服务程序处理中将对它剖析。这里关心一下另外两个非常重要的小函数irq_enter和irq_exit。
+<programlisting><![CDATA[
+/*
+ * Enter irq context (on NO_HZ, update jiffies):
+ */
+#define __irq_enter()					\
+	do {						\
+		rcu_irq_enter();			\
+		account_system_vtime(current);		\
+		add_preempt_count(HARDIRQ_OFFSET);	\
+		trace_hardirq_enter();			\
+	} while (0)
+
+kernel/softirq.c
+void irq_enter(void)
+{
+  int cpu = smp_processor_id();
+
+  if(idle_cpu(cpu) && !in_interrupt())
+  {
+    __irq_enter();
+    tick_check_idle(cpu);
+  }
+  else
+    __irq_enter();
+}
+]]></programlisting>
+
+<programlisting><![CDATA[
+/*
+ * Exit irq context without processing softirqs:
+ */
+#define __irq_exit()					\
+	do {						\
+		trace_hardirq_exit();			\
+		account_system_vtime(current);		\
+		sub_preempt_count(HARDIRQ_OFFSET);	\
+		rcu_irq_exit();				\
+	} while (0)
+
+kernel/softirq.c	
+void irq_exit(void)
+{
+  account_system_vtime(current);
+  trace_hardirq_exit();
+  sub_preempt_count(IRQ_EXIT_OFFSET);
+  if(!in_interrupt() && local_softirq_pending())
+   invoke_softirq();
+
+#ifdef CONFIG_NO_HZ 
+  /* Make sure that timer wheel updates are propagated */
+  if (!in_interrupt() && idle_cpu(smp_processor_id()) && !need_resched())
+          tick_nohz_stop_sched_tick(0);
+  rcu_irq_exit();
+#endif
+  preempt_enable_no_resched();
+}	
+]]></programlisting>
+rcu_irq_enter和rcu_irq_exit与CONFIG_PREEMPT_RCU有关，这里不关心它们。值得注意的是add_preempt_count和sub_preempt_count函数，它用来增加当前进程preempt_count中的硬件计数器。
+</sect3>
+<sect3><title>ret_to_user</title>
+ret_to_user用来返回到用户模式。调用流程如下图所示：
+<figure><title>ret_to_user流程</title><graphic fileref="images/int_retuser.gif"/></figure>
+<programlisting><![CDATA[
+arch/arm/kernel/entry-common.S
+/*
+ * "slow" syscall return path.  "why" tells us if this was a real syscall.
+ */
+ENTRY(ret_to_user)
+ret_slow_syscall:
+        disable_irq                             @ disable interrupts
+        ldr     r1, [tsk, #TI_FLAGS]
+        tst     r1, #_TIF_WORK_MASK
+        bne     work_pending
+]]></programlisting>
+disable_irq用来禁IRQ中断。如果不小于ARMv6版本，则直接使用cpsid设置I标志位。
+<programlisting><![CDATA[
+arch/arm/asm/assembler.h
+#if __LINUX_ARM_ARCH__ >= 6
+        .macro  disable_irq
+        cpsid   i
+        .endm
+
+        .macro  enable_irq
+        cpsie   i
+        .endm
+#else
+        ......
+#endif
+]]></programlisting>
+r1首先获取thread_info中的flags成员，然后测试_TIF_WORK_MASK掩码决定的标志位，显然它测试TIF_SIGPENDING和TIF_NEED_RESCHED标志位。
+<programlisting><![CDATA[
+arch/arm/include/asm/thread_info.h
+/*
+ * thread information flags:
+ *  TIF_SIGPENDING      - signal pending
+ *  TIF_NEED_RESCHED    - rescheduling necessary
+...... 
+ */
+#define TIF_SIGPENDING          0
+#define TIF_NEED_RESCHED        1
+......
+#define _TIF_SIGPENDING         (1 << TIF_SIGPENDING)
+#define _TIF_NEED_RESCHED       (1 << TIF_NEED_RESCHED)
+......
+
+#define _TIF_WORK_MASK          0x000000ff
+
+kernel/asm-offsets.c
+DEFINE(TI_FLAGS,		offsetof(struct thread_info, flags));
+]]></programlisting>
+如果这两个标志有标记则跳转到work_pending执行。在该子程序中首先测试_TIF_NEED_RESCHED标志，如果设置则跳转到work_resched执行调度程序入口schedule，执行完后将返回继续执行no_work_pending，显然没有占用CPU的进程如果接收到信号则设置进程的_TIF_SIGPENDING标志，并在下次调度时才能被处理;测试_TIF_SIGPENDING标志，如果没有设置该标志则跳转到no_work_pending，否则将r0指向sp，r2则保存系统调用号，然后跳转到do_notify_resume执行，执行完毕后返回继续执行ret_slow_syscall。
+<programlisting><![CDATA[
+work_pending:
+        tst     r1, #_TIF_NEED_RESCHED
+        bne     work_resched
+        tst     r1, #_TIF_SIGPENDING
+        beq     no_work_pending
+        mov     r0, sp                          @ 'regs'
+        mov     r2, why                         @ 'syscall'
+        bl      do_notify_resume
+        b       ret_slow_syscall                @ Check work again
+
+work_resched:
+        bl      schedule
+]]></programlisting>
+do_notify_resume用来处理阻塞在当前进程结构中的blocked信号。
+<programlisting><![CDATA[
+arch/arm/kernel/signal.c
+asmlinkage void
+do_notify_resume(struct pt_regs *regs, unsigned int thread_flags, int syscall)
+{
+        if (thread_flags & _TIF_SIGPENDING)
+                do_signal(&current->blocked, regs, syscall);
+}
+]]></programlisting>
+但是如果不是在用户空间发生的中断，是不会处理进程信号的，do_signal中将根据保存的ARM_cpsr寄存器模式来判断，它记录中断发生时的CPSR寄存器信息。
+<programlisting><![CDATA[
+arch/arm/include/asm/ptrace.h
+#define user_mode(regs) \
+        (((regs)->ARM_cpsr & 0xf) == 0)
+
+arch/arm/kernel/signal.c
+static int do_signal(sigset_t *oldset, struct pt_regs *regs, int syscall)
+{
+	if(!user_mode(regs))
+		return 0;
+	......
+}
+]]></programlisting>
+arch_ret_to_user由特定CPU定义，S3C6410中该宏为空。
+<programlisting><![CDATA[
+no_work_pending:
+        /* perform architecture specific actions before user return */
+        arch_ret_to_user r1, lr
+
+        @ slow_restore_user_regs
+        ldr     r1, [sp, #S_PSR]                @ get calling cpsr
+        ldr     lr, [sp, #S_PC]!                @ get pc
+        msr     spsr_cxsf, r1                   @ save in spsr_svc
+        ldmdb   sp, {r0 - lr}^                  @ get calling r0 - lr
+        mov     r0, r0
+        add     sp, sp, #S_FRAME_SIZE - S_PC
+        movs    pc, lr                          @ return & move spsr_svc into cpsr
+ENDPROC(ret_to_user)
+]]></programlisting>
+最后恢复用户模式中的寄存器和SVC模式下的sp寄存器。movs指令实现SVC模式向用户模式的切换。
+</sect3>
+</sect2>
+<sect2><title>__irq_svc</title>
+__irq_svc处理SVC模式下发生的中断。
+<programlisting><![CDATA[
+	.align	5
+__irq_svc:
+	svc_entry
+]]></programlisting>
+与usr_entry类似，这里的svc_entry用来保存svc模式下的寄存器。
+<programlisting><![CDATA[
+	.macro	svc_entry, stack_hole=0
+	sub	sp, sp, #(S_FRAME_SIZE + \stack_hole)
+ SPFIX(	tst	sp, #4		)
+ SPFIX(	bicne	sp, sp, #4	)
+	stmib	sp, {r1 - r12}
+
+	ldmia	r0, {r1 - r3}
+	add	r5, sp, #S_SP		@ here for interlock avoidance
+	mov	r4, #-1			@  ""  ""      ""       ""
+	add	r0, sp, #(S_FRAME_SIZE + \stack_hole)
+ SPFIX(	addne	r0, r0, #4	)
+	str	r1, [sp]		@ save the "real" r0 copied
+					@ from the exception stack
+
+	mov	r1, lr
+
+	@
+	@ We are now ready to fill in the remaining blanks on the stack:
+	@
+	@  r0 - sp_svc
+	@  r1 - lr_svc
+	@  r2 - lr_<exception>, already fixed up for correct return/restart
+	@  r3 - spsr_<exception>
+	@  r4 - orig_r0 (see pt_regs definition in ptrace.h)
+	@
+	stmia	r5, {r0 - r4}
+	.endm
+]]></programlisting>
+接下来的处理与__irq_usr类似，直接调用irq_handler，但是返回时无需调用ret_to_user，而是直接恢复SVC模式的寄存器即可。
+<programlisting><![CDATA[
+#ifdef CONFIG_TRACE_IRQFLAGS
+	bl	trace_hardirqs_off
+#endif
+#ifdef CONFIG_PREEMPT
+	get_thread_info tsk
+	ldr	r8, [tsk, #TI_PREEMPT]		@ get preempt count
+	add	r7, r8, #1			@ increment it
+	str	r7, [tsk, #TI_PREEMPT]
+#endif
+
+	irq_handler
+]]></programlisting>	
+但是注意到这里的svc_preempt操作，首先恢复当前进程的preempt_count到r8中，显然在进入时，它被加了1，这里尝试将它与0比较，如果为0，那么说明没有禁止内核抢占，此时继续测试标志位是否有_TIF_NEED_RESCHED，如果有则跳转到svc_preempt执行调度。所以只有在中断中对preempt_count进行了清0处理并且设置了_TIF_NEED_RESCHED，才有可能执行调度，
+<programlisting><![CDATA[
+#ifdef CONFIG_PREEMPT
+	str	r8, [tsk, #TI_PREEMPT]		@ restore preempt count
+	ldr	r0, [tsk, #TI_FLAGS]		@ get flags
+	teq	r8, #0				@ if preempt count != 0
+	movne	r0, #0				@ force flags to 0
+	tst	r0, #_TIF_NEED_RESCHED
+	blne	svc_preempt
+#endif
+	ldr	r0, [sp, #S_PSR]		@ irqs are already disabled
+	msr	spsr_cxsf, r0
+#ifdef CONFIG_TRACE_IRQFLAGS
+	tst	r0, #PSR_I_BIT
+	bleq	trace_hardirqs_on
+#endif
+	ldmia	sp, {r0 - pc}^			@ load r0 - pc, cpsr
+ENDPROC(__irq_svc)
+]]></programlisting>
+preempt_schedule_irq是一个非常重要的调度函数，只有在该函数中清除了_TIF_NEED_RESCHED标记才会结束循环。
+<programlisting><![CDATA[
+#ifdef CONFIG_PREEMPT
+svc_preempt:
+        mov     r8, lr
+1:      bl      preempt_schedule_irq            @ irq en/disable is done inside
+        ldr     r0, [tsk, #TI_FLAGS]            @ get new tasks TI_FLAGS
+        tst     r0, #_TIF_NEED_RESCHED
+        moveq   pc, r8                          @ go again
+        b       1b
+#endif
+]]></programlisting>
+<itemizedlist> 
+<listitem>首先测试当前进程的preempt_count是否为0，另外就是保证是在中断内调用的，否则就是BUG。</listitem>
+<listitem>添加PREEMPT_ACTIVE标记，使能中断。</listitem>
+<listitem>调用schedule实时调度。</listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+asmlinkage void __sched preempt_schedule_irq(void)
+{
+	struct thread_info *ti = current_thread_info();
+
+	/* Catch callers which need to be fixed */
+	BUG_ON(ti->preempt_count || !irqs_disabled());
+
+	do {
+		add_preempt_count(PREEMPT_ACTIVE);
+		local_irq_enable();
+		schedule();
+		local_irq_disable();
+		sub_preempt_count(PREEMPT_ACTIVE);
+
+		/*
+		 * Check again in case we missed a preemption opportunity
+		 * between schedule and now.
+		 */
+		barrier();
+	} while (unlikely(test_thread_flag(TIF_NEED_RESCHED)));
+}
+]]></programlisting>
+显然无论是返回用户态还是返回内核态，都有可能检查 TIF_NEED_RESCHED 的状态；返回核心态时，只要preempt_count为 0，即当前进程目前允许抢占，就会根据 TIF_NEED_RESCHED 状态选择调用schedule()。因为至少时钟中断是不断发生的，因此，只要有进程设置了 TIF_NEED_RESCHED 标志，当前进程马上就有可能被抢占，而无论它是否愿意放弃 cpu，即使是核心进程也是如此。关于时钟中断处理参考<xref linkend="time_intr"/>。关于进程调度的深入介绍在独立章节中进行。
+</sect2>
+<sect2><title>中断示例</title>
+<para>
+<programlisting><![CDATA[
+arch/arm/plat-s3c64xx/devs.c
+#define DM9000_ETH_IRQ_EINT0 	IRQ_EINT(7)
+
+static struct resource dm9000_resources_cs1[] = {
+    [0] = {
+        .start  = S3C64XX_VA_DM9000,
+        .end    = S3C64XX_VA_DM9000 + S3C64XX_SZ_DM9000 - 1,
+        .flags  = IORESOURCE_MEM,
+    },
+    [1] = {
+        .start  = (DM9000_ETH_IRQ_EINT0),
+        .end    = (DM9000_ETH_IRQ_EINT0),
+        .flags  = IORESOURCE_IRQ,
+    },
+};
+
+static struct dm9000_plat_data dm9000_setup_cs1 = {
+    .flags          = DM9000_PLATF_16BITONLY
+};
+
+struct platform_device s3c_device_dm9000_cs1 = {
+    .name           = "dm9000_con201",
+    .id             = 0,
+    .num_resources  = ARRAY_SIZE(dm9000_resources_cs1),
+    .resource       = dm9000_resources_cs1,
+    .dev            = {
+        .platform_data = &dm9000_setup_cs1,
+    }
+};
+]]></programlisting>
+几乎所有的外设驱动都被统一定义成struct platform_device结构体，并形成了一个名为smdk6410_devices的数组：
+<programlisting><![CDATA[
+arch/arm/mach-s3c6410/mach-smdk6410.c
+static struct platform_device *smdk6410_devices[] __initdata = {
+	......
+	&s3c_device_dm9000_cs1,
+	......
+	&gpio_button_device,
+};
+]]></programlisting>
+这个数组在系统调用smdk6410_machine_init时被调用，所有数组中的设备均在此时注册。
+<programlisting><![CDATA[
+static void __init smdk6410_machine_init(void)
+{
+  ......
+	platform_add_devices(smdk6410_devices, ARRAY_SIZE(smdk6410_devices));
+	......	
+}
+]]></programlisting>
+而smdk6410_machine_init通过init_machine成员被调用。
+<programlisting><![CDATA[
+MACHINE_START(SMDK6410, "SMDK6410")
+	/* Maintainer: Ben Dooks <ben@fluff.org> */
+	.phys_io	= S3C_PA_UART & 0xfff00000,
+	.io_pg_offst	= (((u32)S3C_VA_UART) >> 18) & 0xfffc,
+	.boot_params	= S3C64XX_PA_SDRAM + 0x100,
+
+	.init_irq	= s3c6410_init_irq,
+	.map_io		= smdk6410_map_io,
+	.init_machine	= smdk6410_machine_init,
+	.timer		= &s3c64xx_timer,
+MACHINE_END
+]]></programlisting>
+init_machine则在customize_machine中被引用。它被声明为arch_initcall类型。
+<programlisting><![CDATA[
+arch/arm/kernel/setup.c
+static int __init customize_machine(void)
+{
+	/* customizes platform devices, or adds new ones */
+	if (init_machine)
+		init_machine();
+	return 0;
+}
+arch_initcall(customize_machine);
+]]></programlisting>
+在非模块编译时，它被如下定义，显然它被安放在链接文件的.initcall3.init段中。
+<programlisting><![CDATA[
+#define __define_initcall(level,fn,id) \
+        static initcall_t __initcall_##fn##id __used \
+        __attribute__((__section__(".initcall" level ".init"))) = fn
+
+#define arch_initcall(fn)               __define_initcall("3",fn,3)
+]]></programlisting>
+显然该段被__initcall_start和__initcall_end引用。
+<programlisting><![CDATA[
+arch/arm/kernel/vmlinux.lds
+  __initcall_start = .;
+   *(.initcallearly.init) __early_initcall_end = .; *(.initcall0.init) *(.initcall0s.init) *(.initcall1.init) 
+   *(.initcall1s.init) *(.initcall2.init) *(.initcall2s.init) *(.initcall3.init) *(.initcall3s.init) *(.initcall4.init) 
+   *(.initcall4s.init) *(.initcall5.init) *(.initcall5s.init) *(.initcallrootfs.init) *(.initcall6.init) *(.initcall6s.init) 
+   *(.initcall7.init) *(.initcall7s.init)
+  __initcall_end = .;
+]]></programlisting>
+它们在系统初始化的时通过do_initcalls调用。
+<programlisting><![CDATA[
+init/main.c
+static void __init do_initcalls(void)
+{
+	initcall_t *call;
+
+	for (call = __early_initcall_end; call < __initcall_end; call++)
+		do_one_initcall(*call);
+
+	/* Make sure there is no pending stuff from the initcall sequence */
+	flush_scheduled_work();
+}
+]]></programlisting>
+一个完整的调用如下所示，至此关于系统启动时设备的注册已经一目了然。
+<programlisting><![CDATA[
+start_kernel->reset_init->kernel_init->do_basic_setup->do_initcalls->customize_machine->platform_add_devices
+]]></programlisting>
+<figure><title>网卡中断示例</title><graphic fileref="images/int_calls.gif"/></figure>
+</para>
+</sect2>
+<sect2><title>中断控制器</title>
+S3C6410X 内的中断控制器由2 个 VIC(矢量中断控制器，ARM PrimeCell PL192)和2 个TZIC(TrustZone 中断控制器，SP890)组成。两个矢量中断控制器和两个TrustZone 中断控制器链接在一起支
+持64 位中断源。PL120作为ARM授权的SoC片内中断控制器，通过AHB总线与CPU核相连。而控制电路被命令为VIC Port，CPU核和VIC通过它进行硬件控制。
+<figure><title>PL192 VIC和处理器VIC端口的连接</title><graphic fileref="images/int_vic.gif"/></figure>
+一个中断控制器用来处理多个中断源，通常包含以下几个特性：
+<itemizedlist> 
+	<listitem>为每个中断源分配一个中断请求输入端口。为每个中断请求分配一个中断请求输出端口，以能连接到处理器的VIC端口。</listitem>
+	<listitem>可以用软件屏蔽掉任意制定的中断源的中断。</listitem>
+	<listitem>可以为每个中断设置优先级。
+</listitem>
+</itemizedlist>
+通常软件还需要做以下事情：
+<itemizedlist> 
+	<listitem>确定请求服务的中断源。</listitem>
+	<listitem>确定中断处理程序的地址。</listitem>
+</itemizedlist>
+但是PL120向量中断控制器在硬件上，把上述所有功能都实现了，它可以提供当前最高优先级的中断的ISR的起始地址和向量地址。处理器可以通过VICVECTADDROUT[31:0]这个端口获取当前中断的ISR，不用向以前（比如ARM9）那样，采用0x00000018或者0xffff0018的策略了。但是处理器的VIC端口不支持读 FIQ 的向量地址。所以Linux依然使用老的方式来确定ISR地址，以保持向后兼容性。
+<figure><title>VIC中断处理时序示例</title>
+<graphic fileref="images/int_vic_time.gif"/></figure>
+该图解释了处理器和VIC之间基本的握手机制：所有事件均在HCLK上升沿被触发。IRQACK是由处理器发出的信号，用来告诉VIC：我想读取某某中断的中断处理程序的地址（IRQADDR）。IRQADDRV是由VIC发出的信号，告诉处理器：ISR的地址已经发送，而且有效，你就放心的读吧。IRQACK和IRQADDRV在VIC和处理器之间实现了一个四次握手的机制。
+<itemizedlist>	
+	<listitem>IRQC在B1至B2这个时钟周期内发生，然后等待HCLK的上升B2沿触发PL192 VIC设置处理器的nIRQ为低。</listitem>
+	<listitem>处理器得知nIRQ为低，并初始化一个中断序列。约1个HCLK周期后，IRQARRR被放入ISR地址。</listitem>	
+	<listitem>在B3和B4之间，处理器判断来的这个中断是不是IRQ，如果是则发送IRQACK 高电平信号。</listitem>
+	<listitem>在B3和B4这个周期内，又发生一个更高优先级的中断IRQB。</listitem>
+	<listitem>在B5，PL192 VIC得到IRQACK高电平信号，意味着CPU告诉它准备去读IRQADDR了，请将发生中断的向量地址放在IRQADDR。VIC会判断IRQC和IRQB并决定将优先级高的ISP地址放到IRQADDR中。</listitem>
+	<listitem>VIC更新完IRQADRR后通过将IRQADDRV变为高电平告知CPU已经放置完毕，请处理。IRQADDRV在处理器读取ISR地址之前一直保持高电平，此期间屏蔽中断。</listitem>
+	<listitem>在B8处，处理器读取IRQADDR的值，正确读取后，就将IRQACK置低，此时它的使命已经完成了。</listitem>
+	<listitem>当VIC发现IRQACK是低电平的时候，它将IRQADDRV置低，如果没有更高优先级的中断，它也把nIRQ置高。</listitem>
+	<listitem>当处理器得知IRQADDRV是低电平的时候，它就知道它又可以检测nIRQ了，所以如果VIC要停一段时间再将nIRQ置高的时候，必须保证IRQADDRV是高电平，不然，处理器就一直检测到有中断，其实是中断源发出的同一次中断。
+</listitem>
+</itemizedlist>
+PL192 VIC是不支持快速中断的，所有的快速中断先到VCI1，又通过VIC0，来到了TZIC0，最终都由TZIC0一个个的发送到ARM1176了。
+<figure><title>S3C5410中断控制器</title><graphic fileref="images/int_tzic.gif"/></figure>
+</sect2>
+<sect2><title>中断控制寄存器</title>
+VIC0的基址是0x71200000，VIC1的基址是0x71300000。控制寄存器地址 = 偏移地址 + VICn基址。
+<sect3><title>中断状态寄存器</title>
+在使能中断，并开放该中断屏蔽位时，通过读取中断状态寄存器的值来获取发生中断的中断号。
+<programlisting><![CDATA[
+寄存器            地址    读/写         描述           复位值
+VIC0IRQSTATUS 0x7120_0000 读    IRQ 状态寄存器(VIC0) 0x0000_0000
+VIC1IRQSTATUS 0x7130_0000 读    IRQ 状态寄存器(VIC1) 0x0000_0000
+
+VIC0FIQSTATUS 0x7120_0004 读    FIQ 状态寄存器(VIC0) 0x0000_0000
+VIC1FIQSTATUS 0x7130_0004 读    FIQ 状态寄存器(VIC1) 0x0000_0000
+]]></programlisting>
+每个中断源都对应寄存器内的一个位，所以64个中断源分别对应到VIC0和VIC1。
+<programlisting><![CDATA[
+名称          位                      描述                                       复位值
+F/IRQStatus [31:0] 在屏蔽之后，通过VICxINTENABLE 和VICxINTSELECT 寄存器显示         0
+                               中断的状态
+                               0=中断不被激活（复位）
+                               1=中断被激活                             
+]]></programlisting>
+通常在Linux代码中通过get_irqnr_and_base汇编代码来读取该寄存器以获取中断号。
+<programlisting><![CDATA[
+arch/arm/mach-s3c6400/include/mach/entry-macro.S
+.macro  get_irqnr_and_base, irqnr, irqstat, base, tmp
+
+@ check the vic0
+mov     \irqnr, # S3C_IRQ_OFFSET + 31
+ldr     \irqstat, [ \base, # VIC_IRQ_STATUS ]
+teq     \irqstat, #0
+.....
+]]></programlisting>
+</sect3>
+<sect3><title>类型选择寄存器</title>
+<programlisting><![CDATA[
+寄存器            地址    读/写         描述           复位值
+VIC0INTSELECT 0x7120_000C 读/写 中断选择寄存器(VIC0) 0x0000_0000
+VIC1INTSELECT 0x7130_000C 读/写 中断选择寄存器(VIC1) 0x0000_0000
+]]></programlisting>
+中断选择寄存器决定该中断的类型，通常设置为IRQ。每个中断源都对应一个寄存器位。
+<programlisting><![CDATA[
+名称         位            描述                         复位值
+IntSelect [31:0]    为中断请求选择中断的状态
+                      0=IRQ 中断（复位）
+                      1=FIQ 中断                         0x0
+]]></programlisting>
+</sect3>
+<sect3><title>使能禁止寄存器</title>
+<programlisting><![CDATA[
+寄存器            地址    读/写         描述             复位值
+VIC0INTENABLE 0x7120_0010 读/写 中断使能寄存器(VIC0)    0x0000_0000
+VIC1INTENABLE 0x7130_0010 读/写 中断使能寄存器(VIC1)    0x0000_0000
+
+VIC0INTENCLEAR 0x7120_0014 写   中断使能清除寄存器(VIC0)   -
+VIC1INTENCLEAR 0x7130_0014 写   中断使能清除寄存器(VIC1)   -
+]]></programlisting>
+<programlisting><![CDATA[
+名称         位                描述                      复位值
+IntEnable [31:0] 使能中断请求，允许中断到达处理器
+                 读：0=中断禁止（复位）
+                     1=中断使能                 
+                 VICINTENCLEAR 寄存器用来清除中断使能。    0x0
+                 写：0=没有影响 1=中断使能 
+]]></programlisting>
+中断使能只能用该寄存器设置。但是中断禁止并不是通过写该寄存器为0，而是通过VICINTENCLEAR，注意它是只写的。
+<programlisting><![CDATA[
+名称               位                描述                      复位值
+IntEnable Clear [31:0] 在VICINTENABLE 寄存器内清除相应的位
+                       0=没有影响（复位）
+                       1=在VICINTENABLE 寄存器内中断disabled     -                       
+]]></programlisting>
+</sect3>
+<sect3><title>软件中断寄存器</title>
+软件中断使能寄存器：
+<programlisting><![CDATA[
+寄存器            地址    读/写         描述             复位值
+VIC0SOFTINT 0x7120_0018   读/写     软件中断寄存器(VIC0) 0x0000_0000
+VIC1SOFTINT 0x7130_0018   读/写     软件中断寄存器(VIC1) 0x0000_0000
+]]></programlisting>
+<programlisting><![CDATA[
+名称         位                      描述                              复位值
+IntEnable [31:0] 在中断屏蔽之前设置HIGH 位对选择的源产生软件中断         0x0
+                 读：0=软件中断不被激活（复位）
+                     1=软件中断被激活
+                 写：0=没有影响
+                 1=软件中断使能
+]]></programlisting>
+软件中断清除寄存器：
+<programlisting><![CDATA[
+寄存器            地址         读/写         描述                复位值
+VIC0SOFTINTENCLEAR 0x7120_001C 写    软件中断清除寄存器(VIC0)   -
+VIC1SOFTINTENCLEAR 0x7130_001C 写    软件中断清除寄存器(VIC1)   -
+]]></programlisting>
+
+<programlisting><![CDATA[
+名称             位              描述                    复位值
+SoftInt Clear [31:0] 在VICSOFTINT 寄存器内清除相应的位
+                     0=没有影响（复位）
+                     1=在VICSOFTINT 寄存器内中断disabled   -
+]]></programlisting>
+</sect3>
+<sect3><title>保护使能寄存器</title>
+当保护模式使能时，只有特权模式可以访问（进行读和写）中断控制寄存器。当保护模式禁止时，用户模式和特权模式都可以访问寄存器。
+当保护模式禁止时，这个寄存器只能在特权模式下被访问。
+<programlisting><![CDATA[
+寄存器            地址     读/写         描述             复位值
+VIC0PROTECTION 0x7120_0020 读/写 保护使能寄存器(VIC0) 0x0000_0000
+VIC1PROTECTION 0x7130_0020 读/写 保护使能寄存器(VIC1) 0x0000_0000
+]]></programlisting>
+<programlisting><![CDATA[
+名称        位                描述              复位值
+Reserved  [31:1]  保留，作为0 读取，不要修改     0x0
+IntEnable [0]     使能或禁止保护寄存器访问：     0x0
+                  0=保护模式禁止（复位）
+                  1=保护模式使能
+]]></programlisting>
+</sect3>
+<sect3><title>矢量优先寄存器</title>
+每个VIC拥有32个优先级寄存器，分别对应中断0-31的优先级。
+<programlisting><![CDATA[
+寄存器                         地址             读/写         描述                复位值
+VIC0VECTPRIORITY[31:0] 0x7120_0200~0x7120_027C  读/写 矢量优先[31:0]寄存器(VIC0) 0x0000_000F
+VIC1 VECTPRIORITY[31:0] 0x7130_0200~0x7130_027C 读/写 矢量优先[31:0]寄存器(VIC1) 0x0000_000F
+]]></programlisting>
+
+<programlisting><![CDATA[
+名称        位                描述                                  复位值
+Reserved   [31:4] 保留，作为0 读取，不要修改                         0x0
+VectorAddr [3:0]  选择矢量中断优先级。可以选择16 进制数0~15 范围
+                  内的任何一个矢量中断优先级值运行寄存器。           0x0000_0000
+]]></programlisting>
+</sect3>
+</sect2>
+<sect2><title>Linux内核中断抽象</title>
+Linux对中断处理进行了几个层次的抽象：芯片级中断处理器，中断处理器的电流处理和高层的ISR。这样Linux就可以屏蔽不同体系架构的中断控制器芯片实现的不同，而提供统一的接口。这三个层次的抽象信息又通过指针引用的形式被集中封装在了一个名为irq_desc的结构体内。IRQ相关的管理信息被定义成该结构体类型的一个全局数组，每个数组索引对应一个IRQ号。它是Linux中断子系统的核心数据结构。
+<programlisting><![CDATA[
+kernel/irq/handle.c
+int nr_irqs = NR_IRQS;
+EXPORT_SYMBOL_GPL(nr_irqs);
+
+struct irq_desc irq_desc[NR_IRQS] __cacheline_aligned_in_smp = {
+	[0 ... NR_IRQS-1] = {
+		.status = IRQ_DISABLED,
+		.chip = &no_irq_chip,
+		.handle_irq = handle_bad_irq,
+		.depth = 1,
+		.lock = __SPIN_LOCK_UNLOCKED(irq_desc->lock),
+#ifdef CONFIG_SMP
+		.affinity = CPU_MASK_ALL
+#endif
+	}
+};
+]]></programlisting>
+由于不同的中断控制器支持不同的中断个数，所以NR_IRQS被定义在arch/arm/体系架构相关的文件夹下。另外注意到默认值。为了理解这些默认值的作用，必要比struct irq_desc各成员进行分析：
+<programlisting><![CDATA[
+struct irq_desc {
+	unsigned int		irq;
+	irq_flow_handler_t	handle_irq;
+	struct irq_chip		*chip;
+	struct msi_desc		*msi_desc;
+	void			*handler_data;
+	void			*chip_data;
+	struct irqaction	*action;	/* IRQ action list */
+	unsigned int		status;		/* IRQ status */
+
+	unsigned int		depth;		/* nested irq disables */
+	unsigned int		wake_depth;	/* nested wake enables */
+	unsigned int		irq_count;	/* For detecting broken IRQs */
+	unsigned int		irqs_unhandled;
+	unsigned long		last_unhandled;	/* Aging timer for unhandled count */
+	spinlock_t		lock;
+......
+	const char		*name;
+} ____cacheline_internodealigned_in_smp;
+]]></programlisting>
+<itemizedlist> 
+	<listitem>handle_irq是个函数指针，它用来实现中断处理器的电流处理。电流处理分为边沿跳变处理和电平处理。</listitem>
+	<listitem>chip是对中断处理器芯片功能的封装：中断使能函数，屏蔽函数，确认函数等。</listitem>
+	<listitem>handler_data指向ISR处理程序所需的任意数据结构体。</listitem>
+	<listitem>chip_data指向与chip操作相关的任意结构体，比如中断处理器控制寄存器的基地址。</listitem>
+	<listitem>action提供了ISR需要操作的一个函数链表，中断发生的目的就是要执行这些动作链表中的函数。</listitem>
+	<listitem>status指明了当前中断的状态：使能，禁止，设备共享等。</listitem>
+	<listitem>depth是一个内核中断指示计数器，被初始化为1，当内核调用setup_irq启用中断时减1，而调用disable_irq时被加1。通过该值处理中断禁用嵌套。</listitem>
+	<listitem>name则是在安装handle_irq时传递给__set_irq_handler的最后一个参数，可以为NULL。通过/proc/interrupts查看它。用来描述电流处理的名称。</listitem>
+	<listitem>lock用来在SMP上进行对当前irq_desc的锁定。</listitem>
+	<listitem>irq_count，irqs_unhandled和last_unhandled字段供统计信息。它们均在note_interrupt函数中被统计。</listitem>
+</itemizedlist>
+<sect3><title>中断芯片抽象</title>
+<programlisting><![CDATA[
+include/linux/irq.h
+struct irq_chip {
+	const char	*name;
+	unsigned int	(*startup)(unsigned int irq);
+	void		(*shutdown)(unsigned int irq);
+	void		(*enable)(unsigned int irq);
+	void		(*disable)(unsigned int irq);
+
+	void		(*ack)(unsigned int irq);
+	void		(*mask)(unsigned int irq);
+	void		(*mask_ack)(unsigned int irq);
+	void		(*unmask)(unsigned int irq);
+	void		(*eoi)(unsigned int irq);
+......
+	int		(*set_type)(unsigned int irq, unsigned int flow_type);
+......
+};
+]]></programlisting>
+芯片级中断处理器被封装在名为irq_chip的结构体中：
+<itemizedlist> 
+	<listitem>name用于标识中断控制器，比如“VIC”。</listitem>
+	<listitem>startup指向一个函数，用于第一次使能参数指定的irq中断号对应的硬件寄存器。如果不提供，则系统直接安装默认函数default_startup，它直接调用enable函数指针指向的函数。</listitem>
+	<listitem>disable/enable函数用于禁止/使能中断，也即控制中断使能禁止寄存器。</listitem>
+	<listitem>ack用于CPU对中断控制器的确认，通常直接调用mask函数禁止该中断即可。</listitem>
+	<listitem>mask用于设置屏蔽位，如果硬件没有屏蔽寄存器，那么就直接操作禁止寄存器。</listitem>
+	<listitem>unmask与mask相反，用于清除屏蔽位，如果硬件没有屏蔽寄存器，那么就直接操作禁止寄存器。</listitem>
+	<listitem>set_type设置IRQ的电流类型。该方法主要在ARM，PowerPC等使用。通常只有irq_desc在注册action时，标记有IRQF_TRIGGER_MASK才会调用该函数重新设置触发类型。</listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+static struct irq_chip vic_chip = {
+	.name	= "VIC",
+	.ack	= vic_mask_irq,
+	.mask	= vic_mask_irq,
+	.unmask	= vic_unmask_irq,
+};
+]]></programlisting>
+vic_init调用set_irq_chip为每个中断号设置chip为vic_chip。它只实现了两个函数，vic_mask_irq既是对中断禁止寄存器的操作，vic_unmask_irq则是对中断使能寄存器的操作。
+</sect3>
+<sect3><title>中断电流处理</title>
+尽管中断电流处理和硬件息息相关，Linux依然提供了高层次的封装来统一处理这些不同：边沿触发和电平触发。这两类函数都被封装成如下的形式，参数包括一个IRQ号和一个指向负责该中断的irq_desc。
+<programlisting><![CDATA[
+typedef	void (*irq_flow_handler_t)(unsigned int irq,
+					    struct irq_desc *desc);
+]]></programlisting>
+从流程图中可以看出真正的中断动作在handle_IRQ_event中被执行。
+<figure><title>电流处理流程</title><graphic fileref="images/int_handle.gif"/>
+</figure>
+当前硬件大多数采用边沿触发中断，被封装在handle_edge_irq处理函数中。在处理边沿触发的IRQ时无需中断，这与电平触发不同。这对SMP系统有一个重要的影响：当在一个CPU上处理一个IRQ时，另一个同样IRQ号的中断可以出现在另一个CPU上。但是这种情况应该避免：中断动作可能对应着同一个变量，它们不应该被同时访问。handle_edge_irq的开始首先判断IRQ_INPROGRESS标志位，如果该标志位存在意味着该中断已经在另外的CPU上被处理，则设置IRQ_PENDING|IRQ_MASKED标志，这意味着内核将在稍后处理该中断，另外调用mask_ack_irq来临时禁止该中断。
+<programlisting><![CDATA[
+	if (unlikely((desc->status & (IRQ_INPROGRESS | IRQ_DISABLED)) ||
+		    !desc->action)) {
+		desc->status |= (IRQ_PENDING | IRQ_MASKED);
+		mask_ack_irq(desc, irq);
+		goto out_unlock;
+	}
+]]></programlisting>
+handle_edge_irq中提供了一个检测IRQ_PENDING | IRQ_MASKED的循环，这意味着第一个CPU将在稍后时候处理该中断，并在处理前调用unmask来打开中断，以便其它CPU可以处理紧接的中断。
+<programlisting><![CDATA[
+	do {
+	......
+		if (unlikely((desc->status &
+			       (IRQ_PENDING | IRQ_MASKED | IRQ_DISABLED)) ==
+			      (IRQ_PENDING | IRQ_MASKED))) {
+			desc->chip->unmask(irq);
+			desc->status &= ~IRQ_MASKED;
+		}
+
+		desc->status &= ~IRQ_PENDING;
+		spin_unlock(&desc->lock);
+		action_ret = handle_IRQ_event(irq, action);
+......
+	} while ((desc->status & (IRQ_PENDING | IRQ_DISABLED)) == IRQ_PENDING);
+]]></programlisting>
+与边沿触发相比，电平触发要简单，由于一开始就屏蔽中断，所以SMP时不存在中断再次被处理的可能。mask_ack_irq完成了中断屏蔽的过程。
+<programlisting><![CDATA[
+	spin_lock(&desc->lock);
+	mask_ack_irq(desc, irq);
+	
+	if (unlikely(desc->status & IRQ_INPROGRESS))
+	goto out_unlock;
+	
+	desc->status |= IRQ_INPROGRESS;
+	spin_unlock(&desc->lock);
+]]></programlisting>
+在SMP上，其它的CPU依然可能在当前CPU调用mask_ack_irq之前接收到相同的中断从而进入该函数，所以在处理之前首先检查IRQ_INPROGRESS，如果有则直接放弃本次中断的处理。
+<programlisting><![CDATA[
+	action_ret = handle_IRQ_event(irq, action);
+	if (!noirqdebug)
+		note_interrupt(irq, desc, action_ret);
+
+	spin_lock(&desc->lock);
+	desc->status &= ~IRQ_INPROGRESS;
+	if (!(desc->status & IRQ_DISABLED) && desc->chip->unmask)
+		desc->chip->unmask(irq);
+]]></programlisting>
+在处理完后调用unmask来使能中断。本质上内核对电流处理的封装就是对irq_chip中的函数进行调用的过程。另外内核提供了一个handle_bad_irq函数以提供默认处理。内核封装了set_irq_handler函数来为中断号注册电流处理函数。
+</sect3>
+<sect3><title>中断ISR</title>
+这里的ISR是指中断最高层的动作，这是注册并处理该中断的本质，比如接收数据，控制另外的子系统(例如时间子系统)等。中断处理程序被封装在名为irqaction的数据结构中：
+<programlisting><![CDATA[
+struct irqaction {
+	irq_handler_t handler;
+	unsigned long flags;
+	cpumask_t mask;
+	const char *name;
+	void *dev_id;
+	struct irqaction *next;
+	int irq;
+	struct proc_dir_entry *dir;
+};
+]]></programlisting>
+<itemizedlist> 
+	<listitem>该结构体的核心成员为handler，也即中断处理函数。</listitem>
+	<listitem>name和dev_id唯一标示一个中断处理程序。name描述设备名，而dev_id是一个指向所有内核数据结构中唯一标示了该设备的数据结构实例，比如网卡的net_device实例，它们均在驱动中注册中断时被设置。</listitem>
+	<listitem>flags标志通过位图描述IRQ的特性:IRQF_SHARED表示有多个设备共享该IRQ电路；IRQF_DISABLE表示该IRQ的处理程序必须在晋中中断的情况下执行；IRQF_TIMER表示时钟中断。</listitem>
+	<listitem>next将所有的对应到该IRQ号的处理程序链接成为一个链表。在发生一个共享中断时，内核扫描该链表找出中断实际上的来源设备：显然共享中断会影响中断的响应速度。</listitem>
+	<listitem>dir指明proc系统对中断子系统的查询路径。</listitem>
+</itemizedlist>
+<figure><title>中断抽象数据结构关系</title><graphic fileref="images/int_chain.gif"/></figure>
+在handle_IRQ_event中对action链表进行循环处理，另外注意中断ISR应该尽可能快速的处理，并且不可睡眠，阻塞以及进行调度。
+<programlisting><![CDATA[
+	do {
+		ret = action->handler(irq, action->dev_id);
+		if (ret == IRQ_HANDLED)
+			status |= action->flags;
+		retval |= ret;
+		action = action->next;
+	} while (action);
+]]></programlisting>
+</sect3>
+</sect2>
+<sect2><title>Linux内核中断注册</title>
+在S3C6410的板级初始化成员定义中注意到其中的init_irq函数。内核对中断控制器的初始化就位于其中。这里就是s3c6410_init_irq函数。
+<programlisting><![CDATA[
+MACHINE_START(SMDK6410, "SMDK6410")
+......
+	.init_irq	= s3c6410_init_irq,
+......
+MACHINE_END
+]]></programlisting>
+该函数被定义在核心文件cpu.c中，可以看到它的重要性。另外它只是对s3c64xx_init_irq的封装，所以s3c64xx_init_irq对64xx系列的CPU具有通用性。
+<programlisting><![CDATA[
+arch/arm/mach-s3c6410/cpu.c
+void __init s3c6410_init_irq(void)
+{
+	/* VIC0 is missing IRQ7, VIC1 is fully populated. */
+	s3c64xx_init_irq(~0 & ~(1 << 7), ~0);
+}
+]]></programlisting>
+<figure><title>中断初始化流程</title><graphic fileref="images/int_init.gif"/></figure>
+接下来将依据该流程分析中断的初始化，本质上可以分为两个阶段：初始化中断控制器VIC；注册中断处理程序。
+<sect3><title>初始化中断控制器VIC</title>
+注意到s3c64xx_init_irq的两个参数，它们是VIC0和VIC1中断使能的掩码，S3C6410的VIC0并没有提供IRQ7，所以s3c6410_init_irq在调用该函数时，传递的第一个参数屏蔽掉了第7位。
+<programlisting><![CDATA[
+void __init s3c64xx_init_irq(u32 vic0_valid, u32 vic1_valid)
+{
+	int uart, irq;
+
+	/* initialise the pair of VICs */
+	vic_init(S3C_VA_VIC0, S3C_VIC0_BASE, vic0_valid);
+	vic_init(S3C_VA_VIC1, S3C_VIC1_BASE, vic1_valid);
+......
+]]></programlisting>
+对于该部分代码需要参考VIC的控制寄存器和对应的功能。ARM Linux使用到的VIC寄存器定义如下：
+<programlisting><![CDATA[
+arch/arm/include/asm/hardware/vic.h
+#define VIC_IRQ_STATUS                  0x00
+#define VIC_FIQ_STATUS                  0x04
+#define VIC_RAW_STATUS                  0x08
+#define VIC_INT_SELECT                  0x0c    /* 1 = FIQ, 0 = IRQ */
+#define VIC_INT_ENABLE                  0x10    /* 1 = enable, 0 = disable */
+#define VIC_INT_ENABLE_CLEAR            0x14
+#define VIC_INT_SOFT                    0x18
+#define VIC_INT_SOFT_CLEAR              0x1c
+#define VIC_PROTECT                     0x20
+#define VIC_PL190_VECT_ADDR             0x30    /* PL190 only */
+#define VIC_PL190_DEF_VECT_ADDR         0x34    /* PL190 only */
+......
+]]></programlisting>
+注意以上的定义只是相对于VIC基地址的偏移，所以在操作它们的时候还要加上虚地址S3C_VA_VIC0或者S3C_VA_VIC1。
+<programlisting><![CDATA[
+void __init vic_init(void __iomem *base, unsigned int irq_start,
+		     u32 vic_sources);
+]]></programlisting>
+vic_init有三个参数，解释如下：
+<itemizedlist> 
+	<listitem>base，是VIC的虚地址，显然它被映射带VIC的物理地址0x71200000或者0x71300000。</listitem>
+	<listitem>irq_start，指明的起始中断号：对于VIC0来说就是0，对于VIC1来说32。</listitem>
+	<listitem>vic_sources，是掩码位，置1的位其对应的中断号均接收外部中断请求。</listitem>	
+</itemizedlist>
+vic_init主要完成了以下工作：
+<itemizedlist> 
+	<listitem>设置VIC0INTSELECT或VIC1INTSELECT为全0：选择所有的中断类型为IRQ。</listitem>
+	<listitem>设置使能禁止寄存器VIC0INTENABLE或VIC1INTENABLE为全0，同时写禁止寄存器
+VIC0INTENCLEAR或VIC1INTENCLEAR为全1，禁止所有的中断。</listitem>
+	<listitem>清除中断状态寄存器为全0。</listitem>
+	<listitem>设置VIC测试寄存器VICITCR(它的偏移为0x300)为0，也即设置为正常模式。</listitem>
+	<listitem>禁止所有软件中断。</listitem>
+	<listitem>设置优先级寄存器，这里只设置最低的16个中断源的优先级为0-15，数值越大优先级越低，并且在Linux实际处理中断状态寄存器时优先处理VIC0的中断。</listitem>
+	<listitem>调用set_irq_chip为每一个中断号安装VIC中断控制器的抽象vic_chip。</listitem>
+	<listitem>调用set_irq_chip_data为每一个中断号安装chip_data，这里就是VIC寄存器的虚拟基地址。它常被用在vic_chip封装的函数指针中。</listitem>
+	<listitem>根据vic_sources提供的掩码，所有使能的中断号都需安装电流处理函数handle_irq。这里安装的是handle_level_irq。</listitem>
+	<listitem>根据vic_sources提供的掩码，通过set_irq_flags设置所有使能的中断号的状态status为IRQF_VALID | IRQF_PROBE。</listitem>
+</itemizedlist>
+vic_init调用set_irq_chip为每个中断号设置chip为vic_chip。它只实现了两个函数，vic_mask_irq既是对中断禁止寄存器的操作，vic_unmask_irq则是对中断使能寄存器的操作。
+<programlisting><![CDATA[
+	for (i = 0; i < 32; i++) {
+		unsigned int irq = irq_start + i;
+
+		set_irq_chip(irq, &vic_chip);
+		set_irq_chip_data(irq, base);
+
+		if (vic_sources & (1 << i)) {
+			set_irq_handler(irq, handle_level_irq);
+			set_irq_flags(irq, IRQF_VALID | IRQF_PROBE);
+		}
+	}
+]]></programlisting>
+vic_init中的关键代码如上所示，它为每一个中断都初始化irq_chip为vic_chip，并安装处保留意外的所有中断号的电流处理函数为handle_level_irq，另外IRQF_VALID意味着该中断可以被注册action处理函数，IRQF_PROBE则表示它需要在setup_irq时调用使能函数startup。
+<programlisting><![CDATA[
+set_irq_chip(irq, &vic_chip);
+
+static struct irq_chip vic_chip = {
+	.name	= "VIC",
+	.ack	= vic_mask_irq,
+	.mask	= vic_mask_irq,
+	.unmask	= vic_unmask_irq,
+};
+]]></programlisting>
+</sect3>
+<sect3><title>注册电流处理函数</title>
+s3c64xx_init_irq的最后部分更改时钟中断的irq_chip为s3c_irq_timer，并且设置IRQF_VALID标志位，也即IRQ_NOREQUEST标志。
+<programlisting><![CDATA[
+......
+  set_irq_chained_handler(IRQ_TIMER0_VIC, s3c_irq_demux_timer0);
+	set_irq_chained_handler(IRQ_TIMER1_VIC, s3c_irq_demux_timer1);
+	set_irq_chained_handler(IRQ_TIMER2_VIC, s3c_irq_demux_timer2);
+	set_irq_chained_handler(IRQ_TIMER3_VIC, s3c_irq_demux_timer3);
+	set_irq_chained_handler(IRQ_TIMER4_VIC, s3c_irq_demux_timer4);
+
+	for (irq = IRQ_TIMER0; irq <= IRQ_TIMER4; irq++) {
+		set_irq_chip(irq, &s3c_irq_timer);
+		set_irq_handler(irq, handle_level_irq);
+		set_irq_flags(irq, IRQF_VALID);
+	}
+......
+}
+]]></programlisting>
+在vic_init中注册中断处理函数的函数是set_irq_chained_handler，所谓chained，是被链锁住的，也即这个中断只在内核内部使用，不可被外部驱动通过request_irq添加新的ISR动作请求。对于时钟函数显然需要使用该函数处理。
+<programlisting><![CDATA[
+static inline void
+set_irq_chained_handler(unsigned int irq,
+			irq_flow_handler_t handle)
+{
+	__set_irq_handler(irq, handle, 1, NULL);
+}
+]]></programlisting>
+与该函数相对应的是set_irq_handler，它对于外设来说更加通用，之间的区别仅仅在于第三个参数的区别。
+<programlisting><![CDATA[
+static inline void
+set_irq_handler(unsigned int irq, irq_flow_handler_t handle)
+{
+	__set_irq_handler(irq, handle, 0, NULL);
+}
+]]></programlisting>
+__set_irq_handler是电流处理程序的核心注册函数，第一个参数指定中断号，handle指定了电流处理函数，is_chained则指明是否禁止外部驱动添加新ISR动作到该中断号；name是对该中断电流处理程序的描述，可以为NULL。
+<programlisting><![CDATA[
+void
+__set_irq_handler(unsigned int irq, irq_flow_handler_t handle, int is_chained,
+		  const char *name)
+{
+	......
+	if (handle != handle_bad_irq && is_chained) {
+		desc->status &= ~IRQ_DISABLED;
+		desc->status |= IRQ_NOREQUEST | IRQ_NOPROBE;
+		desc->depth = 0;
+		desc->chip->startup(irq);
+	}
+	......
+}
+]]></programlisting>
+这个函数的关键点在于对is_chained的处理，如果该中断号被内核锁定，则要添加IRQ_NOREQUEST | IRQ_NOPROBE标志，并且调用startup启用中断。<?linebreak?>
+除了以上两个对__set_irq_handler封装的函数外，内核还提供了更高层的函数来同时注册irq_chip和电流处理函数：
+<programlisting><![CDATA[
+kernel/irq/chip.c
+set_irq_chip_and_handler(unsigned int irq, struct irq_chip *chip,
+			 irq_flow_handler_t handle);
+			 
+void set_irq_chip_and_handler_name(unsigned int irq, struct irq_chip *chip,
+			      irq_flow_handler_t handle, const char *name);
+]]></programlisting>
+但是它们并不支持内核锁定，所以在vic_init中分开调用了set_irq_chained_handler和set_irq_chip。而没有直接调用上面两个函数。另外一个令人迷惑的地方是这里既没有使用边沿触发电流处理函数，也没有使用电平触发处理函数，而是一个自定义的函数，这里就涉及到了二级中断。它看起来很像一个树形结构：
+<programlisting><![CDATA[
+             |----二级中断1
+一级中断号---|----二级中断2
+             |----二级中断3
+             |----二级中断4
+             ......
+]]></programlisting>
+根据IRQ_TIMERx_VIC宏的定义，可以得出它们的中断号分别为：55，56，57，59和60。在底层汇编通过get_irqnr_and_base获取中断号时，添加了中断号的偏移量S3C_IRQ_OFFSET，它的值被定义为32。中断号的范围在32 ~ 96 之间，所以实际上它们对应23，24，25和27，28号中断。
+<programlisting><![CDATA[
+#define S3C_IRQ_OFFSET	(32)
+#define S3C_IRQ(x)	((x) + S3C_IRQ_OFFSET)
+#define S3C_VIC0_BASE	S3C_IRQ(0)
+#define S3C64XX_IRQ_VIC0(x)	(S3C_VIC0_BASE + (x))
+
+#define IRQ_TIMER0_VIC		S3C64XX_IRQ_VIC0(23)
+#define IRQ_TIMER1_VIC		S3C64XX_IRQ_VIC0(24)
+#define IRQ_TIMER2_VIC		S3C64XX_IRQ_VIC0(25)
+#define IRQ_WDT			S3C64XX_IRQ_VIC0(26)
+#define IRQ_TIMER3_VIC		S3C64XX_IRQ_VIC0(27)
+#define IRQ_TIMER4_VIC		S3C64XX_IRQ_VIC0(28)
+]]></programlisting>
+s3c_irq_demux_timer0被注册为一级中断处理函数，显然它只是对s3c_irq_demux_timer的简单封装，值得注意的是这个函数的两个参数。
+<itemizedlist> 
+	<listitem>base_irq，它并不传递给真正的处理函数。</listitem>
+	<listitem>sub_irq，二级中断号，它被用来作为真正的中断号传递给generic_handle_irq。</listitem>
+</itemizedlist>
+generic_handle_irq在这里充当了二级中断处理函数。这里的IRQ_TIMER0显然不在32~96范围内，所以被选作二级中断号。但是这里的二级中断只有一个。在GPIO控制中，将根据GPIO的中断悬停寄存器来区分真正的中断源，从而达到一个一级中断，多个二级中断的目的。
+<programlisting><![CDATA[
+#define S3C64XX_TIMER_IRQ(x)	S3C_IRQ(64 + (x))
+#define IRQ_TIMER0		S3C64XX_TIMER_IRQ(0)
+......
+
+static void s3c_irq_demux_timer0(unsigned int irq, struct irq_desc *desc)
+{
+	s3c_irq_demux_timer(irq, IRQ_TIMER0);
+}
+
+static void s3c_irq_demux_timer(unsigned int base_irq, unsigned int sub_irq)
+{
+	generic_handle_irq(sub_irq);
+}
+]]></programlisting>
+</sect3>
+<sect3><title>注册IRQ动作</title>
+内核提供了NR_IRQS个中断描述irq_desc结构成员，而在相应的体系架构代码下对它们进行了初始化，比如安装irq_chip，设置标志位，注册内核锁定(保留使用)的中断号的电流处理函数：比如时钟中断。但是最终目的是在中断触发时执行相应的动作。内核提供了一个核心函数用来注册中断动作setup_irq。
+<programlisting><![CDATA[
+kernel/irq/manage.c
+int setup_irq(unsigned int irq, struct irqaction *act)
+{
+	struct irq_desc *desc = irq_to_desc(irq);
+	return __setup_irq(irq, desc, act);
+}
+]]></programlisting>
+系统中的核心设备，比如时钟系统，由于与它相关的中断在整个系统运行期内都需要使能，而不需要释放相关的中断资源，可以通过该函数直接注册中断处理函数，这里需要定义一个irqaction结构体。
+<programlisting><![CDATA[
+arch/arm/plat-s3c/time.c
+static struct irqaction s3c2410_timer_irq = {
+	.name		= "S3C2410 Timer Tick",
+	.flags		= IRQF_DISABLED | IRQF_TIMER | IRQF_IRQPOLL,
+	.handler	= s3c2410_timer_interrupt,
+};
+
+static void __init s3c64xx_timer_init(void)
+{
+	s3c64xx_timer_setup();
+	setup_irq(IRQ_TIMER4, &s3c2410_timer_irq);
+}
+]]></programlisting>
+而对于大多数外设，可以在其停止工作时释放相关的中断资源，系统提供了更高层的中断注册函数的封装request_irq。
+<programlisting><![CDATA[
+typedef irqreturn_t (*irq_handler_t)(int, void *);
+
+kernel/irq/manage.c
+int request_irq(unsigned int irq, irq_handler_t handler,
+		unsigned long irqflags, const char *devname, void *dev_id);
+]]></programlisting>
+注意到handler参数是一个函数指针，它的第二个参数通常由这里的dev_id提供，通常它是指向注册该中断的设备的指针，它被传递给handler。request_irq会动态分配一个irqaction结构体，并将参数赋值给该结构体相应的成员：
+<programlisting><![CDATA[
+	action = kmalloc(sizeof(struct irqaction), GFP_ATOMIC);
+	......
+
+	action->handler = handler;
+	action->flags = irqflags;
+	cpus_clear(action->mask);
+	action->name = devname;
+	action->next = NULL;
+	action->dev_id = dev_id;
+]]></programlisting>
+一个典型的示例是DM9000网卡的开启函数，其中dm9000_interrupt在中断时用来接收网卡收到的数据。
+<programlisting><![CDATA[
+static int dm9000_open(struct net_device *dev)
+{
+    board_info_t *db = (board_info_t *) dev->priv;
+    
+    if (request_irq(dev->irq, &dm9000_interrupt, DM9000_IRQ_FLAGS, dev->name, dev))
+            return -EAGAIN;
+......
+]]></programlisting>
+与request_irq相对应，系统提供了中断资源的释放函数free_irq，dev_id在这里起到了ID的作用，显然在Linux内核中如果一个设备要注册多个中断，需要在调用request_irq时提供不同的dev_id，否则在释放时将出现麻烦，比如两次不清晰的free_irq将让分析代码的人产生疑问：free_irq使用dev_id进行查找，并在第一次匹配后释放irqaction结构并退出。
+<programlisting><![CDATA[
+void free_irq(unsigned int irq, void *dev_id);
+]]></programlisting>
+</sect3>
+</sect2>
+<sect2><title>软中断</title>
+<sect3><title>软中断概述</title>
+<para>内核引入软中断以延期执行任务。由于是完全由软件实现，所以被称为软中断。硬件中断的ISR中可能包好多个服务例程，它们之间是串行执行的，并且通常在一个中断的处理程序结束前，不应该再次出现这个中断，相反，可延迟中断可以在开中断的情况下执行。把可延迟中断从中断处理程序中抽出来有助于使内核保持较短的响应时间。</para>
+<para>
+Linux2.6通过两种非紧迫、可中断的内核函数：所谓的可延迟函数(包含软中断和tasklets)和通过工作队列来执行的函数。tasklet是在软中断之上实现的。事实上，出现在内核代码汇总的术语“软中断(softirq)”常常表示可延迟函数的所有种类。另外一种被广泛使用的术语是"中断上下文"：表示内核当前正在执行一个中断处理程序或一个可延迟的函数。
+</para>
+<para>
+软中断的分配是静态的(编译时定义)，而tasklet的分配和初始化可以在运行时进行(比如安装一个内核模块)。软中断(即使是同一类型的软中断)可以并发地运行在多个CPU上。因此，软中断是可重入函数，而且必须明确地使用自旋锁保护其数据结构。tasklet不必担心这些问题，因为内核对tasklet的执行进行了更加严格的控制。相同类型的tasklet总是被串行地执行，换句话说：不能在两个CPU上同时运行相同类型的tasklet。但是，类型不同的tasklet可以在几个CPU上并发进行。tasklet的串行化使得tasklet函数不必是可重入的，因此简化了设备驱动程序开发者的工作。
+</para>
+<para>
+一般而言，在可延迟函数上可以执行四种操作：
+<itemizedlist> 
+<listitem>初始化(initialization): 定义一个新的可延迟函数，这个操作通常在内核自身初始化或加载模块时进行。</listitem>
+<listitem>激活(activation)：标记一个可延迟函数为"挂起"(在可延迟函数的下一轮调度中执行)。激活可以在任何时候进行(即使正在处理中断)。</listitem>
+<listitem>屏蔽(masking)：有选择地屏蔽一个可延迟函数，这样即使它被激活，内核也不执行它。</listitem>
+<listitem>执行(execution)：执行一个挂起的可延迟函数和同类型的其他所有挂起的可延迟函数；执行是在特定的时间进行的。</listitem>
+</itemizedlist>
+激活和执行不知何故总是捆绑在一起：由给定CPU激活的一个可延迟函数必须在同一个CPU上执行。没有什么明显的理由说明这条规则对系统性能是有益的。可把延迟函数绑定在激活CPU上从理论上说可以更好地利用CPU的硬件高速缓存。毕竟，可以想象，激活的内核线程访问的一些数据结构，可延迟函数也可能会使用。然而，当可延迟函数运行时，因为他的执行可以延迟一段时间，因此相关告诉缓存行很可能就不再高速缓存中了。此外，把一个函数绑定在一个CPU上总是一种有潜在"危险的"操作，一个CPU可能忙死而其他CPU又可能无所事事。
+</para>
+</sect3>
+<sect3><title>软中断数据结构</title>
+<para>
+软中断机制的核心部分是一个表，包含NR_SOFTIRQS个softirq_action类型的数据项。该数据结构非常简单：
+<programlisting><![CDATA[
+include/linux/interrupt.h
+struct softirq_action
+{
+   void (*action)(struct softirq_action *);
+};
+]]></programlisting>
+action是一个指向处理当前类型的函数的指针，当软中断发生时由内核执行该处理程序例程。当前支持的所有软中断类型如下所示，NR_SOFTIRQS记录最大数目。通过它声明NR_SOFTIRQS个softirq_action。
+<programlisting><![CDATA[
+include/linux/interrupt.h
+enum
+{
+        HI_SOFTIRQ=0,
+        TIMER_SOFTIRQ,
+        NET_TX_SOFTIRQ,
+        NET_RX_SOFTIRQ,
+        BLOCK_SOFTIRQ,
+        TASKLET_SOFTIRQ,
+        SCHED_SOFTIRQ,
+#ifdef CONFIG_HIGH_RES_TIMERS
+        HRTIMER_SOFTIRQ,
+#endif
+        RCU_SOFTIRQ,    /* Preferable RCU should always be the last softirq */
+
+        NR_SOFTIRQS
+};
+]]></programlisting>
+软中断类型中，
+<itemizedlist> 
+	<listitem>HI_SOFTIRQ对应高优先级tasket，TASKLET_SOFTIRQ用来实现常规tasklet。</listitem>	
+	<listitem>NET_TX_SOFTIRQ和NET_RX_SOFTIRQ用于网络的发送和接收操作。</listitem>
+	<listitem>BLOCK_SOFTIRQ用于块设备。</listitem>
+	<listitem>SCHED_SOFTIRQ则用于调度器，实现SMP系统上周期性的负载平衡。</listitem>
+	<listitem>RCU_SOFTIRQ用于Read-Copy-Update锁机制。</listitem>
+	<listitem>TIMER_SOFTIRQ则用于软件时钟。</listitem>
+	<listitem>HRTIMER_SOFTIRQ在启用高分辨率定时器时被开启。</listitem>
+</itemizedlist>
+软中断的编号形成了一个优先顺序，这并不影响各个处理程序执行的频率和它们相对于其他系统活动的优先级，但定义了多个软中断同时活动或待决时处理例程执行的次序。
+<programlisting><![CDATA[
+kernel/softirq.c
+static struct softirq_action softirq_vec[NR_SOFTIRQS] __cacheline_aligned_in_smp;
+]]></programlisting>
+软中断必须注册，然后内核才能执行软中断。open_softirq函数用于该目的。它在softirq_vec表中指定的位置写入新的软中断处理函数。
+<programlisting><![CDATA[
+kernel/softirq.c
+void open_softirq(int nr, void (*action)(struct softirq_action *))
+{
+  softirq_vec[nr].action = action;
+}
+]]></programlisting>
+另一个关键的字段是当前进程的preempt_count字段，在内核同步中有详细描述，它的b[15:8]位用来表示软中断计数器。它表示可延迟函数被禁用的程度(为0表示可延迟函数处于激活状态)。
+</para>
+<para>
+实现软中断的最后一个关键的数据结构是每个CPU都有的32位掩码(描述挂起的软中断)，它存放在irq_cpustat_t结构体的__softirq_pending成员中。该结构体是与体系架构相关的，但__softirq_pending的大小应该与NR_CPUS保持一致，才能将掩码位和每个软中断向量一一对应。
+<programlisting><![CDATA[
+arch/arm/include/asm/hardirq.h
+typedef struct {
+	unsigned int __softirq_pending;
+	unsigned int local_timer_irqs;
+} ____cacheline_aligned irq_cpustat_t;
+
+irq_cpustat_t irq_stat[NR_CPUS] ____cacheline_aligned;
+EXPORT_SYMBOL(irq_stat);
+]]></programlisting>
+为了获取和设置为掩码的值，内核使用宏local_softirq_pending，它选择本地CPU的软中断位掩码。
+<programlisting><![CDATA[
+#define __IRQ_STAT(cpu, member)	(irq_stat[cpu].member)
+
+/* arch independent irq_stat fields */
+#define local_softirq_pending() \
+	__IRQ_STAT(smp_processor_id(), __softirq_pending)
+]]></programlisting>
+</para>
+</sect3>
+<sect3><title>软中断处理</title>
+<para>
+<programlisting><![CDATA[
+void open_softirq(int nr, void (*action)(struct softirq_action *))
+{
+	softirq_vec[nr].action = action;
+}
+]]></programlisting>
+open_softirq用来为不同类型的软中断初始化处理函数。它的第一个参数为软中断类型，第二个则为处理函数。它封装了对softirq_vec数组的初始化。
+</para>
+<para>
+raise_softirq用于激活软中断。它的参数即是需要激活软中断的类型。
+<programlisting><![CDATA[
+void raise_softirq(unsigned int nr)
+{
+	unsigned long flags;
+
+	local_irq_save(flags);
+	raise_softirq_irqoff(nr);
+	local_irq_restore(flags);
+}
+]]></programlisting>
+<itemizedlist> 
+<listitem>local_irq_save禁用本地中断。</listitem>
+<listitem>__raise_softirq_irqoff把软中断标记为挂起状态，这是通过设置本地CPU的软中断掩码中与下标nr相关的位来实现的。</listitem>
+<listitem>如果in_interrupt返回1，则恢复中断并返回。</listitem>
+<listitem>否则，就去调用wakeup_softirqd以唤醒本地CPU的ksoftirqd内核线程。</listitem>
+<listitem>恢复中断标志位并返回：但这并不意味着开启中断。</listitem>
+</itemizedlist>
+raise_softirq_irqoff函数必须在关中断中执行，所以必须执行的尽量快。
+<programlisting><![CDATA[
+#define or_softirq_pending(x)  (local_softirq_pending() |= (x))
+#define __raise_softirq_irqoff(nr) do { or_softirq_pending(1UL << (nr)); } while (0)
+
+inline void raise_softirq_irqoff(unsigned int nr)
+{
+	__raise_softirq_irqoff(nr);
+
+	if (!in_interrupt())
+		wakeup_softirqd();
+}
+]]></programlisting>
+如上所述，如果当前是在中断中(并且大多数情况都是，比如唤醒时钟软中断)，那么除了设置CPU的软中断掩码以外，似乎不能做任何事情，那么这些掩码是在何时被检查的呢？检测点通常如下：
+<itemizedlist> 
+<listitem>当内核调用local_bh_enable函数激活本地CPU的软中断时。</listitem>
+<listitem>当do_IRQ完成了中断ISR的初始时或者调用irq_exit宏时。</listitem>
+<listitem>如果系统使用APIC，则在中断处理函数完成本地定时器中断时。</listitem>
+<listitem>在SMP系统中，当CPU处理完被CALL_FUNCTION_VECTOR处理器间中断所触发的函数时。</listitem>
+<listitem>当一个特殊的ksoftirqd/n内核线程被唤醒时。</listitem>
+</itemizedlist>
+</para>
+</sect3>
+<sect3><title>do_softirq</title>
+<programlisting><![CDATA[
+asmlinkage void do_softirq(void)
+{
+  __u32 pending;
+  unsigned long flags;
+
+  if (in_interrupt())
+          return;
+
+  local_irq_save(flags);
+  pending = local_softirq_pending();
+  if (pending)
+         __do_softirq();
+  local_irq_restore(flags);
+}
+]]></programlisting>
+如果在一些特殊的监测点(local_softirq_pending()不为0)检测到挂起的软中断掩码被置位，内核就调用do_softirq来处理他们。这个函数执行了如下的操作：
+<itemizedlist> 
+	<listitem>in_interrupt判断当前进程的preempt_count字段的硬中断和软中断计算器是否为有值，如果是则直接返回。这种情况说明要么在中断上下文中调用了do_softirq，要么当前禁用软中断。</listitem>
+	<listitem>禁中断并保存当前的IF标志位。</listitem>
+	<listitem>通过local_softirq_pending查看是否有挂起的软中断，如果有调用__do_softirq。</listitem>
+	<listitem>恢复IF标志并返回。</listitem>
+</itemizedlist>
+__do_softirq函数读取本地CPU的软中断掩码并执行与每个位置位相关的可延迟函数。由于正在执行一个软中断函数时可能出现新挂起的软中断，所以为了保证可延迟函数的低延迟性，__do_softirq一致运行到执行完所有挂起的软中断。但是，这种机制可能迫使__do_softirq运行很长一段时间，因而大大延迟用户态进程的执行。因此，该函数制作固定次数MAX_SOFTIRQ_RESTART的循环，然后就返回。如果还有其余挂起的软中断，那么下面描述的ksoftirqd将会在预期的时间内处理它们。
+<programlisting><![CDATA[
+#define MAX_SOFTIRQ_RESTART 10
+
+asmlinkage void __do_softirq(void)
+{
+        struct softirq_action *h;
+        __u32 pending;
+        int max_restart = MAX_SOFTIRQ_RESTART;
+        int cpu;
+
+        pending = local_softirq_pending();
+        account_system_vtime(current);
+
+        __local_bh_disable((unsigned long)__builtin_return_address(0));
+        trace_softirq_enter();
+
+        cpu = smp_processor_id();
+]]></programlisting>
+<itemizedlist> 
+	<listitem>首先初始化循环计数器max_restart为10。</listitem>
+	<listitem>把本地CPU软中断的位掩码复制到局部变量pending中。</listitem>
+	<listitem>调用__local_bh_disable增加软中断的计数值。这保证不会嵌套执行__do_softirq。因为在进入该函数前会判断是否在中断中。尽管通过do_softirq调用的__do_softirq是在禁中断中执行的，但是在判断中断之后和接下来执行local_irq_save指令之间依然可能中断，并且在调用do_IRQ处理完中断之后准备结束时通过irq_exit也将唤醒invoke_softirq，它是对__do_softirq的宏定义。为了保证可延迟函数的串行执行，必须在函数的开始禁用可延迟函数。另外可延迟函数也是在开中断时执行的，此时也会发生硬中断并注册新的软中断。</listitem>	
+</itemizedlist>
+<programlisting><![CDATA[
+static inline void __local_bh_disable(unsigned long ip)
+{
+  add_preempt_count(SOFTIRQ_OFFSET);
+  barrier();
+}
+]]></programlisting>
+注意到irq_exit中对invoke_softirq的调用。显然只有定义__ARCH_IRQ_EXIT_IRQS_DISABLED时才会调用__do_softirq。对于ARM即为该函数。
+<programlisting><![CDATA[
+#ifdef __ARCH_IRQ_EXIT_IRQS_DISABLED
+# define invoke_softirq()       __do_softirq()
+#else
+# define invoke_softirq()       do_softirq()
+#endif
+
+void irq_exit(void)
+{
+        account_system_vtime(current);
+        trace_hardirq_exit();
+        sub_preempt_count(IRQ_EXIT_OFFSET);
+        if (!in_interrupt() && local_softirq_pending())
+                invoke_softirq();
+
+#ifdef CONFIG_NO_HZ 
+        /* Make sure that timer wheel updates are propagated */
+        if (!in_interrupt() && idle_cpu(smp_processor_id()) && !need_resched())
+                tick_nohz_stop_sched_tick(0);
+        rcu_irq_exit();
+#endif
+        preempt_enable_no_resched();
+}
+]]></programlisting>
+接下来继续分析__do_softirq中对延迟函数的循环处理：
+<itemizedlist> 
+	<listitem>set_softirq_pending清楚本地CPU的软中断掩码，一边激活新的软中断。</listitem>
+	<listitem>执行local_irq_enable激活本地中断。</listitem>
+	<listitem>根据pending中的掩码位执行对应的软中断处理函数</listitem>
+	<listitem>如果在软中断处理函数中改变了preempt_count值将报错。</listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+restart:
+	/* Reset the pending bitmask before enabling irqs */
+	set_softirq_pending(0);
+	local_irq_enable();
+
+	h = softirq_vec;
+	do {
+		if (pending & 1) {
+			int prev_count = preempt_count();
+
+			h->action(h);
+
+			if (unlikely(prev_count != preempt_count())) {
+				printk(KERN_ERR "huh, entered softirq %td %p"
+				       "with preempt_count %08x,"
+				       " exited with %08x?\n", h - softirq_vec,
+				       h->action, prev_count, preempt_count());
+				preempt_count() = prev_count;
+			}
+
+			rcu_bh_qsctr_inc(cpu);
+		}
+		h++;
+		pending >>= 1;
+	} while (pending);
+]]></programlisting>
+<itemizedlist> 
+	<listitem>一次循环处理结束之后，将禁中断，并再次统计软中断的掩码位，如果没有超过检查次数max_restart，则继续到restart标号执行。</listitem>
+	<listitem>如果超过最大次数，并且未处理完软中断，则唤醒ksoftirqd。</listitem>
+	<listitem>最后调用_local_bh_enable重新开启软中断。</listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+	local_irq_disable();
+
+	pending = local_softirq_pending();
+	if (pending && --max_restart)
+		goto restart;
+
+	if (pending)
+		wakeup_softirqd();
+
+	trace_softirq_exit();
+
+	account_system_vtime(current);
+	_local_bh_enable();
+}
+]]></programlisting>
+
+<programlisting><![CDATA[
+void _local_bh_enable(void)
+{
+	WARN_ON_ONCE(in_irq());
+	WARN_ON_ONCE(!irqs_disabled());
+
+	if (softirq_count() == SOFTIRQ_OFFSET)
+		trace_softirqs_on((unsigned long)__builtin_return_address(0));
+	sub_preempt_count(SOFTIRQ_OFFSET);
+}
+]]></programlisting>
+</sect3>
+<sect3><title>ksoftirqd内核线程</title>
+在最近的内核版本中，每个CPU都有自己的ksoftirqd/n内核线程(这里的n代表CPU的编号)。通过wakeup_softirqd可以唤醒该CPU上的ksoftirqd内核线程。
+<programlisting><![CDATA[
+static struct softirq_action softirq_vec[NR_SOFTIRQS] __cacheline_aligned_in_smp;
+static DEFINE_PER_CPU(struct task_struct *, ksoftirqd);
+
+static inline void wakeup_softirqd(void)
+{
+	/* Interrupts are disabled: no need to stop preemption */
+	struct task_struct *tsk = __get_cpu_var(ksoftirqd);
+
+	if (tsk && tsk->state != TASK_RUNNING)
+		wake_up_process(tsk);
+}
+]]></programlisting>
+每个ksoftirqd内核线程都运性ksoftirqd函数，该函数实际上执行下列的循环。该循环检查软中断掩码，并在必要时调用do_softirq。如果没有挂起的软中断，函数把当前进程状态置为TASK_INTERRUPTIBLE，随后将在schedule或cond_resched中产生调度。
+<programlisting><![CDATA[
+	while(!kthread_should_stop())
+	{
+		preempt_disable();
+		if (!local_softirq_pending()) {
+			preempt_enable_no_resched();
+			schedule();
+			preempt_disable();
+		}
+
+		__set_current_state(TASK_RUNNING);
+
+		while (local_softirq_pending()) {
+			/* Preempt disable stops cpu going offline.
+			   If already offline, we'll be on wrong CPU:
+			   don't process */
+			if (cpu_is_offline((long)__bind_cpu))
+				goto wait_to_die;
+			do_softirq();
+			preempt_enable_no_resched();
+			cond_resched();
+			preempt_disable();
+		}
+		preempt_enable();
+		set_current_state(TASK_INTERRUPTIBLE);
+	}
+]]></programlisting>
+ksoftirqd解决了软中断长期执行而导致用户空间程序无法执行的现状，do_softirq函数确定哪些软中断是挂起的，并执行它们的函数。如果已经执行的软中断又被激活，do_softirq则唤醒内核线程并终止。内核线程有较低的优先级，因此用户程序就有机会运行；但是，如果机器空闲，挂起的软中断就很快被执行。
+</sect3>
+</sect2>
+<sect2><title>Tasklet</title>
+tasklet是I/O驱动程序中实现可延迟函数的首选方法。它建立在两个叫做HI_SOFTIRQ和TASKLET_SOFTIRQ的软中断之上。几个tasklet可以与同一个软中断相关联，每个tasklet执行自己的函数。两个软中断之间没有真正的区别，只不过do_softirq先执行HI_SOFTIRQ的tasklet，后执行TASKLET_SOFTIRQ的tasklet。
+<para>
+tasklet和高优先级的tasklet分别存放在tasklet_vec和tasklet_hi_vec数组中。二者都包含类型为tasklet_head的NR_CPUS个元素，每个元素都由一个执行tasklet描述符链表的指针组成。tasklet描述符是一个tasklet_struct类型的数据结构：
+<programlisting><![CDATA[
+struct tasklet_head
+{
+	struct tasklet_struct *head;
+	struct tasklet_struct **tail;
+};
+
+static DEFINE_PER_CPU(struct tasklet_head, tasklet_vec);
+static DEFINE_PER_CPU(struct tasklet_head, tasklet_hi_vec);
+]]></programlisting>
+<itemizedlist> 
+	<listitem>next 指向链表中下一个描述符的指针。</listitem>
+	<listitem>state tasklet的状态。</listitem>
+	<listitem>count 锁计数器。</listitem>
+	<listitem>func 执行tasklet函数的指针。</listitem>
+	<listitem>data 由tasklet函数使用的参数。</listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+struct tasklet_struct
+{
+	struct tasklet_struct *next;
+	unsigned long state;
+	atomic_t count;
+	void (*func)(unsigned long);
+	unsigned long data;
+};
+]]></programlisting>
+state当前有两个标志：
+<itemizedlist> 
+	<listitem>TASKLET_STATE_SCHED 该标志被设置时，表示tasklet是挂起的，也意味着tasklet描述符被插入到tasklet_vec和tasklet_hi_vec数组的其中一个链表中。</listitem>
+	<listitem>TASKLET_STATE_RUN 表示tasklet正在被执行；在单处理器系统上不适用这个标志，因为没有必要检查特定的tasklet是否在运行。</listitem>
+</itemizedlist>
+如何使用tasklet呢？首先，分配一个新的tasklet_struct数据结构，并调用tasklet_init初始化它，该函数参数分别为tasklet描述符地址，tasklet函数地址和它的可选整形参数。
+<programlisting><![CDATA[
+void tasklet_init(struct tasklet_struct *t,
+		  void (*func)(unsigned long), unsigned long data)
+{
+	t->next = NULL;
+	t->state = 0;
+	atomic_set(&t->count, 0);
+	t->func = func;
+	t->data = data;
+}
+]]></programlisting>
+调用tasklet_disable_nosync或tasklet_disable可以选择性地禁止tasklet。这两个函数都增加tasklet描述符的count字段，但是后一个函数只有在tasklet函数已经运行的示例结束后才返回。为了重新激活tasklet，调用tasklet_enable。
+</para>
+<para>
+为了激活tasklet，应该根据tasklet需要的优先级，调用tasklet_schedule函数或tasklet_hi_schedule函数。这两个函数非常类似，其中每个都执行下列操作：
+<programlisting><![CDATA[
+static inline void tasklet_schedule(struct tasklet_struct *t)
+{
+	if (!test_and_set_bit(TASKLET_STATE_SCHED, &t->state))
+		__tasklet_schedule(t);
+}
+]]></programlisting>
+tasklet_schedule是对__tasklet_schedule封装，并设置TASKLET_STATE_SCHED标志位。如果已经设置了该位，说明tasklet已被调度，则直接返回。
+<programlisting><![CDATA[
+void __tasklet_schedule(struct tasklet_struct *t)
+{
+	unsigned long flags;
+
+	local_irq_save(flags);
+	t->next = NULL;
+	*__get_cpu_var(tasklet_vec).tail = t;
+	__get_cpu_var(tasklet_vec).tail = &(t->next);
+	raise_softirq_irqoff(TASKLET_SOFTIRQ);
+	local_irq_restore(flags);
+}
+]]></programlisting>
+<itemizedlist> 
+	<listitem>local_irq_save保存IF标志的状态并禁用本地中断。</listitem>
+	<listitem>在tasklet_vec[n]或tasklet_hi_vec[n]指向的链表的起始处增加tasklet描述符(n表示CPU的编号)。</listitem>
+	<listitem>调用raise_softirq_irqoff激活TASKLET_SOFTIRQ或HI_SOFTIRQ类型的软中断。(该函数与raise_softirq函数类似，只是它假设已经禁用了本地中断。)</listitem>
+	<listitem>local_irq_restore恢复IF标志位的状态。</listitem>	
+</itemizedlist>
+<programlisting><![CDATA[
+inline void raise_softirq_irqoff(unsigned int nr)
+{
+	__raise_softirq_irqoff(nr);
+
+	if (!in_interrupt())
+		wakeup_softirqd();
+}
+]]></programlisting>
+最后看一下tasklet如何被执行。软中断函数一旦被激活就由do_softirq函数执行。与HI_SOFTIRQ软中断相关的软中断函数叫做tasklet_hi_action，而与TASKLET_SOFTIRQ相关的函数叫做tasklet_action。这两个函数非常类似，它们都执行下列操作：
+<itemizedlist> 
+	<listitem>禁用本地中断。</listitem>
+	<listitem>获取本地CPU的编号n。</listitem>
+	<listitem>把tasklet_vec[n]或tasklet_hi_vec[n]指向的链表的地址存入局部变量list。</listitem>
+	<listitem>把tasklet_vec[n]或tasklet_hi_vec[n]的值置为NULL，因此，已调度的tasklet描述符的链表被清空。</listitem>
+	<listitem>打开本地中断。</listitem>	
+</itemizedlist>
+接下来对list指向的链表中的每个tasklet描述符：
+<itemizedlist>
+	<listitem>查看count字段，检查tasklet是否被禁止，如果是，就清TASKLET_STATE_SCHED
+。</listitem>
+	<listitem></listitem>
+	<listitem></listitem>
+</itemizedlist>	
+<programlisting><![CDATA[
+static void tasklet_action(struct softirq_action *a)
+{
+	struct tasklet_struct *list;
+
+	local_irq_disable();
+	list = __get_cpu_var(tasklet_vec).head;
+	__get_cpu_var(tasklet_vec).head = NULL;
+	__get_cpu_var(tasklet_vec).tail = &__get_cpu_var(tasklet_vec).head;
+	local_irq_enable();
+
+	while (list) {
+		struct tasklet_struct *t = list;
+
+		list = list->next;
+
+		if (tasklet_trylock(t)) {
+			if (!atomic_read(&t->count)) {
+				if (!test_and_clear_bit(TASKLET_STATE_SCHED, &t->state))
+					BUG();
+				t->func(t->data);
+				tasklet_unlock(t);
+				continue;
+			}
+			tasklet_unlock(t);
+		}
+
+		local_irq_disable();
+		t->next = NULL;
+		*__get_cpu_var(tasklet_vec).tail = t;
+		__get_cpu_var(tasklet_vec).tail = &(t->next);
+		__raise_softirq_irqoff(TASKLET_SOFTIRQ);
+		local_irq_enable();
+	}
+}
+]]></programlisting>
+</para>
+<para>
+</para>
+</sect2>
+</sect1>

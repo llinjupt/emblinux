@@ -1,0 +1,324 @@
+<sect1><title>网络设备驱动</title>
+<sect2><title>MAC和PHY</title>
+<para>
+以太网（Ethernet）是一种计算机局域网组网技术，该技术基于IEEE制定的IEEE802.3标准，它规定了包括物理层的连线、电信号和介质访问层协议的内容。以太网是当前应用最普遍的局域网技术。它很大程度上取代了其他局域网标准，如令牌环、FDDI和ARCNET。历经100M以太网在上世纪末的飞速发展后，目前千兆以太网甚至10G以太网正在国际组织和领导企业的推动下不断拓展应用范围。基于以太网的应用一定时期内是研究开发热点。</para>
+<para>
+<emphasis>Ethernet的接口实质是MAC通过MII总线控制PHY的过程。</emphasis>
+</para>
+<para>
+MAC是Media Access Control的缩写，即媒体访问控制子层协议。该协议位于OSI七层协议中数据链路层的下半部分，主要负责控制与连接物理层的物理介质。在发送数据的时候，MAC协议可以事先判断是否可以发送数据，如果可以发送将给数据加上一些控制信息，最终将数据以及控制信息以规定的格式发送到物理层；在接收数据的时候，MAC协议首先判断输入的信息并是否发生传输错误，如果没有错误，则去掉控制信息发送至LLC层。以太网MAC由IEEE-802.3以太网标准定义。
+</para>
+<para>
+MII即媒体独立接口, “媒体独立”表明在不对MAC硬件重新设计或替换的情况下，任何类型的PHY设备都可以与其兼容并正常工作。包括分别用于发送器和接收器的两条独立信道。每条信道都有自己的数据、时钟和控制信号。
+</para>
+<para>
+MII以4位半字节方式传送数据双向传输，时钟速率25MHz。其工作速率可达100Mb/s。MII管理接口是个双信号接口，一个是时钟信号，另一个是数据信号。通过管理接口，上层能监视和控制PHY。其管理是使用SMI（Serial Management Interface）总线通过读写PHY的寄存器来完成的。PHY里面的部分寄存器是IEEE定义的，这样PHY把自己的目前的状态反映到寄存器里面，MAC通过SMI总线不断的读取PHY的状态寄存器以得知目前PHY的状态，例如连接速度，双工的能力等。当然也可以通过SMI设置PHY的寄存器达到控制的目的，例如流控的打开关闭，自协商模式还是强制模式等。不论是物理连接的MII总线和SMI总线还是PHY的状态寄存器和控制寄存器都是有IEEE的规范的，因此不同公司的MAC和PHY一样可以协调工作。当然为了配合不同公司的PHY的自己特有的一些功能，驱动需要做相应的修改。
+</para>
+<para>
+PHY是物理接口收发器，它实现物理层。包括MII/GMII（介质独立接口）子层、PCS（物理编码子层）、PMA（物理介质附加）子层、PMD（物理介质相关）子层、MDI子层。
+</para>
+<para>
+100BaseTX采用4B/5B编码。PHY在发送数据的时候，收到MAC过来的数据（对PHY来说，没有帧的概念，对它来说，都是数据而不管什么地址，数据还是CRC），每4bit就增加1bit的检错码，然后把并行数据转化为串行流数据，再按照物理层的编码规则把数据编码，再变为模拟信号把数据送出去。收数据时的流程反之。PHY还有个重要的功能就是实现CSMA/CD的部分功能。它可以检测到网络上是否有数据在传送，如果有数据在传送中就等待，一旦检测到网络空闲，再等待一个随机时间后将送数据出去。如果两个碰巧同时送出了数据，那样必将造成冲突，这时候，冲突检测机构可以检测到冲突，然后各等待一个随机的时间重新发送数据。这个随机时间很有讲究的，并不是一个常数，在不同的时刻计算出来的随机时间都是不同的，而且有多重算法来应付出现概率很低的同两台主机之间的第二次冲突。通信速率通过双方协商，协商的结果是两个设备中能同时支持的最大速度和最好的双工模式。这个技术被称为Auto Negotiation或者NWAY。隔离变压器把PHY送出来的差分信号用差模耦合的线圈耦合滤波以增强信号，并且通过电磁场的转换耦合到连接网线的另外一端。RJ-45中1、2是传送数据的，3、6是接收数据的。新的PHY支持AUTO MDI-X功能(也需要隔离变压器支持)。它可以实现RJ-45接口的1、2上的传送信号线和3、6上的接收信号线的功能自动互相交换。
+</para>
+</sect2>
+<sect2><title>MDIO和MII</title>
+<para>
+  MII(Media Independent Interface)即媒体独立接口，它是IEEE-802.3定义的以太网行业标准。MII接口一定会包含两部分:
+<itemizedlist> 
+	<listitem>数据接口：包括分别用于发送器和接收器的两条独立信道。每条信道都有自己的数据、时钟和控制信号。MII数据接口总共需要16个信号。</listitem>
+	<listitem>MAC和PHY之间的管理接口(Management Interface)：管理接口是个双信号线接口，只有两条信号线：一个是时钟信号MDC，另一个是数据信号MDIO。通过管理接口，上层能监视和控制PHY。MII管理接口也称为MDC/MDIO接口，或者简称为MDIO。</listitem>
+</itemizedlist>
+MII接口的类型有很多，常用的有MII、RMII、SMII、SSMII、SSSMII、GMII、RGMII、SGMII、TBI、RTBI、XGMII、XAUI、XLAUI等。我们在这里只讨论MII、RMII、SMII、GMII接口。</para>
+<para>MII 支持10兆和100兆的操作，它要求是25兆的总线时钟，一个接口由14根线组成（没考虑收发时钟），它的支持还是比较灵活的，但是有一个缺点是因为它一个端口用的信号线太多，如果一个8端口的交换机要用到112根线，16端口就要用到224根线，到32端口的话就要用到448 根线，一般按照这个接口做交换机，是不太现实的，所以现代的交换机的制作都会用到其它的一些从MII简化出来的标准，比如RMII、SMII、GMII 等。</para>
+<para>RMII是简化的MII接口，在数据的收发上它比MII接口少了一倍的信号线，所以它一般要求是50兆的总线时钟。RMII一般用在多端口的交换机，它不是每个端口安排收、发两个时钟，而是所有的数据端口公用一个时钟用于所有端口的收发，这里就节省了不少的端口数目。RMII的一个端口要求7 根数据线，比MII少了一倍，所以交换机能够接入多一倍数据的端口。</para>
+<para>SMII是由思科提出的一种媒体接口，它有比RMII更少的信号线数目，S表示串行的意思。因为它只用一根信号线发送数据，一根信号线接收数据，所以在时钟上为了满足100M的需求，它的时钟频率很高， 达到了125兆，采用125兆时钟的目的是因为数据线里面会传送一些控制信息。SMII一个端口仅用4根信号线完成100M信号的传输，比起RMII 差不多又少了一倍的信号线。SMII 在工业界的支持力度是很高的。同理，所有端口的数据收发都公用同一个外部的125M时钟。</para>
+<para>GMII(Gigabit MII) 是千兆网的MII 接口，GMII采用8位接口数据，一个接口由22根线组成（没考虑收发时钟）工作时钟125MHz，因此传输速率可达1000Mbps。同时兼容MII 所规定的10/100 Mbps工作方式。</para>
+</sect2>
+<sect2><title>MII数据接口</title>
+MII数据接口总共需要16个信号线，如图所示：
+<figure><title>MII数据接口接线图</title><graphic fileref="images/mdio/mii.gif"/></figure>
+<itemizedlist> 
+<listitem>TXD[3:0]：数据发送信号，共4根信号线；</listitem>
+<listitem>RXD[3:0]：数据接收信号，共4根信号线；</listitem>
+<listitem>TX_ER(Transmit Error)：发送数据错误提示信号，同步于TX_CLK，高电平有效，表示TX_ER有效期内传输的数据无效。对于10Mbps速率下，TX_ER不起作用；</listitem>
+<listitem>RX_ER(Receive Error)：接收数据错误提示信号，同步于RX_CLK，高电平有效，表示RX_ER有效期内传输的数据无效。对于10Mbps速率下，RX_ER不起作用；</listitem>
+<listitem>TX_EN(Transmit Enable)： 发送使能信号，只有在TX_EN有效期内传的数据才有效；</listitem>
+<listitem>RX_DV(Reveive Data Valid)： 接收数据有效信号，作用类型于发送通道的TX_EN；</listitem>
+<listitem>TX_CLK：发送参考时钟，100Mbps速率下，时钟频率为25MHz，10Mbps速率下，时钟频率为2.5MHz。注意，TX_CLK时钟的方向是从PHY侧指向MAC侧的，因为此时钟是由PHY提供的。</listitem>
+<listitem>RX_CLK：接收数据参考时钟，100Mbps速率下，时钟频率为25MHz，10Mbps速率下，时钟频率为2.5MHz。RX_CLK也是由PHY侧提供的。</listitem>
+<listitem> CRS：Carrier Sense，载波侦测信号，不需要同步于参考时钟，只要有数据传输，CRS就有效，另外，CRS只在半双工模式下有效；</listitem>
+<listitem> COL：Collision Detectd，冲突检测信号，不需要同步于参考时钟，只在半双工模式下有效。 </listitem>
+</itemizedlist>
+记入TX_CLK和RX_CLK，MII接口一共有16根线。MII以4位半字节方式传送数据双向传输，时钟频率25MHz，其工作速率可达100Mb/s。当时钟频率为2.5MHz时，工作在10Mb/s。
+</sect2>
+<sect2><title>RMII数据接口</title>
+RMII即Reduced MII，是MII的简化版，信号线数量由MII的14根减少为7根，其中CLK_REF为外部时钟源。
+<figure><title>RMII数据接口接线图</title><graphic fileref="images/mdio/rmii.gif"/></figure>
+<itemizedlist> 
+	<listitem>TXD[1:0]：数据发送信号线，数据位宽为2，是MII接口的一半；</listitem>
+	<listitem>RXD[1:0]：数据接收信号线，数据位宽为2，是MII接口的一半；</listitem>
+	<listitem>TX_EN(Transmit Enable)：数据发送使能信号，与MII接口中的该信号线功能一样；</listitem>
+	<listitem>RX_ER(Receive Error)：数据接收错误提示信号，与MII接口中的该信号线功能一样；</listitem>
+	<listitem>CLK_REF：是由外部时钟源提供的50MHz参考时钟，收发共用，与MII接口不同(MII接口中的接收时钟和发送时钟是分开的，而且都是由PHY芯片提供给MAC芯片的)。这里需要注意的是，由于数据接收时钟是由外部晶振提供而不是由载波信号提取，所以在PHY层芯片内的数据接收部分需要设计一个FIFO，用来协调两个不同的时钟。</listitem>
+	<listitem>CRS_DV：此信号是由MII接口中的RX_DV和CRS两个信号合并而成。当介质不空闲时，CRS_DV和RE_CLK相异步的方式给出。当CRS比RX_DV早结束时(即载波消失而队列中还有数据要传输时)，就会出现CRS_DV在半位元组的边界25MHz/2.5MHz的频率在0、1之间的来回切换。因此，MAC能够从CRS_DV中精确的恢复出RX_DV和CRS。</listitem>
+</itemizedlist>
+<para>在100Mbps速率时，TX/RX每个时钟周期采样一个数据；在10Mbps速率时，TX/RX每隔10个周期采样一个数据，因而TX/RX数据需要在数据线上保留10个周期，相当于一个数据发送10次。</para>
+<para>当PHY层芯片收到有效的载波信号后，CRS_DV信号变为有效，此时如果FIFO中还没有数据，则它会发送出全0的数据给MAC，然后当FIFO中填入有效的数据帧，数据帧的开头是“101010---”交叉的前导码，当数据中出现“01”的比特时，代表正式数据传输开始，MAC芯片检测到这一变化，从而开始接收数据。</para>
+<para>当外部载波信号消失后，CRS_DV会变为无效，但如果FIFO中还有数据要发送时，CRS_DV在下一周期又会变为有效，然后再无效再有效，知道FIFO中数据发送完为止。</para>
+</sect2>
+<sect2><title>MII管理接口MDIO</title>
+管理接口有两条信号线组成：MDC配置接口时钟，最高速率可达8.3MHz，MDIO是管理数据的输入输出双向接口，数据是与MDC时钟同步的。
+<para>管理配置接口控制PHY的特性。该接口有32个寄存器地址，每个地址16位。其中前16个已经在“IEEE 802.3,2000-22.2.4 Management Functions”中规定了用途，其余的则由各器件厂商自己指定。
+</para>
+<figure><title>MDIO操作时序</title><graphic fileref="images/mdio/mdio_opt.gif"/></figure>
+<itemizedlist> 
+	<listitem>MDIO接口在没有传输数据的空闲(IDLE)状态数据线MDIO处于高阻态1。</listitem>
+	<listitem>MDIO出现一个2bit的开始标识码(01)一个读/写操作开始。 </listitem>
+	<listitem>MDIO出现一个2bit数据来标识是读操作(10)还是写操作(01)。 </listitem>
+	<listitem>MDIO出现一个5bit数据标识PHY的地址。 MDIO出现一个5bitPHY寄存器地址。</listitem>
+	<listitem>MDIO需要2个时钟的访问时间。 MDIO串行读出/写入16bit的寄存器数据。 </listitem>
+	<listitem>MDIO恢复成IDLE状态，同时MDIO进入高阻状态。</listitem>
+</itemizedlist> 
+</sect2>
+<sect2><title>常用单口以太网控制器</title>
+<para>
+大部分不是专门针对以太网网络应用的嵌入式设备设备，比如GPS，监测设备等只需要简单的网络接入功能，也即将信息上传或者下载的功能，此时只需要支持单RJ45口的以太网控制芯片即可，这类产品的价格便宜，接口简单，易于使用。通常开发板所支持的以太网控制器有Davicom的DM9000系列和Cirrus Logic的CS8900系列。
+</para>
+<para>
+对于路由器，交换机，防火墙等这些网络设备通常需要多口的功能强大的交换芯片。这些芯片具有大吞吐量，接口丰富，功能选项众多，缓存大等特点。有些SOC CPU已经将以太网控制器作为片上子系统集成到CPU内部，这进一步提高了数据传输数量和稳定性。这类芯片的厂商主要有Broadcom，Ralink，Marvell等。与此同时这类芯片的体积也相对较大，价格较高。
+</para>
+搭载三星S3C系列CPU的开发板通常会选用DM9000或者DM9000A。这是由于S3C系列针对多媒体设备的开发，而非网络设备，所以它没有提供MII/MDIO等接口。DM9000A是在DM9000基础上进行了部分功能的修改：
+<table><title>DM9000系列功能比较</title>
+<tgroup cols="3">
+<colspec colnum="2" colname="2"/>
+<thead><row><entry>功能</entry><entry>DM9000</entry><entry>DM9000A</entry></row></thead>
+<tbody>
+<row><entry>封装</entry><entry>LQFP 100Pin</entry><entry>LQFP 48Pin</entry></row>
+<row><entry>接口</entry><entry>ISA I/O MII</entry><entry>I/O</entry></row>		
+<row><entry>I/O位宽</entry><entry>8/16/32</entry><entry>8/16</entry></row>
+<row><entry>Auto MDIX</entry><entry>不支持</entry><entry>支持</entry></row>
+<row><entry>10/100M</entry><entry>支持</entry><entry>支持</entry></row>
+<row><entry>SRAM</entry><entry>4K Dword</entry><entry>16K Bytes</entry></row>
+<row><entry>GPIO</entry><entry>4 Pin</entry><entry>不支持</entry></row>
+<row><entry>MDIO</entry><entry>支持</entry><entry>支持</entry></row>
+<row><entry>IP/TCP/UDP校验</entry><entry>不支持</entry><entry>支持</entry></row>
+<row><entry>应用</entry><entry namest="1" nameend="2">VoIP CPE (ATA, IP Phone, Video Phone) IP STB, IPC, Internet Radio</entry></row>
+</tbody>
+</tgroup>
+</table>
+Auto MDIX是指交叉网线和直连网线可以同时支持，如果是直连网线则自动转换。
+<figure><title>DM9000功能图</title><graphic fileref="images/mdio/dm9000.gif"/></figure>
+由于DM9000的管脚多出DM9000A的1倍，所以它同时提供了I/O接口和MII接口。并且提供了四个GPIO管脚，最多32位的数据地址总线。但是由于其开发较早，并没有集成Auto MDIX模块，但是这一功能在很多时候都很有用。另外注意到它们的共同点：
+<itemizedlist> 
+	<listitem>都支持半双工背压(Back pressure)。</listitem>
+	<listitem>都支持双工模式的802.3 流控(Flow ctrl)。</listitem>
+	<listitem>都支持I/O数据传输(ISA)模式。</listitem>	
+	<listitem>都支持唤醒帧(Wakeup frame)。</listitem>
+	<listitem>都支持EEPROM的读写配置。</listitem>
+	<listitem>兼容3.3V和5V电压模式。</listitem>	
+	<listitem>都支持省电模式。</listitem>	
+	<listitem>完全相同的寄存器配置方式。</listitem>		
+</itemizedlist>
+<figure><title>DM9000A功能图</title><graphic fileref="images/mdio/dm9000a.gif"/></figure>
+</sect2>
+<sect2><title>DM9000A简介</title>
+DM9000A 是台湾Davicom公司推出的一款10/100M自适应的以太网控制芯片。其基本特征如下：
+<itemizedlist> 
+<listitem>内嵌16K Bytes的SRAM用于接收发送的FIFO缓存。其中前3K用于数据发送，其余13K用于数据接收。</listitem>
+<listitem>支持8/16bit两种芯片工作模式。</listitem>
+<listitem>通过HP认证的AUTO-Mdix功能。</listitem>
+<listitem>支持TCP/IP加速(IPv4 Checksum Offload)减轻CPU负担，提高数据吞吐量。</listitem>
+<listitem>遵循802.3以太网传输协议，并集成EEPROM接口，实现自动初始化。</listitem>
+</itemizedlist>
+<figure><title>DM9000A接线图</title><graphic fileref="images/mdio/link.gif"/></figure>
+<para>
+S3C6410 SROM控制器（SROMC）支持外部8，16位NOR Flash，PROM，SRAM存储器。而DM9000A就挂载到该控制器总线。该控制器支持6个页，每页高达128M的地址空间。支持字节和半字存取的外部存储器。每个页对应一个外存设备，每个外村又需要一个片选信号。所以当需要访问某个地址时，该地址落在哪个块，就决定了哪个片选信号被使能。这里以DM9000A对应SROMC Bank1为例。
+<programlisting><![CDATA[
+地址范围                    大小     描述
+0x1000_0000 0x17FF_FFFF 128MB SROMC Bank 0
+0x1800_0000 0x1FFF_FFFF 128MB SROMC Bank 1
+0x2000_0000 0x27FF_FFFF 128MB SROMC Bank 2
+0x2800_0000 0x2FFF_FFFF 128MB SROMC Bank 3
+0x3000_0000 0x37FF_FFFF 128MB SROMC Bank 4
+0x3800_0000 0x3FFF_FFFF 128MB SROMC Bank 5
+]]></programlisting>
+<itemizedlist> 
+	<listitem>仔细观察DM9000A接线图，SD0-14与SROM控制器数据总线的低16位DATA0-15相连，所以这里采用16位传输模式。</listitem>
+	<listitem>SROM控制器地址总线只使用了ADDR2，其他地址并没有使用。DM9000A并不使用地址总线来传输地址给CPU，而是通过数据总线。当CMD为低电平时，数据线上放的是需要操作的内部寄存器的地址；当CMD为高电平时，数据向上放的才是真正需要传送的数据。</listitem>
+	<listitem>如果CPU指令中的地址中的ADDR2位为低电平，那么写出的是地址；当CPU指令中的地址是高电平，那么读写的是数据。所以可以借用这里的SROMC Bank1的基地址0x1800_0000作为写内部寄存器地址的地址，而0x18000004作为读写数据的基地址。</listitem>
+	<listitem>总线上的地址译码器会根据指令请求的地址来执行片选，所以当发现0x1800 0000和0x1800 0004落入Bank1时，则使能CSN1片选信号，这实现了对SROM控制器的复用。</listitem>
+	<listitem>无论是读数据还是写数据都需要两个步骤：写DM9000A寄存器的偏移地址到0x1800 0000，然后再读(写)0x1800 0004。</listitem>
+</itemizedlist>
+基于上述理论介绍，这里看一下读写DM9000A寄存器的相关函数。
+<programlisting><![CDATA[
+static u8 ior(board_info_t *db, int reg)
+{
+	writeb(reg, db->io_addr);
+	return readb(db->io_data);
+}
+
+static void iow(board_info_t *db, int reg, int value)
+{
+	writeb(reg, db->io_addr);
+	writeb(value, db->io_data);
+}
+]]></programlisting>
+ior和iow分别对reg进行读和写。它们的第一步总是写内部寄存器的地址到io_addr(0x1800 0000对应的虚拟地址)，接着就是读或者写value到io_data(0x1800 0004对应的虚拟地址)。writeb和readb考虑了字节序的问题。
+</para>
+<para>系统上电时，S3C6410通过总线配置DM9000A内部网络控制寄存器NCR，中断寄存器ISR等，完成DM9000A的初始化。随后它进入数据收发等待状态。当S3C6410向以太网发送数据时，想将数据打包成UDP，TCP等IP数据包，然后通过16bit总线发送到DM9000A的数据发送缓存中，接着将数据长度等信息填充到DM9000A的相应寄存器内，使能发送。
+</para>
+<para>
+当DM9000A接收到外部网络的数据包是，首相检测数据包的合法性，如果帧头标志有错或存在CRC校验失败，则将该数据包丢弃。否则将数据帧缓存到内部的SRAM中，并通过中断标志位通知S3C6410，然后CPU通过读取缓存区接收数据。
+<figure><title>数据收发和配置图</title><graphic fileref="images/mdio/level.gif"/></figure>
+</para>
+</sect2>
+<sect2><title>注册DM9000A设备</title>
+注册设备的过程就是为设备分配资源的过程，同时为驱动的加载做准备。DM9000A的设备定义沿用了DM9000的定义，显然它是通用的。
+<programlisting><![CDATA[
+arch/arm/mach-s3c6400/include/mach/map.h
+#define S3C64XX_PA_DM9000	(0x18000000)
+#define S3C64XX_SZ_DM9000	SZ_1M
+#define S3C64XX_VA_DM9000	S3C_ADDR(0x03b00300)
+
+arch/arm/plat-s3c64xx/devs.c
+#define DM9000_ETH_IRQ_EINT0    IRQ_EINT(7)
+
+static struct resource dm9000_resources_cs1[] = {
+    [0] = {
+        .start  = S3C64XX_VA_DM9000,
+        .end    = S3C64XX_VA_DM9000 + S3C64XX_SZ_DM9000 - 1,
+        .flags  = IORESOURCE_MEM,
+    },
+    [1] = {
+        .start  = (DM9000_ETH_IRQ_EINT0),
+        .end    = (DM9000_ETH_IRQ_EINT0),
+        .flags  = IORESOURCE_IRQ,
+    },
+};
+]]></programlisting>
+<itemizedlist> 
+	<listitem>dm9000_resources_cs1定义了两类资源：外设内存地址和7号中断。</listitem>
+	<listitem>S3C64XX_PA_DM9000是DM9000A所接的SROM控制器对应BANK1的起始物理地址。S3C64XX_VA_DM9000则是映射到的虚拟地址。</listitem>
+	<listitem>DM9000_ETH_IRQ_EINT0定义了DM9000A使用的中断号，这里使用7号中断，它在S3C6410中被保留下来。</listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+static struct dm9000_plat_data dm9000_setup_cs1 = {
+    .flags          = DM9000_PLATF_16BITONLY
+};
+
+struct platform_device s3c_device_dm9000_cs1 = {
+    .name           = "dm9000_con201",
+    .id             = 0,
+    .num_resources  = ARRAY_SIZE(dm9000_resources_cs1),
+    .resource       = dm9000_resources_cs1,
+    .dev            = {
+        .platform_data = &dm9000_setup_cs1,
+    }
+};
+]]></programlisting>
+s3c_device_dm9000_cs1中定义了设备名，它是非常关键的一个参数，因为在驱动注册时，将根据这个名称来查找设备。
+DM9000A的设备通过platform设备注册子系统进行注册。
+<programlisting><![CDATA[
+arch/arm/mach-s3c6410/mach-smdk6410.c
+static struct platform_device *smdk6410_devices[] __initdata = {
+......
+        &s3c_device_dm9000_cs1,
+......
+};
+]]></programlisting>
+在smdk6410_machine_init函数中，将对smdk6410_devices数组中的所有设备进行注册：
+<programlisting><![CDATA[
+platform_add_devices(smdk6410_devices, ARRAY_SIZE(smdk6410_devices));
+]]></programlisting>
+<figure><title>platform设备与通用设备结构关系</title><graphic fileref="images/mdio/regdev.gif"/></figure>
+所有通过platform_add_devices都将调用platform_device_register完成设备的注册，这些被注册的设备总是被挂载到一个名为platform_bus的虚拟总线设备上。这个虚拟设备只有一个名字。而总线类型总是platform_bus_type。
+<programlisting><![CDATA[
+struct device platform_bus = {
+	.bus_id		= "platform",
+};
+
+struct bus_type platform_bus_type = {
+	.name		= "platform",
+	.dev_attrs	= platform_dev_attrs,
+	.match		= platform_match,
+	.uevent		= platform_uevent,
+	.pm		= PLATFORM_PM_OPS_PTR,
+};
+]]></programlisting>
+<figure><title>platform设备注册流程图</title><graphic fileref="images/mdio/regdev_call.gif"/></figure>
+</sect2>
+<sect2><title>注册网卡驱动</title>
+<para>
+Linux操作系统中，根据外围设备的不同，分为三类设备驱动：字符设备驱动(键盘,LCD等)；块设备(如硬盘等)驱动和网络设备驱动(如网卡)。
+<figure><title>DM9000A驱动结构图</title><graphic fileref="images/mdio/regdrv.gif"/></figure>
+<figure><title>DM9000A驱动注册流程图</title><graphic fileref="images/mdio/regdrv_call.gif"/></figure>
+在driver_probe_device函数中将调用驱动总线对应的匹配函数还匹配驱动和设备，显然这里使用的就是驱动名和设备名。
+<programlisting><![CDATA[
+static int platform_match(struct device *dev, struct device_driver *drv)
+{
+	struct platform_device *pdev;
+
+	pdev = container_of(dev, struct platform_device, dev);
+	return (strncmp(pdev->name, drv->name, BUS_ID_SIZE) == 0);
+}
+]]></programlisting>
+一旦匹配，将通过really_probe函数调用真正的驱动探测函数，这里就是dm9000_probe。
+	</para>	
+<sect3><title>DM9000A探测函数</title>
+<para>
+探测函数主要实现硬件以太网控制器的相关环境配置，发现，验证，初始化和注册，并产生一个含私有数据的struct net_device的数据结构：它对应内核对该以太网控制器的抽象。
+</para>
+<sect4><title>配置总线和中断</title>
+由于DM9000A是挂载到SROMC总线上的，而该总线又支持6个页，每个页对应一个外部设备。这里的DM9000A对应Bank1。首先需要配置Bank1的总线宽度，这里需要配置成16bits。
+<programlisting><![CDATA[
+寄存器        地址   读/写        描述                复位值
+SROM_BW  0x70000000   读/写 SROM总线宽度和等待控制 0x0000_000x
+
+SROM_BW      位                   描述                          初始状态
+ByteEnable1 [7] nWBE/nBE(用于UB/LB) 控制，用于存储器Bank1。
+                0 = 不使用UB/LB (XrnWBE[1:0]专门的nWBE[1:0])
+                1 =使用UB/LB (XrnWBE[1:0]专门的nBE[1:0]            0
+WaitEnable1 [6] 等待使能控制，用于存储器Bank1
+                0=WAIT 禁止 1=WAIT 使能                            0
+Reserved    [5]                保留                                0
+DataWidth1  [4] 数据总线宽度控制，用于存储器Bank1
+                  0=8 位 1=16 位                                   0
+]]></programlisting>
+首先将SROM_BW[7:4]设置为0b0001，这相当于置DataWidth1为1，所以这里设置数据总线宽度为16bits。
+<programlisting><![CDATA[
+	tmp = __raw_readl(S3C64XX_SROM_BW);
+	tmp &=~(0xF<<4);
+	tmp |= (1<<4);
+	__raw_writel(tmp, S3C64XX_SROM_BW);
+]]></programlisting>
+接着配置SROM Bank1的页控制寄存器。这与读写所需的时序周期有关。
+<programlisting><![CDATA[
+寄存器        地址    读/写            描述                复位值
+SROM_BC1 0x70000008   读/写     SROM Bank1 控制寄存器     0x000F_0000
+]]></programlisting>
+
+<programlisting><![CDATA[
+	__raw_writel(~(0xFFFFFFFF<<0), S3C64XX_SROM_BC1);
+	__raw_writel((0x0<<28)|(0x4<<24)|(0xd<<16)|(0x1<<12)|(0x4<<8)|(0x6<<4)|(0x0<<0), S3C64XX_SROM_BC1);
+]]></programlisting>
+接下来配置外部中断，由于该pin是复用的，既可以作为GPIO的输入输出用，又可以作为外部中断使用，对应的配置寄存器是S3C64XX_GPNCON。
+<programlisting><![CDATA[
+	/* GPN7 to EINT */
+	writel((readl(S3C64XX_GPNCON) & ~(0x3 <<14)) | (0x2 << 14), S3C64XX_GPNCON);	
+	writel((readl(S3C64XX_GPNPUD) &~(0x3<<14)),S3C64XX_GPNPUD);
+
+	/* EINT7 to high level triggered */
+	writel((readl(S3C64XX_EINT0CON0) & ~(0x7 <<12)) | (0x1 << 12), S3C64XX_EINT0CON0);		
+
+	writel((readl(S3C64XX_EINT0PEND)&~(0x1<<7)),S3C64XX_EINT0PEND);	
+	writel(readl(S3C64XX_EINT0MASK) & ~(0x1 << 7), S3C64XX_EINT0MASK);	
+]]></programlisting>
+最后S3C64XX_EINT0CON0用来配置高电平触发，并清除该中断对应的挂起寄存器PEND。通过S3C64XX_EINT0MASK使能中断7号中断。
+</sect4>
+<sect4><title>生成虚拟网卡</title>
+
+</sect4>
+</sect3>
+</sect2>
+</sect1>
+

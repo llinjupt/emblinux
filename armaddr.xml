@@ -1,0 +1,838 @@
+<sect1><title>ARM寻址方式</title>
+<para>寻址方式是根据指令中给出的地址码字段来实现寻找真实操作数地址的方式。ARM处理器具有9种基本寻址方式。
+<itemizedlist> 
+	<listitem>1.立即数寻址</listitem>
+	<listitem>2.寄存器寻址</listitem>
+	<listitem>3.寄存器间接寻址</listitem>
+	<listitem>4.基址寻址</listitem>
+	<listitem>5.寄存器移位寻址</listitem>	
+	<listitem>6.堆栈寻址</listitem>
+	<listitem>7.多寄存器寻址</listitem>
+	<listitem>8.块拷贝寻址</listitem>
+	<listitem>9.相对寻址</listitem>	
+</itemizedlist>
+</para>
+<sect2><title>立即数寻址</title>
+	<para>
+	<figure><title>立即数寻址示例</title><graphic fileref="images/addr_immed.jpg"/></figure>	
+立即数寻址指令中的操作码字段后面的第一个操作数分即是操作数本身，也就是说，数据就包含在指令当中，取出指令也就取出了可以立即使用的操作数(这样的数称为立即数)。立即寻址指令举例如下： 
+<programlisting><![CDATA[
+mov  r1, #0x12  @将立即数0x12装入r1寄存器 
+subs r1, r1, #1 @r1减1，结果放入r1，并且影响标志位
+]]></programlisting>		
+注意:立即数要以”#”号为前缀。表示进制的前缀如下：
+	<table><title>进制前缀</title>
+	<tgroup cols="2">
+	<thead><row><entry>进制类型</entry><entry>支持的前缀</entry></row></thead>
+	<tbody>
+	<row><entry>十进制</entry><entry>无</entry></row>		
+	<row><entry>十六进制</entry><entry>0x/0X</entry></row>		
+	<row><entry>八进制</entry><entry>0</entry></row>		
+	<row><entry>二进制</entry><entry>0b/0B</entry></row>		
+	</tbody>
+	</tgroup>
+	</table>
+	</para>	
+</sect2>
+<sect2><title>寄存器寻址</title>
+	<para>
+	<figure><title>寄存器寻址示例</title><graphic fileref="images/addr_register.jpg"/></figure>		
+操作数的值在寄存器中，指令中的地址码字段指出的是寄存器编号，指令执行时直接取出寄存器值来操作。寄存器寻址指令举例如下： 
+<programlisting><![CDATA[
+mov r1, r2      @将r2的值存入r1
+sub r0, r1, r2  @将r1的值减去r2的值，结果保存到r0 
+]]></programlisting>	
+	</para>	
+</sect2>
+<sect2><title>寄存器间接寻址</title>
+	<para>
+	<figure><title>寄存器间接寻址示例</title><graphic fileref="images/addr_inimmed.jpg"/></figure>		
+寄存器间接寻址指令中的地址码给出的是一个通用寄存器的编号，所需的操作数保存在寄存器指定地址的存储单元中，即寄存器为操作数的地址指针。寄存器间接寻址指令举例如下： 
+<programlisting><![CDATA[
+ldr	r1,[r2]	@将r2指向的存储单元的数据读出保存在r1中 
+str r1,[r2] @将r1的内容保存到r2指向的存储单
+]]></programlisting>
+	</para>		
+</sect2>
+<sect2><title>基址寻址</title>
+	<para>
+	<figure><title>基址寻址示例</title><graphic fileref="images/addr_base.jpg"/></figure>		
+基址寻址是对寄存器间接寻址的扩展，它将基址寄存器的内容与指令中给出的偏移量相加，形成操作数的有效地址。基址寻址用于访问基址附近的存储单元，常用于查表、数组操作、功能部件寄存器访问等。基址寻址指令举例如下： 
+<programlisting><![CDATA[
+ldr	r1,[r2, #0x08]	  @读取r2+0x08地址上的存储单元的内容，放入r1。
+]]></programlisting>
+<programlisting><![CDATA[
+/* 前索引寻址 */
+ldr	r1,[r2, #0x08]	  @r1 <- [r2 + 0x08]
+ldr	r1,[r2, #0x08]!	  @r1 <- [r2 + 0x08], r2 <- r2 + 0x08
+
+/* 后索引寻址 */
+ldr r1, [r2], #0x08    @r1 <- r2, r2 <- r2 + 0x08
+]]></programlisting>
+基址寻址根据数据传送和基地址的变动顺序又分为两类：
+<itemizedlist> 
+	<listitem>前索引寻址是将基址与偏移量相加作为传送数据的地址，传送数据后自动将数据的地址传送给基址寄存器。</listitem>
+	<listitem>后索引寻址是将基址作为传送数据的地址，传送数据后自动将基址的内容与偏移量相加传送给基址寄存器。</listitem>
+</itemizedlist> 
+	</para>		
+</sect2>
+<sect2><title>寄存器移位寻址</title>
+	<para>
+	<figure><title>寄存器移位寻址示例</title><graphic fileref="images/addr_offset.jpg"/></figure>		
+寄存器移位寻址是ARM指令集特有的寻址方式。当第2个操作数是寄存器移位方式时，第2个寄存器操作数在与第1个操作数结合之前，选择进行移位操作。寄存器移位寻址指令举例如下：
+<programlisting><![CDATA[
+mov	 r1, r2, lsl #r0   ;r2的值左移r0位，结果放入r1，即是r1 = r2 * 8
+mov	 r1, r2, lsl #4    ;这里的r2的值左移4位，结果放入r1
+]]></programlisting>
+实际编译过程中被转化为移位指令：
+<programlisting><![CDATA[
+lsl	r1, r2, r0
+lsl	r1, r2, #4
+]]></programlisting>
+与上对应，不同的移位指令将对应不同的寄存器移位寻址方式：
+<itemizedlist>
+	<listitem>lsl逻辑左移操作：可完成对通用寄存器中的内容进行逻辑左移操作，按操作数所指定的数量向左移位，低位用零来填充。其中，操作数可以是通用寄存器，也可以是立即数。</listitem>
+	<listitem>lsr逻辑右移操作：可完成对通用寄存器中的内容进行右移操作，按操作数所指定的数量向右移位，左端用零来填充。其中，操作数可以是通用寄存器，也可以是立即数</listitem>		
+	<listitem>asr算术右移操作：可完成对通用寄存器中的内容进行右移操作，按操作数所指定的数量向右移位，左端用第31位的值来填充。其中，操作数可以是通用寄存器，也可以是立即数。</listitem>
+	<listitem>ror循环右移操作：可完成对通用寄存器中的内容进行循环右移操作，按操作数所指定的数量向右循环移位，左端用右端移出的位来填充。其中，操作数可以是通用寄存器，也可以是立即数。</listitem>
+	<listitem>rrx带扩展的循环右移操作：可完成对通用寄存器中的内容进行带扩展的循环右移操作，向右循环移1位，左端用进位标志位C来填充。
+</listitem>
+</itemizedlist>
+目前ARM支持的移位指令和它们的区别如下图：
+	<figure><title>ARM移位运算</title><graphic fileref="images/arm_offset.jpg"/></figure>		
+	</para>
+</sect2>
+<sect2><title>堆栈寻址</title>
+	<para>
+在2.3. 数据栈的使用中介绍了四种堆栈类型：
+<itemizedlist>
+	<listitem>满递增：堆栈向上增长，堆栈指针指向内含有效数据项的最高地址。指令如ldmfa，stmfa等；</listitem>
+	<listitem>空递增：堆栈向上增长，堆栈指针指向堆栈上的第一个空位置。指令如ldmea、stmea等； </listitem>
+	<listitem>满递减：堆栈向下增长，堆栈指针指向内含有效数据项的最低地址。指令如ldmfd、stmfd等；</listitem>
+	<listitem>空递减：堆栈向下增长，堆栈指针指向堆栈下的第一个空位置。指令如ldmed、stmed等。 </listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+stmfd sp!, {r1-r7, lr} @将r1-r7， lr入栈, 满递减堆栈
+ldmfd sp! ,{r1-r7, pc} @数据出栈，放入r1-r7，pc寄存器，满递减堆栈
+]]></programlisting>
+sp即约定的r13寄存器，它总是指向栈顶地址，或者栈顶的下一地址。!号使数据出入栈后，sp自动调整到栈顶。
+	</para>
+</sect2>
+<sect2><title>多寄存器寻址</title>
+多寄存器寻址一次可传送几个寄存器值，允许一条指令传送16个寄存器的任何子集或所有寄存器。多寄存器寻址指令举例如下：
+<programlisting><![CDATA[
+ldmia	r1, {r2-r4, r6}   @将r1指向的单元中的数据读出到r2-r4、r6中 
+]]></programlisting>
+注意寄存器的编号连续和不连续的情况。类似的指令还有ldmib，ldmda和ldmdb。
+<figure><title>ldmia指令示例</title><graphic fileref="images/addr_multi.jpg"/></figure>		
+</sect2>
+<sect2><title>块拷贝寻址</title>
+	<para>
+块拷贝是将寄存器内容复制到基址寄存器的地址所指示的存储器中,需要注意的是在存储第一个值之后或之前存储器地址是增加还是减少.增值类型如下:
+<itemizedlist>
+	<listitem>IA：每次传送后,地址加4</listitem>
+	<listitem>IB：每次传送前,地址加4</listitem>
+	<listitem>DA：每次传送后,地址减4</listitem>
+	<listitem>DB：每次传送前,地址减4</listitem>
+</itemizedlist>
+其中I指Increment；A指After；D指Decrement；B指Before。
+<programlisting><![CDATA[
+stmia	r0!, {r1-r7}  @将r1～r7的数据保存到存储器中,存储指针在保存第一个值之后增加，增长方向为向上增长。
+stmib	r0!, {r1-r7}  @将r1～r7的数据保存到存储器中,存储指针在保存第一个值之前增加，增长方向为向上增长。 
+stmda	r0!, {r1-r7}  @将R1～R7的数据保存到存储器中,存储指针在保存第一个值之后增加, 增长方向为向下增长。
+stmdb	r0!, {r1-r7}  @将r1～r7的数据保存到存储器中,存储指针在保存第一个值之前增加，增长方向为向下增长。
+]]></programlisting>
+</para>
+</sect2>
+<sect2><title>相对寻址</title>
+	<para>
+相对寻址是基址寻址的一种变通。由程序计数器pc提供基准地址，指令中的地址码字段作为偏移量，两者相加后得到的地址即为操作数的有效地址。通常的adr伪指令中的操作数就是相对于当前pc的值。相对寻址指令举例如下：
+<programlisting><![CDATA[
+.section .data
+msg: .asciz "hello"
+
+.section .text
+.align 2
+.global _start
+_start:
+ mov r0, #10
+ ......
+ adr r0, msg
+]]></programlisting>
+adr r0, msg对应的反汇编结果为sub r0, pc, #8。
+</para>
+</sect2>
+总结：寄存器间接寻址和基址寻址通常用在ldr/str指令中，用来实现内存和寄存器间的数据搬移。堆栈寻址中的ldmfd/ldmed/stmfd/stm
+ed指令实现寄存器和数据栈的数据交互。多寄存器寻址实际上就是块拷贝寻址的反操作。
+</sect1>
+
+<sect1><title>批量加载和存储指令实践</title>
+批量加载和存储指令共有16个，其中针对堆栈和通常内存数据传送的指令各8个。下面将使用一个汇编程序作为实例，来查看它们的作用。
+<sect2><title>测试源码</title>
+为了分析断点的方便，自动加上了行号：
+	<para>
+<programlisting><![CDATA[
+1  .section .data
+2  array_s: /* 定义数组，用来测试内存数据传送指令 */
+3   .int 100, 200, 300, 400, 500, 600
+4  array_e:
+5  /* 定义宏指令add1，为了测试修改寄存器，以查看出栈/加载后的变化 */
+6  .macro add1
+7   add r0, r0, #1
+8   add r1, r1, #1
+9   add r2, r2, #1
+10  add r3, r3, #1
+11 .endm
+12 /* 代码段，4(2^2)字节对齐 */
+13 .section .text
+14 .align 2
+15 .global _start
+16 _start:
+   /* 首先将r0-r3的寄存器赋值为10-13 */
+17  mov r0, #10
+18  mov r1, #11
+19  mov r2, #12
+20  mov r3, #13
+21 /* 测试 */
+22  stmfd sp!, {r0-r3}
+23  add1
+24  ldmfd sp!, {r0-r3}
+25 
+26  stmfa sp!, {r0-r3}
+27  add1
+28  ldmfa sp!, {r0-r3}
+29 
+30  stmed sp!, {r0-r3}
+31  add1
+32  ldmed sp!, {r0-r3}
+33 
+34  stmea sp!, {r0-r3}
+35  add1
+36  ldmea sp!, {r0-r3}
+37 
+38  ldr r4, =array_s
+39  ldmib r4, {r0-r3}
+40  add1
+41  stmib r4, {r0-r3}
+42 
+43  ldmia r4, {r0-r3}
+44  add1
+45  stmia r4, {r0-r3}
+46 
+47  ldr r4, =array_e-4
+48  ldmdb r4, {r0-r3}
+49  add1
+50  stmdb r4, {r0-r3}
+51 
+52  ldmda r4, {r0-r3}
+53  add1
+54  stmda r4, {r0-r3}
+55 
+56  mov r0, #0
+57  mov r7, #1
+58  svc 0x00000000
+]]></programlisting>
+为了通过gdb进行调试以查看寄存器和堆栈的变化，程序的编译命令如下：
+<programlisting><![CDATA[
+arm-linux-as -o raw.o raw.S -g
+arm-linux-ld -o raw raw.o
+]]></programlisting>
+	</para>
+</sect2>
+<sect2><title>stmfd和ldmfd</title>
+	<para>
+stmfd和ldmfd分别是对满递减堆栈进行操作。首先设置断点到源码的22行：
+<programlisting><![CDATA[
+(gdb) list
+......
+22       stmfd sp!, {r0-r3}
+23       add1
+24       ldmfd sp!, {r0-r3}
+25
+26       stmfa sp!, {r0-r3}
+27       add1
+28       ldmfa sp!, {r0-r3}
+29
+30       stmed sp!, {r0-r3}
+(gdb) b 22
+Breakpoint 1 at 0x8084: file raw.S, line 22.
+]]></programlisting>
+然后使用run/r指令运行到22行指令前的那条指令，并停留在22行，此时可以看到r0-r3的值分别为10-13。另外注意到堆栈的栈顶地址为0xbe8b2e90(sp/r13)。
+<programlisting><![CDATA[
+(gdb) r
+Starting program: /tmp/raw 
+
+Breakpoint 1, _start () at raw.S:22
+22       stmfd sp!, {r0-r3}
+(gdb) info reg
+r0             0xa      10
+r1             0xb      11
+r2             0xc      12
+r3             0xd      13
+r4             0x0      0
+......
+sp             0xbebe2e90       0xbebe2e90
+lr             0x0      0
+pc             0x8084   0x8084 <_start+16>
+fps            0x1001000        16781312
+cpsr           0x10     16
+]]></programlisting>
+接下来使用next/n指令进行单步调试，当执行过stmfd sp!, {r0-r3}这条指令后，可以看到sp的值变为了0xbe8b2e80，显然它比原来的栈顶值0xbe8b2e90小了16个字节，所以是递减的，然后再看此时堆栈中的数据，显然0xbe8b2e80地址处存放的是10，并且先入栈的是r3(值为13)。另外0xbe8b2e90并没有存放当前的入栈数据，而是向下跳了4个字节，所以是满堆栈。stmfd指令据将最后的参数先入栈。
+<programlisting><![CDATA[
+(gdb) n       
+23       add1
+(gdb) info reg
+r0             0xa      10
+r1             0xb      11
+r2             0xc      12
+r3             0xd      13
+r4             0x0      0
+......
+sp             0xbebe2e80       0xbebe2e80
+lr             0x0      0
+pc             0x8088   0x8088 <_start+20>
+fps            0x1001000        16781312
+cpsr           0x10     16
+(gdb) x/4 $sp
+0xbebe2e80:     10      11      12      13
+]]></programlisting>
+整个入栈入栈过程如下图所示：
+<figure><title>stmfd满递减入栈</title><graphic fileref="images/arm_stmfd.jpg"/></figure>
+接下来的将执行宏指令add1，此时r0-r3中的值将分别加1，此时sp的值不变。
+<programlisting><![CDATA[
+(gdb) n
+24       ldmfd sp!, {r0-r3}
+(gdb) info reg
+r0             0xb      11
+r1             0xc      12
+r2             0xd      13
+r3             0xe      14
+......
+sp             0xbebe2e80       0xbebe2e80
+lr             0x0      0
+pc             0x8098   0x8098 <_start+36>
+fps            0x1001000        16781312
+cpsr           0x10     16
+]]></programlisting>
+紧接着执行ldmfd sp!, {r0-r3}指令，并查看sp发现值为0xbe8b2e90，也即进行了递增操作，另外出栈的16个字节分别存入r0-r13，此时它们又变回了原来的值。并且先出栈的值10被赋值给r0，ldmfd指令将取出的值根据参数的先后放入寄存器。
+<programlisting><![CDATA[
+(gdb) n
+_start () at raw.S:26
+26       stmfa sp!, {r0-r3}
+(gdb) info reg
+r0             0xa      10
+r1             0xb      11
+r2             0xc      12
+r3             0xd      13
+r4             0x0      0
+......
+sp             0xbebe2e90       0xbebe2e90
+lr             0x0      0
+pc             0x809c   0x809c <_start+40>
+fps            0x1001000        16781312
+cpsr           0x10     16
+]]></programlisting>
+<figure><title>ldmfd满递减出栈</title><graphic fileref="images/arm_ldmfd.jpg"/></figure>
+</para>
+</sect2>
+<sect2><title>stmfa和ldmfa</title>
+	<para>
+对于满递增堆栈来说，堆栈的增长方向是向高地址方向的。继续单步执行，stmfa指令将从寄存器r0-r3压入堆栈：
+<programlisting><![CDATA[
+(gdb) n 
+_start () at raw.S:27
+27       add1
+(gdb) info reg
+r0             0xa      10
+r1             0xb      11
+r2             0xc      12
+r3             0xd      13
+r4             0x0      0
+......
+sp             0xbebe2ea0       0xbebe2ea0
+lr             0x0      0
+pc             0x80a0   0x80a0 <_start+44>
+fps            0x1001000        16781312
+cpsr           0x10     16
+(gdb) x/4 $sp-12
+0xbebe2e94:     10      11      12      13
+]]></programlisting>
+注意到此时栈顶指针sp的值为0xbe8b2ea0，它大于原来的值0xbe8b2e90，说明向高地址增长，也即递增。由于x指令总是向高地址取值，所以为了看到压入堆栈中的低地址值，必须从$sp-12地址0xbe8b2e94查看，可以看到压入的值10-13，并且r0先入栈。由于第一个入栈地址0xbe8b2e94是0xbe8b2e90向上偏移地址，所以是满栈。
+<figure><title>stmfa满递增入栈</title><graphic fileref="images/arm_stmfa.jpg"/></figure>
+相应的出栈指令是ldmfa，不过要以参数顺序逆序的方式将出栈的值放入寄存器。继续单步操作，首先是add1宏指令以便与出栈值进行对照，紧接着就是ldmfa sp!, {r0-r3}指令：
+<programlisting><![CDATA[
+(gdb) n
+28       ldmfa sp!, {r0-r3}
+(gdb) info reg
+r0             0xb      11
+r1             0xc      12
+r2             0xd      13
+r3             0xe      14
+r4             0x0      0
+......
+sp             0xbebe2ea0       0xbebe2ea0
+lr             0x0      0
+pc             0x80b0   0x80b0 <_start+60>
+fps            0x1001000        16781312
+cpsr           0x10     16
+(gdb) n
+_start () at raw.S:30
+30       stmed sp!, {r0-r3}
+(gdb) info reg
+r0             0xa      10
+r1             0xb      11
+r2             0xc      12
+r3             0xd      13
+r4             0x0      0
+......
+sp             0xbebe2e90       0xbebe2e90
+lr             0x0      0
+pc             0x80b4   0x80b4 <_start+64>
+fps            0x1001000        16781312
+cpsr           0x10     16
+]]></programlisting>
+可以看到在执行完ldmfa sp!, {r0-r3}指令后，r0-r3寄存器的值变回了以前。
+<figure><title>ldmfa满递增出栈</title><graphic fileref="images/arm_ldmfa.jpg"/></figure>
+	</para>
+	<para>
+	</para>
+</sect2>
+<sect2><title>stmed和ldmed</title>
+	<para>
+空递减堆栈与满递减堆栈的区别在于对当前栈顶的使用，一个是认为让是空的，可以从该地址存储，一个认为它是满的必须从下一个地址开始，通过实例来查看这种差别：	
+<programlisting><![CDATA[
+(gdb) n
+_start () at raw.S:31
+31       add1
+(gdb) info reg
+r0             0xa      10
+r1             0xb      11
+r2             0xc      12
+r3             0xd      13
+r4             0x0      0
+......
+sp             0xbebe2e80       0xbebe2e80
+lr             0x0      0
+pc             0x80b8   0x80b8 <_start+68>
+fps            0x1001000        16781312
+cpsr           0x10     16
+(gdb) x/5 $sp
+0xbebe2e80:     10      10      11      12
+0xbebe2e90:     13
+]]></programlisting>	
+在执行过stmed sp!, {r0-r3}指令后，可以清楚地看到此时栈顶地址为0xbebe2e80，也即向低地址方向，也即递减，另一个值得注意的地方是直接使用x/5 $sp来输出5个元素，这样才可以看到0xbebe2e90地址处的值为13，也即寄存器r3的值。
+<figure><title>stmed空递减入栈</title><graphic fileref="images/arm_stmed.jpg"/></figure>
+接着继续执行add1宏指令和ldmed sp!, {r0-r3}：
+<programlisting><![CDATA[
+(gdb) n
+32       ldmed sp!, {r0-r3}
+(gdb) info reg
+r0             0xb      11
+r1             0xc      12
+r2             0xd      13
+r3             0xe      14
+r4             0x0      0
+......
+sp             0xbebe2e80       0xbebe2e80
+lr             0x0      0
+pc             0x80c8   0x80c8 <_start+84>
+fps            0x1001000        16781312
+cpsr           0x10     16
+(gdb) n
+_start () at raw.S:34
+34       stmea sp!, {r0-r3}
+(gdb) info reg
+r0             0xa      10
+r1             0xb      11
+r2             0xc      12
+r3             0xd      13
+r4             0x0      0
+......
+sp             0xbebe2e90       0xbebe2e90
+lr             0x0      0
+pc             0x80cc   0x80cc <_start+88>
+fps            0x1001000        16781312
+cpsr           0x10     16
+]]></programlisting>
+注意到sp地址的变化，以及ro-r3寄存器值的变化，ldmed是stmed的反操作。
+<figure><title>ldmed空递减出栈</title><graphic fileref="images/arm_ldmed.jpg"/></figure>
+	</para>
+</sect2>
+<sect2><title>stmea和ldmea</title>
+	<para>
+这里不再详细分析，它们是空递增堆栈。stmea的运行结果如下：
+<programlisting><![CDATA[
+(gdb) n
+_start () at raw.S:35
+35       add1
+(gdb) info reg
+r0             0xa      10
+r1             0xb      11
+r2             0xc      12
+r3             0xd      13
+r4             0x0      0
+......
+sp             0xbebe2ea0       0xbebe2ea0
+lr             0x0      0
+pc             0x80d0   0x80d0 <_start+92>
+fps            0x1001000        16781312
+cpsr           0x10     16
+]]></programlisting>
+<figure><title>stmea空递增出栈</title><graphic fileref="images/arm_stmea.jpg"/></figure>
+ldmea的运行结果如下：
+<programlisting><![CDATA[
+(gdb) n
+36       ldmea sp!, {r0-r3}
+(gdb) info reg
+r0             0xb      11
+r1             0xc      12
+r2             0xd      13
+r3             0xe      14
+r4             0x0      0
+......
+sp             0xbebe2ea0       0xbebe2ea0
+lr             0x0      0
+pc             0x80e0   0x80e0 <_start+108>
+fps            0x1001000        16781312
+cpsr           0x10     16
+(gdb) n
+_start () at raw.S:38
+38       ldr r4, =array_s
+(gdb) info reg
+r0             0xa      10
+r1             0xb      11
+r2             0xc      12
+r3             0xd      13
+r4             0x0      0
+......
+sp             0xbebe2e90       0xbebe2e90
+lr             0x0      0
+pc             0x80e4   0x80e4 <_start+112>
+fps            0x1001000        16781312
+cpsr           0x10     16
+]]></programlisting>
+<figure><title>ldmea空递增入栈</title><graphic fileref="images/arm_ldmea.jpg"/></figure>
+</para>
+</sect2>
+<sect2><title>ldmib和stmib</title>
+	<para>
+一个既定的事实是目标寄存器可能不是sp，而是其它的寄存器，而其他的寄存器可以被安排地址，而堆栈地址却是系统装载时确定的。可以通过这种方式来与特定的内存地址批量交换信息。为了测试这些指令的功能，首先使用加载指令来将事先定义好的数据装入r0-r3寄存器：
+<programlisting><![CDATA[
+(gdb) n
+39       ldmib r4, {r0-r3}
+(gdb) info reg
+r0             0xa      10
+r1             0xb      11
+r2             0xc      12
+r3             0xd      13
+r4             0x10160  65888
+......
+sp             0xbebe2e90       0xbebe2e90
+lr             0x0      0
+pc             0x80e8   0x80e8 <_start+116>
+fps            0x1001000        16781312
+cpsr           0x10     16
+]]></programlisting>
+注意到r4寄存器地址的变化，它被装入了数组的开始地址array_s，也即0x10160。接下来的ldmib r4, {r0-r3}指令将r4的地址增加4，然后从r4为基地址的地方拷贝4字节数据到r0，。执行结果如下：
+<programlisting><![CDATA[
+(gdb) n
+40       add1
+(gdb) info reg       
+r0             0xc8     200
+r1             0x12c    300
+r2             0x190    400
+r3             0x1f4    500
+r4             0x10160  65888
+......
+sp             0xbebe2e90       0xbebe2e90
+lr             0x0      0
+pc             0x80ec   0x80ec <_start+120>
+fps            0x1001000        16781312
+cpsr           0x10     16
+]]></programlisting>
+注意到这里的r0-r3的值是200到500，而不是100到400，这就是地址先增加再拷贝的结果。另外注意到r4的地址并没有自动变化，这是因为指令中没有“!”号。如果指令改为ldmib r4!, {r0-r3}，那么r4的值将为增加后的值，也即0x10160 + 4 * 0x04 = 0x10170。
+<figure><title>ldmib先加载入</title><graphic fileref="images/arm_ldmib.jpg"/></figure>
+接下来为了比较寄存器导出前和导出后的值的区别会首先使用宏指令add1对r0-r3分别加1，然后使用指令stmib r4, {r0-r3}将r0-r3的数据写回数组中。
+<programlisting><![CDATA[
+(gdb) n
+41       stmib r4, {r0-r3}
+(gdb) info reg
+r0             0xc9     201
+r1             0x12d    301
+r2             0x191    401
+r3             0x1f5    501
+r4             0x10160  65888
+......
+sp             0xbebe2e90       0xbebe2e90
+lr             0x0      0
+pc             0x80fc   0x80fc <_start+136>
+fps            0x1001000        16781312
+cpsr           0x10     16
+(gdb) n
+43       ldmia r4, {r0-r3}
+(gdb) info  reg
+r0             0xc9     201
+r1             0x12d    301
+r2             0x191    401
+r3             0x1f5    501
+r4             0x10160  65888
+......
+sp             0xbebe2e90       0xbebe2e90
+lr             0x0      0
+pc             0x8100   0x8100 <_start+140>
+fps            0x1001000        16781312
+cpsr           0x10     16
+(gdb) x/6 $r4
+0x10160 <array_s>:      100     201     301     401
+0x10170 <array_s+16>:   501     600
+]]></programlisting>
+可以看出此时数组中的200-500已经被分别加1，这是寄存器写回的结果。很显然stmib首先增加r4的地址，使用与参数顺序依次将数据写入寄存器。
+<figure><title>stmib先加导出</title><graphic fileref="images/arm_stmib.jpg"/></figure>
+	</para>
+</sect2>
+
+<sect2><title>ldmia和stmia</title>
+	<para>
+接下来看先增后加的ldmia指令结果：
+<programlisting><![CDATA[
+(gdb) n
+44       add1
+(gdb) info reg
+r0             0x64     100
+r1             0xc9     201
+r2             0x12d    301
+r3             0x191    401
+r4             0x10160  65888
+......
+sp             0xbebe2e90       0xbebe2e90
+lr             0x0      0
+pc             0x8104   0x8104 <_start+144>
+fps            0x1001000        16781312
+cpsr           0x10     16
+]]></programlisting>
+可以看到r0-r4的值是直接从array_s的开始复制过来的，而不是从array_s+1开始的，另外注意到r4的最终值没有变化，因为没有“!”号。
+<figure><title>ldmia后加递增导入</title><graphic fileref="images/arm_ldmia.jpg"/></figure>
+记下来看stmia的结果，它进行导出的动作：
+<programlisting><![CDATA[
+(gdb) n
+45       stmia r4, {r0-r3}
+(gdb) info reg
+r0             0x65     101
+r1             0xca     202
+r2             0x12e    302
+r3             0x192    402
+r4             0x10160  65888
+......
+sp             0xbebe2e90       0xbebe2e90
+lr             0x0      0
+pc             0x8114   0x8114 <_start+160>
+fps            0x1001000        16781312
+cpsr           0x10     16
+(gdb) n
+47       ldr r4, =array_e
+(gdb) info reg
+r0             0x65     101
+r1             0xca     202
+r2             0x12e    302
+r3             0x192    402
+r4             0x10160  65888
+......
+sp             0xbebe2e90       0xbebe2e90
+lr             0x0      0
+pc             0x8118   0x8118 <_start+164>
+fps            0x1001000        16781312
+cpsr           0x10     16
+(gdb) x/6 $r4
+0x10160 <array_s>:      101     202     302     402
+0x10170 <array_s+16>:   501     600
+]]></programlisting>
+首先将r0-r3分别加1，然后将它们导出到数组array_s中，可以看到此时array_s的第一个元素分别变成了r0-r3的值。
+<figure><title>stmia后加递增导出</title><graphic fileref="images/arm_stmia.jpg"/></figure>
+	</para>
+</sect2>
+<sect2><title>ldmdb和stmdb</title>
+<para>
+ldmdb和stmdb与ldmib和stmib是对应的，它们的区别在于方向增长的不同，它们向低地址变化。所以为了测试它们的作用，必须将r4的地址通过指令ldr r4, =array_e-4调整为数组的最后一个元素的地址。
+<programlisting><![CDATA[
+(gdb) n
+47       ldr r4, =array_e - 4
+(gdb) n
+48       ldmdb r4, {r0-r3}
+(gdb) info reg
+r0             0x65     101
+r1             0xca     202
+r2             0x12e    302
+r3             0x192    402
+r4             0x10174  65908
+......
+sp             0xbebe2e90       0xbebe2e90
+lr             0x0      0
+pc             0x811c   0x811c <_start+168>
+fps            0x1001000        16781312
+cpsr           0x10     16
+]]></programlisting>
+
+注意到执行ldr r4, =array_e - 4后r4的值为0x10174，也即数组最后一个元素的地址。接着观察ldmdb r4, {r0-r3}执行后的结果，它尝试从数组中取出元素，但是是从高地址向地址开始：
+<programlisting><![CDATA[
+(gdb) n
+49       add1
+(gdb) info reg
+r0             0xca     202
+r1             0x12e    302
+r2             0x192    402
+r3             0x1f5    501
+r4             0x10174  65908
+......
+sp             0xbebe2e90       0xbebe2e90
+lr             0x0      0
+pc             0x8120   0x8120 <_start+172>
+fps            0x1001000        16781312
+cpsr           0x10     16
+(gdb) x/6 $r4
+0x10160 <array_s>:      101     202     302     402
+0x10170 <array_s+16>:   501     600
+]]></programlisting>	
+可以惊奇的看到r0-r3的值分别变为了202-501，显然赋值的顺序与参数顺序相反，否则r0应该是501。
+<figure><title>ldmdb先加递减导入</title><graphic fileref="images/arm_ldmdb.jpg"/></figure>
+<programlisting><![CDATA[
+(gdb) n
+50       stmdb r4, {r0-r3}
+(gdb) info reg
+r0             0xcb     203
+r1             0x12f    303
+r2             0x193    403
+r3             0x1f6    502
+r4             0x10174  65908
+......
+sp             0xbebe2e90       0xbebe2e90
+lr             0x0      0
+pc             0x8130   0x8130 <_start+188>
+fps            0x1001000        16781312
+cpsr           0x10     16
+(gdb) n
+52       ldmda r4, {r0-r3}
+(gdb) info reg
+r0             0xcb     203
+r1             0x12f    303
+r2             0x193    403
+r3             0x1f6    502
+r4             0x10174  65908
+......
+sp             0xbebe2e90       0xbebe2e90
+lr             0x0      0
+pc             0x8134   0x8134 <_start+192>
+fps            0x1001000        16781312
+cpsr           0x10     16
+(gdb) x/6 $r4-20
+0x10160 <array_s>:      101     203     303     403
+0x10170 <array_s+16>:   502     600
+]]></programlisting>	
+接下来运行加1宏指令，并调用stmdb r4, {r0-r3}指令，stmdb将r0-r3中的值放入数组中。
+<figure><title>stmdb先加递减导出</title><graphic fileref="images/arm_stmdb.jpg"/></figure>
+</para>
+</sect2>
+<sect2><title>ldmda和stmda</title>
+<para>
+这里直接给出执行的结果，和对应的内存寄存器值的变化图。
+<programlisting><![CDATA[
+(gdb) n
+53       add1
+(gdb) info reg  
+r0             0x12f    303
+r1             0x193    403
+r2             0x1f6    502
+r3             0x258    600
+r4             0x10174  65908
+......
+sp             0xbebe2e90       0xbebe2e90
+lr             0x0      0
+pc             0x8138   0x8138 <_start+196>
+fps            0x1001000        16781312
+cpsr           0x10     16
+]]></programlisting>
+ldmda r4, {r0-r3}从0x10174地址开始赋值到寄存器r3-r0，所以是逆序的。
+<figure><title>ldmda后加递减导入</title><graphic fileref="images/arm_ldmda.jpg"/></figure>
+<programlisting><![CDATA[
+(gdb) n
+54       stmda r4, {r0-r3}
+(gdb) info reg                                   
+r0             0x130    304
+r1             0x194    404
+r2             0x1f7    503
+r3             0x259    601
+r4             0x10174  65908
+......
+sp             0xbebe2e90       0xbebe2e90
+lr             0x0      0
+pc             0x8148   0x8148 <_start+212>
+fps            0x1001000        16781312
+cpsr           0x10     16
+(gdb) n
+56       mov r0, #0
+(gdb) info reg                                
+r0             0x130    304
+r1             0x194    404
+r2             0x1f7    503
+r3             0x259    601
+r4             0x10174  65908
+......
+sp             0xbebe2e90       0xbebe2e90
+lr             0x0      0
+pc             0x814c   0x814c <_start+216>
+fps            0x1001000        16781312
+cpsr           0x10     16
+(gdb) x/6 $r4-20
+0x10160 <array_s>:      101     203     304     404
+0x10170 <array_s+16>:   503     601
+]]></programlisting>
+<figure><title>stmda后加递减导出</title><graphic fileref="images/arm_stmda.jpg"/></figure>
+</para>
+</sect2>
+16个批量转存指令的特性可以总结如下：
+	<table><title>批量栈处理指令</title>
+	<tgroup cols="2">
+	<thead><row><entry>指令缩写</entry><entry>指令名称</entry><entry>入栈顺序与参数顺序关系</entry><entry>出栈顺序与参数顺序关系</entry></row></thead>
+	<tbody>
+	<row><entry>stmfd</entry><entry>满递减</entry><entry>逆序</entry><entry></entry></row>
+	<row><entry>ldmfd</entry><entry>满递减</entry><entry></entry><entry>同序</entry></row>
+	<row><entry>stmfa</entry><entry>满递增</entry><entry>同序</entry><entry></entry></row>
+	<row><entry>ldmfa</entry><entry>满递增</entry><entry></entry><entry>逆序</entry></row>
+	<row><entry>stmed</entry><entry>空递减</entry><entry>逆序</entry><entry></entry></row>
+	<row><entry>ldmed</entry><entry>空递减</entry><entry></entry><entry>同序</entry></row>
+	<row><entry>stmea</entry><entry>空递增</entry><entry>同序</entry><entry></entry></row>
+	<row><entry>ldmea</entry><entry>空递增</entry><entry></entry><entry>逆序</entry></row>		
+	</tbody>
+	</tgroup>
+	</table>
+<table><title>批量数据处理指令</title>
+	<tgroup cols="2">
+	<thead><row><entry>指令缩写</entry><entry>指令名称</entry><entry>载入顺序与参数顺序关系</entry><entry>存储顺序与参数顺序关系</entry></row></thead>
+	<tbody>
+	<row><entry>stmib</entry><entry>先加递增</entry><entry>同序</entry><entry></entry></row>
+	<row><entry>ldmib</entry><entry>先加递增</entry><entry></entry><entry>同序</entry></row>
+	<row><entry>stmia</entry><entry>后加递增</entry><entry>同序</entry><entry></entry></row>
+	<row><entry>ldmia</entry><entry>后加递增</entry><entry></entry><entry>同序</entry></row>		
+	<row><entry>stmdb</entry><entry>先加递减</entry><entry>逆序</entry><entry></entry></row>
+	<row><entry>ldmdb</entry><entry>先加递减</entry><entry></entry><entry>逆序</entry></row>
+	<row><entry>stmda</entry><entry>后加递减</entry><entry>逆序</entry><entry></entry></row>
+	<row><entry>ldmda</entry><entry>后加递减</entry><entry></entry><entry>逆序</entry></row>		
+	</tbody>
+	</tgroup>
+	</table>
+<table><title>英文缩写对照表</title>
+	<tgroup cols="2">
+	<thead><row><entry>指令中英文缩写</entry><entry>全写</entry><entry>中文释义</entry></row></thead>
+	<tbody>
+	<row><entry>stmfd-f</entry><entry>Full</entry><entry>满：sp指向最后一次入栈后的有效值，再次入栈需调整</entry></row>
+	<row><entry>stmea-e</entry><entry>Empty</entry><entry>空：sp指向最后一次入栈后的有效值后的空内存，再次入栈无需调整</entry></row>
+	<row><entry>stmfd-d</entry><entry>Descending</entry><entry>递减：堆栈从高地址向低地址生长</entry></row>
+	<row><entry>stmea-a</entry><entry>Ascending</entry><entry>递增：堆栈从低地址向高地址生长</entry></row>
+	<row><entry>stmib-i</entry><entry>Increment</entry><entry>加：被存取的寄存器值加4字节</entry></row>
+	<row><entry>stmdb-d</entry><entry>Decrement</entry><entry>减：被存取的寄存器值减4字节</entry></row>
+	<row><entry>stmda-b</entry><entry>Before</entry><entry>先：先调整地址，再存取值</entry></row>
+	<row><entry>stmda-a</entry><entry>After</entry><entry>后：先存取值，再调整地址</entry></row>
+	</tbody>
+	</tgroup>
+	</table>	
+从参数顺序与地址变化来看有同序和逆序两种情况，但是一个不变的规律是：指令总是将内存低地址处的值载入到低编号的寄存器中，同理低编号的寄存器中的值也被存储到低地址处的内存中。
+</sect1>

@@ -1,0 +1,190 @@
+<?xml version='1.0' encoding="utf-8"?>
+<article xmlns="http://docbook.org/ns/docbook" version="5.0" xml:lang="zh-CN" xmlns:xlink='http://www.w3.org/1999/xlink'>
+<articleinfo>
+	<title>Linux汇编实践记录</title>
+	<author><firstname>Red Liu(lli_njupt@163.com)</firstname><surName></surName></author>
+</articleinfo>
+  <sect1><title>引子</title>
+	<sect2><title>一个简单示例</title>
+	<para>
+计算机语言中第一个示例通常叫做Hello World，但是对于汇编语言一个更精简的示例如下：
+<programlisting><![CDATA[
+.section .data			#定义数据段
+
+.section .text			#定义代码段
+.globl _start			#_start指明程序的入口
+_start:				#.globl说明将被外部引用
+ movl $0, %ebx			#sys_exit系统调用的参数
+
+ movl $1, %eax			#sys_exit的系统调用号
+
+ int $0x80			#通过int 80使能内核调用
+]]></programlisting>	
+	</para>
+	<para>
+一个最简单的运行在Linux系统上的汇编程序只需要3行，除了movl $4, %ebx这行可以去掉外，
+我们不能再做任何精简。汇编语言使用既有的约定来和C语言中的函数相互传递参数，对于
+i386汇编来说，使用eax来传递系统调用号，使用ebx来传递第一个参数，依次类推，直至参数
+多到需要使用数据栈来传递。因此移除movl $4, %ebx使得sys_exit调用的参数不确定，但这
+并不影响它的正确执行。 
+	</para>
+	<para>
+这个文件被命名为hello.S，它采用了最通用的PC机上的i386系列CPU的汇编语法intell语法。 
+使用以下命令编译：
+<programlisting><![CDATA[
+#as hello.S -o hello.o		#汇编成目标.o文件，所有段基地址均为0
+#ld hello.o -o hello		#链接为可重定位文件
+]]></programlisting>
+	</para>
+	<para>
+一个错误的编译方法如下，gcc在链接时总是尝试查找编译的目标文件中的入口函数main，
+而_start 定义在libc的动态库中，入口函数main作为_start的子函数被调用，类似于exit(main())。
+<programlisting><![CDATA[
+#gcc -o hello hello.S
+/tmp/ccUDvSyN.o: In function `_start':
+(.text+0x0): multiple definition of `_start'
+/usr/bin/ld: /usr/lib/debug/usr/lib/crt1.o(.debug_info): relocation 0 has invalid symbol index 12
+/usr/bin/ld: /usr/lib/debug/usr/lib/crt1.o(.debug_info): relocation 1 has invalid symbol index 13
+......
+/usr/lib/gcc/i686-linux-gnu/4.4.5/../../../../lib/crt1.o: In function `_start':
+(.text+0x18): undefined reference to `main'
+collect2: ld returned 1 exit status
+]]></programlisting>	
+	</para>
+	<para>
+使用file查看生成的文件类型: 
+<programlisting><![CDATA[
+#file hello
+hello: ELF 32-bit LSB executable, Intel 80386, version 1 (SYSV), statically linked, not stripped
+]]></programlisting>
+	</para>
+	<para>
+sys_exit与其他的系统调用不同，它是系统中唯一个结束当前进程的系统调用，通过它将
+关闭程序使用的描述符，回收未释放的动态空间，清理内核维护的其他相关资源，其中包
+括释放task_struct。任何一个应用程序最终都会调用sys_exit，无论它是用C语言，还是
+其他语言写成。如果尝试使用汇编书写一个没有使用sys_exit的程序，那么运行时将会出
+现段错误：取指令系统不停的使程序计数器PC(program counter) 指向下一条指令的地址
+，而下一条指令总会超出代码段的范围。
+		<emphasis>注意：Linux中的汇编器采用ATT语法，它与intel语法不同。</emphasis>
+	</para>
+	<para>
+		ARM平台上的CPU需要ARM指令来完成，一个完成类似功能的示例如下：
+<programlisting><![CDATA[
+.section .data
+
+.section .text
+.global _start
+_start:
+ mov r0, #0			@sys_exit系统调用的参数
+ mov r7, #1			@sys_exit的系统调用号
+ svc 0x00000000			@通过svc使能内核调用
+]]></programlisting>
+	</para>
+	<para>
+ARM平台的调用系统调用的方式与i386平台并没有本质的区别，它们只是在指令的标记方法
+和寄存器的使用上不同。ARM上的汇编语言与C函数的互相调用的约定被称为ATPCS。 
+	</para>
+	<para>
+另外不得不提到的ABI(Application Binary Interface)应用程序二进制接口，它对应用程序
+与系统，应用程序与库之间的访问方法作了一系列的规定。对于ARM来说，它有两种接口OABI
+和EABI，OABI中的O意味Old，也即老的访问方式，EABI中的E意味Extended，也即新式的访问
+方式，内核中的配置要和对应的编译器的配置相一致，这样编译器编译出的应用程序才能在该
+内核系统上运行。上面的例子对因EABI访问方式，对于OABI的例子如下： 	
+<programlisting><![CDATA[
+......
+_start:
+ mov r0, #0			@sys_exit系统调用的参数
+ swi 0x90000001 			@0x900000000是Magic，1为sys_exit的系统调用号
+]]></programlisting>
+swi（Software Interrupt Instruction）软中断指令实际通过调用特权模式指令svc来实现。
+OABI已被更高效的EABI所取代。 
+
+	<para>
+资源 
+<link xlink:href='http://blog.ednchina.com/farsight2009/2079778/message.aspx'></link>
+<link xlink:href='http://6xudonghai.blog.163.com/blog/static/33640629201072993838620/'></link>
+<link xlink:href='http://bbs.chinaunix.net/thread-1950213-1-1.html'></link>
+<link xlink:href='http://www.cublog.cn/u2/61062/showart_1958033.html'></link>
+	</para>
+	</para>
+	<para>	
+	ARM上的汇编程序对应的编译命令如下: 
+<programlisting><![CDATA[
+#arm-linux-as hello.S -o hello.o
+#arm-linux-ld hello.o -o hello
+]]></programlisting>
+	</para>
+	<para>
+使用file查看生成的文件类型: 
+<programlisting><![CDATA[
+#file hello
+hello: ELF 32-bit LSB executable, ARM, version 1 (SYSV), statically linked, not stripped
+]]></programlisting>
+	</para>
+	<para>
+对比i386平台的可执行程序，可以看到Intel 80386和ARM的区别。另外对比i386和ARM汇编对
+sys_exit调用的方法可以得出ARM使用r7寄存器来传递系统调用号，使用r0来传递一个参数。 	
+	</para>
+	</sect2>
+	<sect2><title>Hello World!</title>
+	<para>
+一个真正的Hello World!程序将证实汇编程序的运行，它的源码如下： 
+<programlisting><![CDATA[
+.section .data
+msg: .asciz "Hello World!\n"
+len= .-msg
+
+.section .text
+.align 4
+.global _start
+_start:
+ /* set parametes of sys_write*/
+ mov r0, #1     	@print out from stdout
+ ldr r1, =msg   	@addr of msg
+ mov r2, #len   	@length of msg
+
+ mov r7, #4     	@do sys_write
+ svc 0x00000000
+
+ /* the returned value have stored in r0 */
+ mov r7, #1     	@do sys_exit 
+ svc 0x00000000
+]]></programlisting>
+	</para>
+	<para>运行的结果如下： 
+<programlisting><![CDATA[
+#./hello
+Hello World!
+]]></programlisting>	
+	</para>
+	<para>
+任何试图通过纯汇编语言编写而不进行sys_exit系统调用的可执行文件，在Linux系统上运行是不
+可能的。一个可执行文件，通常为ELF格式，运行时它被内核ELF加载器加载，并分配资源，一个
+task_sruct被内核记录到一个描述当前所有进程结构体的全局链表中。任何试图释放这些资源的
+指令操作都必须在特权级别，而运行在用户空间中的可执行文件是做不到的。 
+	</para>
+	<para>
+一个直接运行在硬件平台上的程序，通常为原始的BIN文件，它的第一个字节就是指令，所以是
+不需要加载器的，所以程序退出可以在任何时候，没有人关心它何时结束。这与ELF的运行方式
+截然不容。 
+	</para>
+	<para>
+既然牵涉到系统调用，那么就必须考虑汇编与C语言的交互，另外在C中嵌入汇编语言是另一种对
+于汇编的应用，它们在内核的底层代码中相当广泛，它是汇编与C语言交互的另一种更普遍的形式。
+所以它们交互的约定是关注的重点，对于ARM来说它就是ATPCS。 
+	</para>
+	</sect2>
+  </sect1>
+  <sect1><title>ATPCS</title>
+  <para>
+ATPCS(ARM-Thumb Produce Call Standard)是ARM程序和Thumb程序中子程序调用的基本规则，这些
+基本规则包括子程序调用过程中寄存器的使用规则，数据栈的使用规则和参数的传递规则。
+  </para>
+	<sect2><title>寄存器使用规则</title>
+	<para>
+在了解寄存器的使用规则之前，首先看一下ARM的寄存器。
+	<figure>warning.gif</figure>
+	</para>
+	</sect2>
+  </sect1>
+</article>

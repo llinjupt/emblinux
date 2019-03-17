@@ -1,0 +1,62 @@
+<?xml version='1.0' encoding="UTF-8"?>
+<!DOCTYPE book PUBLIC "-//OASIS//DTD DocBook XML V4.5/zh_cn"
+"http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd"
+[
+<!ENTITY preface SYSTEM "preface.xml">
+<!ENTITY hello1 SYSTEM "hello1.xml">
+<!ENTITY atpcs2 SYSTEM "atpcs2.xml">
+<!ENTITY armasm2 SYSTEM "armasm2.xml">
+<!ENTITY armaddr SYSTEM "armaddr.xml">
+<!ENTITY elf SYSTEM "elf.xml">
+<!ENTITY linker SYSTEM "linker.xml">
+<!ENTITY loader SYSTEM "loader.xml">
+<!ENTITY bootlinux SYSTEM "bootlinux.xml">
+<!ENTITY armhead SYSTEM "armhead.xml">
+<!ENTITY kernelhead SYSTEM "kernelhead.xml">
+<!ENTITY kernelinit SYSTEM "kernelinit.xml">
+<!ENTITY kernelinit2 SYSTEM "kernelinit2.xml">
+<!ENTITY linuxmode SYSTEM "linuxmode.xml">
+<!ENTITY bitmap SYSTEM "bitmap.xml">
+<!ENTITY pagetab SYSTEM "pagetab.xml">
+<!ENTITY memory SYSTEM "memory.xml">
+<!ENTITY resource SYSTEM "resource.xml">
+<!ENTITY interrupt SYSTEM "interrupt.xml">
+<!ENTITY parser SYSTEM "parser.xml">
+<!ENTITY timer SYSTEM "timer.xml">
+<!ENTITY notifier SYSTEM "notifier.xml">
+<!ENTITY platform SYSTEM "platform.xml">
+<!ENTITY ksync SYSTEM "ksync.xml">
+<!ENTITY referrence SYSTEM "referrence.xml">
+<!ENTITY buddy SYSTEM "buddy.xml">
+<!ENTITY device SYSTEM "device.xml">
+<!ENTITY sandbox SYSTEM "sandbox.xml">
+]>
+<article lang="zh_cn">
+    <articleinfo><title>Linux内核学习和研究及嵌入式(ARM)学习和研究的开放文档</title>
+		<author><firstname>Red Liu (lli_njupt@163.com) 本文系作者原创, 欢迎大家转载, 转载请注明出处!</firstname><surName></surName></author>
+		</articleinfo>
+		&preface;
+		&armasm2;
+    &armaddr;
+    &atpcs2;    
+    &bootlinux;
+    &armhead;
+    &kernelhead;
+    &kernelinit;
+    &bitmap;
+    &kernelinit2;
+    &pagetab;
+		&memory;
+		&buddy;
+    &resource;
+    &interrupt;
+    &parser;
+    &timer;
+    &notifier;
+    &ksync;
+    &device;    
+    &platform;
+    &linuxmode;
+    &referrence;
+    &sandbox;
+</article>

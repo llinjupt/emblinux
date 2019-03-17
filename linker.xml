@@ -1,0 +1,235 @@
+<sect1><title>ELF链接器</title>
+<para>
+链接器对于生成可从定位的可执行文件至关重要，它将多个目标文件链接成一个可执行文件，并重新调节相互间引用的符号地址以及动态库的引用地址。总体来看它完成以下的功能：
+</para>
+<para>
+<itemizedlist>
+<listitem>包含程序数据的节，其解释仅对应用程序有意义，如程序指令.text 以及关联的数据.data 和.bss。</listitem>
+<listitem>包含链接编辑信息（如.symtab 和.strtab 中的符号表信息以及诸如.rela.text 的重定
+位信息）的节。
+对提供的所有选项进行验证和一致性检查。</listitem>
+<listitem>串联多个输入可重定位目标文件中具有相同特征的节，以便在输出文件中形成新的节。串联的节又可与输出段关联。</listitem>
+<listitem>处理可重定位目标文件和共享库中的符号表信息，以便验证并把引用和其定义合并起来。在输出文件中生成新的符号表。</listitem>
+<listitem>处理输入可重定位目标文件中的重定位信息，并通过更新其他输入节将此信息应用于输出文件。此外，还可以生成输出重定位节以供运行时链接程序使用。</listitem>
+<listitem>生成用于描述创建的所有段的程序头。</listitem>
+<listitem>必要时生成动态链接信息节，这些节为运行时链接程序提供信息，如共享库依赖项和符号绑定。</listitem>
+</itemizedlist>
+把相似的节串联起来以及关联节到段的处理是在链接编辑器中使用缺省信息完成的。对于大多数链接编辑操作来说，链接编辑器提供的缺省节和段处理通常已满足要求。
+</para>
+<figure><title>链接过程</title><graphic fileref="images/linker.jpg"/></figure>
+链接器ld串联并解释一个或多个输入文件中的数据。这些文件可以是可重定位目标文件、共享库或归档文件库。可以通过这些输入文件创建一个输出文件。此输出文件可以是可重定位目标文件、可执行应用程序或共享库。。虽然链接编辑器提供许多选项，但是生成的输出文件为以下四种基本类型之一：
+<itemizedlist> 
+	<listitem>可重定位目标文件－可在随后的链接编辑阶段中使用的可重定位输入目标文件的串联。</listitem>
+	<listitem>静态可执行文件－已解析所有符号引用的可重定位输入目标文件的串联。此可执行文件代表运行就绪进程。</listitem>
+	<listitem>动态可执行文件－要求运行时链接程序进行干预以生成可运行进程的可重定位输入目标文件的串联。动态可执行文件可能仍需要在运行时绑定的符号引用。动态可执行文件通常具有一个或多个以共享库形式表示的依赖项。</listitem>
+	<listitem>共享库－提供各种服务的可重定位输入目标文件的串联，运行时可能绑定到动态可执行文件。一个共享库可能依赖于其他共享库</listitem>
+</itemizedlist>
+可以看到输入的目标文件，动态库，静态库和输出文件均为ELF格式
+<footnote><para>输出的可执行文件还有其他的格式，比如a.out，但是ELF是Linux系统上最普遍的格式，这里只对它做讨论。</para></footnote>的文件，要了解链接过程就必须对ELF做深入的了解。
+
+节是ELF 文件中可以处理的最小不可分割单位。段是节的集合，节表示可由exec(2) 或运行
+时链接程序ld.so.1(1) 映射到内存映像的最小独立单位。
+虽然存在许多类型的ELF 节，但就链接编辑阶段而言可将所有节都归为两种类别：
+<itemizedlist>
+<listitem>包含程序数据的节，其解释仅对应用程序有意义，如程序指令.text 以及关联的数据
+.data 和.bss。</listitem>
+<listitem>包含链接编辑信息（如.symtab 和.strtab 中的符号表信息以及诸如.rela.text 的重定
+位信息）的节。</listitem>
+</itemizedlist>
+
+<sect2><title>使用链接器</title>
+<para>
+可以从命令行直接运行链接编辑器，也可以让编译器驱动程序调用链接编辑器。以下详细介绍了这两种方法。但是，首选使用编译器驱动程序。编译环境通常是复杂且有时会发生变化的一系列操作且仅对编译器驱动程序可识别。对于GUN GCC来说，它封装了对编译器，链接器的调用行为，是GNU Liner的驱动程序。
+</para>
+<sect3><title>直接调用</title>
+<para>
+直接调用链接编辑器时，必须提供创建预期输出所需的每个目标文件和库。链接编辑器对创建输出时使用的目标文件模块或库不会作出任何假设。例如，当使用以下命令时：
+<programlisting><![CDATA[
+# ld test.o
+]]></programlisting>	
+链接编辑器仅使用输入文件test.o 创建一个名为a.out 的动态可执行文件。要使a.out 成为
+有用的可执行文件，应该包括用于启动和退出处理的代码。此代码可以特定于语言或操作系统，并且通常通过编译器驱动程序提供的文件提供。对于C语言来说，一个不包含入口符号_start的.o文件ld将会抱怨：
+<programlisting><![CDATA[
+# ld libadd1.o
+ld: warning: cannot find entry symbol _start; defaulting to 08048074
+]]></programlisting>	
+尽管a.out已被生成，但是错误的入口函数，使得它的执行会出现段错误。此外，还可以提供自己的初始化代码和终止代码。必须正确封装和标记此代码，以便运行时链接程序可以正确识别并使用代码，使用纯汇编语言指定_start入口函数就是一例，也可以通过编译器驱动程序提供的文件提供此封装和标记，比如gcc。
+</para>
+<para>
+创建运行时目标文件（如可执行文件和共享库）时，应使用编译器驱动程序来调用链接编辑器。建议仅在使用-r 选项创建中间可重定位目标文件时直接调用链接编辑器。此时ld将不再抱怨。
+<programlisting><![CDATA[
+# ld libadd1.o -r
+]]></programlisting>	
+生成的a.out不再是可执行ELF类型，而是REL类型的目标文件，除了名字不同外它和libadd1.o没有任何区别，实用的用法是将多个.o生成一个可重定位文件，即便如此当前只有在编译汇编程序或者提供自己的初始化和终止代码时才可能这样使用，对于C语言，推荐的方法是通过cc，GNU C编译器就是gcc。
+<programlisting><![CDATA[
+# ld -r libadd1.o libsub1.o -o libopts.o
+]]></programlisting>
+以上的示例是为了验证-r的用法，这里添加了一个libsub1.c文件，它的源码如下，接下来的示例它们依然会被用到。
+<programlisting><![CDATA[
+void sub1(int *i)
+{
+        (*i)--;
+}
+]]></programlisting>
+</para>
+</sect3>
+<sect3><title>编译器驱动程序调用</title>
+<para>
+很多情况下，链接器所进行的操作对程序员是几乎或完全不可见的，因为它会做为编译过程的一部分自动进行。多数编译系统都有一个可以按需自动执行编译器各个阶段的编译器驱动。例如，若一个程序员有两个C源程序文件（简称A，B），那么在UNIX系统上编译器驱动将会运行如下一系列的程序：
+<itemizedlist>
+<listitem>C语言预处理器处理A，生成预处理的A</listitem>
+<listitem>C语言编译预处理的A，生成汇编文件A</listitem>
+<listitem>汇编器处理汇编文件A，生成目标文件A</listitem>
+<listitem>C语言预处理器处理B，生成预处理的B</listitem>
+<listitem>C语言编译预处理的B，生成汇编文件B</listitem>
+<listitem>汇编器处理汇编文件B，生成目标文件B</listitem>
+<listitem>链接器将目标文件A、B和系统C库链接在一起</listitem></itemizedlist>
+也就是说，编译器驱动首先会将每个源文件编译为汇编语言，然后转换为目标代码，接着链接器会将目标代码链接器一起，并包含任何需要的系统C库例程。对于Linux来说，它就是collect2。展开编译调用可以看到collect2的动作，例如：
+<programlisting><![CDATA[
+# gcc -v libadd1.o libsub1.o test.o -o test 
+使用内建 specs。
+目标：i386-redhat-linux
+配置为：../configure --prefix=/usr --mandir=/usr/share/man --infodir=/usr/share/info --enable-shared 
+--enable-threads=posix --enable-checking=release --with-system-zlib --enable-__cxa_atexit 
+--disable-libunwind-exceptions --enable-languages=c,c++,objc,obj-c++,java,fortran,ada --enable-java-awt=gtk 
+--disable-dssi --enable-plugin 
+--with-java-home=/usr/lib/jvm/java-1.5.0-gcj-1.5.0.0/jre --enable-libgcj-multifile --enable-java-maintainer-mode 
+--with-ecj-jar=/usr/share/java/eclipse-ecj.jar --with-cpu=generic --host=i386-redhat-linux
+线程模型：posix
+gcc 版本 4.1.2 20070925 (Red Hat 4.1.2-33)
+ /usr/libexec/gcc/i386-redhat-linux/4.1.2/collect2 --eh-frame-hdr --build-id -m elf_i386 --hash-style=gnu 
+ -dynamic-linker /lib/ld-linux.so.2 -o test /usr/lib/gcc/i386-redhat-linux/4.1.2/../../../
+ /usr/lib/gcc/i386-redhat-linux/4.1.2/../../../crti.o /usr/lib/gcc/i386-redhat-linux/4.1.2/crtbegin.o 
+ -L/usr/lib/gcc/i386-redhat-linux/4.1.2 
+ -L/usr/lib/gcc/i386-redhat-linux/4.1.2 -L/usr/lib/gcc/i386-redhat-linux/4.1.2/../../.. libadd1.o libsub1.o test.o 
+ -lgcc --as-needed -lgcc_s --no-as-needed -lc -lgcc --as-needed -lgcc_s --no-as-needed 
+ /usr/lib/gcc/i386-redhat-linux/4.1.2/crtend.o /usr/lib/gcc/i386-redhat-linux/4.1.2/../../../crtn.o
+]]></programlisting>
+注意到crt1.o目标文件，它通常位于/usr/lib/下。GCC的_start入口函数就是从该目标文件中得到的：
+<programlisting><![CDATA[
+# readelf /usr/lib/crt1.o -s 
+
+Symbol table '.symtab' contains 18 entries:
+   Num:    Value  Size Type    Bind   Vis      Ndx Name
+    ......
+     0: 00000000     0 NOTYPE  GLOBAL DEFAULT  UND __libc_csu_fini
+    11: 00000000     0 FUNC    GLOBAL DEFAULT    2 _start
+    12: 00000000     0 NOTYPE  GLOBAL DEFAULT  UND __libc_csu_init
+    13: 00000000     0 NOTYPE  GLOBAL DEFAULT  UND main
+    14: 00000000     0 NOTYPE  WEAK   DEFAULT    6 data_start
+    15: 00000000     4 OBJECT  GLOBAL DEFAULT    5 _IO_stdin_used
+    16: 00000000     0 NOTYPE  GLOBAL DEFAULT  UND __libc_start_main
+    17: 00000000     0 NOTYPE  GLOBAL DEFAULT    6 __data_start
+]]></programlisting>
+另外GCC并不是直接使用ld，而是通过collect2来完成链接。之所以引入collect2，是由于C或者C++在调用main函数之前和之后还要做一些启动和退出的处理，而这些相关的代码比如crt1.o就需要由collect2来完成，collect2在完成这些工作后会调用实际的ld，它通常位于/usr/bin/下。如果直接调用collect2 --help会发现它与ld --help的结果别无二致。
+</para>
+</sect3>
+<sect3><title>链接编辑器选项</title>
+在直接使用ld时，可以直接在命令行内传递参数，但如果通过gcc，那么需要使用-Wl参数来传递给ld：
+<programlisting><![CDATA[
+# gcc -v libadd1.o libsub1.o test.o -o test -Wl,-rpath=./ -Wl,-T ld.lds
+]]></programlisting>
+</sect3>
+</sect2>
+<sect2><title>输入文件处理</title>
+<para>
+ld按输入文件在命令行中出现的顺序读取，将打开并检查每个文件以确定文件的ELF类型，从而确定文件的处理方式。作为ld的输入的文件类型由链接的绑定模式：静态或动态来确定。</para>
+<para>在静态模式下，ld仅接受可重定位目标文件或归档库.a作为输入文件。在动态模式下，链接编辑器还接受共享库。</para>
+<para>对于链接过程，可重定位目标文件是最基本的输入文件类型。这些文件中的程序数据节将串联成要生成的输出文件映像。组织链接编辑信息节供以后使用。这些节不会成为输出文件映像的一部分，因为将生成新的节替代它们。符号将被收集到内部符号表中以进行验证和解析。然后，使用此表在输出映像中创建一个或多个符号表。虽然可以在ld命令行中直接指定输入文件，但通常使用-l选项指定归档库和共享库，但是。在链接编辑期间，归档库和共享库的解释完全不同。对-l的使用如下：
+<programlisting><![CDATA[
+# ar cru libopts.a libadd1.o libsub1.o //生成归档文件libopts.a
+# gcc test.o -o test -L ./ -lopts  -v
+ ......
+ gcc 版本 4.1.2 20070925 (Red Hat 4.1.2-33)
+ /usr/libexec/gcc/i386-redhat-linux/4.1.2/collect2 --eh-frame-hdr --build-id -m elf_i386 --hash-style=gnu 
+ -dynamic-linker /lib/ld-linux.so.2 -o test /usr/lib/gcc/i386-redhat-linux/4.1.2/../../../crt1.o 
+ /usr/lib/gcc/i386-redhat-linux/4.1.2/../../../crti.o /usr/lib/gcc/i386-redhat-linux/4.1.2/crtbegin.o 
+ -L ./ -L/usr/lib/gcc/i386-redhat-linux/4.1.2 -L/usr/lib/gcc/i386-redhat-linux/4.1.2 
+ -L/usr/lib/gcc/i386-redhat-linux/4.1.2/../../.. test.o -lopts -lgcc --as-needed -lgcc_s --no-as-needed 
+ -lc -lgcc --as-needed -lgcc_s --no-as-needed /usr/lib/gcc/i386-redhat-linux/4.1.2/crtend.o 
+ /usr/lib/gcc/i386-redhat-linux/4.1.2/../../../crtn.o
+]]></programlisting>	
+可以看到最终-l参数被传递给了collect2。-l总是需要-L来配合使用，-L指定了.a或者.so文件所在的目录，而-l指明了它们的名字。一个.a或者.so文件的全名总是lib$(name).a或者lib$(name).so，通过-l应用的时候直接用-l$(name)即可。
+</para>
+<para>
+每个输入的.o和.so文件都包含一系列的节（sections）其中.so文件这些节还会被封装到不同的段(segments)中。有些节会被连续存放在输出文件中的代码或数据块。每一个输入文件至少还包含一个符号表（symbol table）。有一些符号会作为导出符号，它们在当前文件中定义并在其他文件中使用，通常都是可以在其它地方被调用的当前文件中的extern函数或者全局变量的名字。其它符号会作为导入符号，在当前文件中使用但不在当前文件中定义，通常都是在该文件中调用但不存在于该文件中的extern函数或者全局变量的名字。
+</para>
+<para>
+</para>
+<sect3><title>归档处理</title>
+<para>使用ar生成归档。归档通常由一组可重定位目标文件和归档符号表组成。该符号表提供符号定义与提供这些定义的目标文件之间的关联关系。缺省情况下，ld有选择地提取归档成员。ld使用未解析的符号引用从归档中选择所需的目标文件以完成绑定过程。也可以显式提取归档的所有成员。</para>
+<para>
+在以下情况下，链接编辑器从归档中提取可重定位目标文件：
+<itemizedlist> 
+	<listitem>归档成员包含满足符号引用的符号定义，这些符号定义目前保存在ld的内部符号表中。此引用有时称为未定义符号。</listitem>
+	<listitem>归档成员包含满足暂定符号定义（目前保存在ld的内部符号表中）的数据符号定义。例如，FORTRAN COMMON块定义，它导致提取定义相同DATA 符号的可重定位目标文件。</listitem>
+	<listitem>链接器-z allextract有效。此选项暂挂选择性归档提取，并导致从正在处理的归档中提取所有归档成员。</listitem>
+</itemizedlist>	
+有选择地提取归档时，除非-z weakextract 选项有效，否则弱符号引用不会从归档中提取目标文件。
+</para>
+<para>
+在有选择地提取归档的情况下，链接编辑器会检查整个归档多遍。将根据需要提取可重定位目标文件，以满足链接编辑器内部符号表中累积的符号信息。链接编辑器检查完归档一遍但未提取任何可重定位目标文件之后，将处理下个输入文件。由于遇到归档时仅从归档中提取需要的可重定位目标文件，因此命令行中归档的位置可能很重要。
+</para>
+<para>
+链接编辑器搜索归档只是为了解析先前遇到的未定义或暂定外部引用。完成此搜索并提取所有需要的成员后，链接编辑器将继续处理命令行中的下一个输入文件。比如上例中的# gcc test.o -o test -L ./ -lopts，其中test.o引用外部函数addr1，当ld发现它是外部引用时，将尝试到libopts.a中去查找addr1，如果没找到则继续到下一个.a中查找，一旦找到，那么将处理下一个.o文件。由于ld总是按文件提供的顺序执行链接，所以，缺省情况下，不能使用当前的归档文件来归档后面的输入文件中的任何对它里面符号的引用。只需要将.a文件放在.o文件之前就可以测试出结果：
+<programlisting><![CDATA[
+# gcc -L ./ -lopts test.o -o test -v
+test.o: In function `main':
+test.c:(.text+0x39): undefined reference to `add1'
+collect2: ld 返回 1
+]]></programlisting>
+显然这里，gcc不会向前查找。一个更复杂的情况是，归档之间可以存在相互的依赖性，这样，要从一个归档中提取成员，还必须从另一个归档
+中提取相应成员。如果这些依赖性构成循环，则必须在命令行中重复指定归档以满足前面的引用。例如有三个归档文件liba.a，libb.a和libc.a它们中互相引用彼此的函数或者全局变量，那么必须使用如下命令：
+<programlisting><![CDATA[
+# gcc -o target .... -la -lb -lc -la -lb -la -lc
+]]></programlisting>	
+确定和维护重复指定的归档是一个繁琐的任务。使用-Xlinker选项可以简化此过程。处理完所有输入文件后，此选项将导致重新处理整个归档列表。此处理过程尝试查到解析符号
+引用的其他归档成员。继续重新扫描此归档，直到扫描归档列表一遍但未提取任何新成员为止。因此，上一个示例可以简化为：
+<programlisting><![CDATA[
+# gcc -o target .... -Xlinker "-(" -la -lb -lc -Xlinker "-)" 
+]]></programlisting>
+注意-Xlinker的用法，它总是成对出现，以-Xlinker "-("开始，以-Xlinker "-)"结束，对于无法确定调用顺序归档文件来说，把它们放在-Xlinker之间是一个明智的选择，但是会影响链接时间。
+</para>
+<para>
+
+</para>
+</sect3>
+
+<itemizedlist> 
+	<listitem></listitem>
+	<listitem></listitem>
+</itemizedlist>
+
+</sect2>
+
+<sect2><title>静态链接过程</title>
+<para>
+没有比静态链接简单的情况了，所以一个简单的链接示例就要从这里开始了。为了是生成代码尽量简单，这个示例继续使用i386上的Hello程序，它只有一个i386.S文件。比较i386.o目标文件和i386可执行文件的节和段内容：
+<programlisting><![CDATA[
+]]></programlisting>	
+<programlisting><![CDATA[
+]]></programlisting>
+
+</para>
+<sect3><title></title>
+<para>
+</para>
+</sect3>
+
+<itemizedlist> 
+	<listitem></listitem>
+	<listitem></listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+
+]]></programlisting>	
+</sect2>
+	<table><title></title>
+	<tgroup cols="2">
+	<thead><row><entry></entry><entry></entry><entry></entry></row></thead>
+	<tbody>
+	<row><entry></entry><entry></entry><entry><literallayout></literallayout></entry></row>
+	</tbody>
+	</tgroup>
+	</table>
+</sect1>

@@ -1,0 +1,586 @@
+<sect1><title>Uboot启动分析</title>
+<sect2><title>硬件引导</title>
+<para>通常在上电后，一旦CPU电源稳定期结束，它则开始从某个固定的地址(通常为FLASH的0地址)开始执行程序，为何方便代码的引导，一些CPU支持多种方式/地址处的引导，比如设置跳线，可以选择NOR Flash，或者NAND FLASH等。S3C6410就是这样一款功能强大的CPU。</para>
+<para>
+S3C6410 具备了一个内部SRAM缓冲器，大小为8K，叫做“STEPPINGSTONE”，如果跳线设置为从Nand Flash启动，则当系统启动时，Nand Flash存储器的前4KB 将被自动载入到STEPPINGSTONE中，然后系统自动执行这些载入的引导代码。而Nand Flash的开始就是放置的U-boot的镜像。
+</para>
+<para>
+对于S3C6410来说，起始代码位于：
+<programlisting><![CDATA[
+cpu/s3c64xx/start.S
+.globl _start 	 	/* uboot启动入口*/
+_start: b	reset		/* 复位向量*/
+	ldr	pc, _undefined_instruction
+	ldr	pc, _software_interrupt
+	ldr	pc, _prefetch_abort
+	ldr	pc, _data_abort
+	ldr	pc, _not_used
+	ldr	pc, _irq		/* 中断向量 */
+	ldr	pc, _fiq		/* 中断向量 */
+......	
+]]></programlisting>
+第一跳指令就是复位：
+<programlisting><![CDATA[
+/* 系统上电或reset后，cpu的PC一般都指向0x0地址，在0x0地址上的指令是 */
+reset:
+	/*
+	 * set the cpu to SVC32 mode
+	 */
+	mrs	r0, cpsr
+	/*
+	 *把CPSR内容存入r0.使用了mrs指令:专用寄存器到通过寄存器的存取.
+	 *CPSR当前程序状态寄存器格式如下:
+	 *
+	 * 31  30  29  28  27  26  25  24  ~ ~ ~ 8   7   6   5    4    3    2    1    0
+	 *___ ___ ___ ___ ___ ___ ___ ___  _ _ _ _  ___ ___ ___ ____ ____ ____ ____ ____
+	 *| N | Z | C | V | * | * | * | * | *  *  * | I | F | T | M4 | M3 | M2 | M1 | M0 |
+	 *
+	 */	
+ 	/* bic指令(bit clear): r0:= r0 and (not op2).上边的指令目的是把bit0~bit4清零.*/
+	bic	r0,r0,#0x1f
+	orr	r0,r0,#0xd3
+	/* r0:= r0 or 0xd3 . 以上三条指令执行后r0值为:**** **** **** **** **** ***** 11*1 0011 */
+  msr	cpsr,r0
+]]></programlisting>
+msr把r0存于cpsr.注意:msr指令是专用的通用寄存器到特殊功能寄存器的指令与mrs对应说明:通过上边的指令可以看到,实现了两个功能.1,disable 外部中断(IRQ)与快速中断(FIR).2,把系统设为SVC32状态(超级保护)即M4~M1=10011。
+</para>
+<para>
+接下来cpu初始化关键寄存器以及设置内存时钟。
+<programlisting><![CDATA[
+cpu_init_crit:
+	/*
+	 * flush v4 I/D caches
+	 */
+	mov	r0, #0
+	
+	/* 使I/D cache失效：将寄存器r0的数据传送到协处理器p15的c7中。C7寄存器位对应cp15中的cache控制寄存器 */
+	mcr	p15, 0, r0, c7, c7, 0	/* flush v3/v4 cache */
+	
+	/* 使TLB操作寄存器失效：将r0数据送到cp15的c8、c7中。C8对应TLB操作寄存器 */
+	mcr	p15, 0, r0, c8, c7, 0	/* flush v4 TLB */
+
+	/*
+	 * disable MMU stuff and caches
+	 */
+	
+	/* 先把c1和c0寄存器的各位置0(r0 = 0) */
+	mrc	p15, 0, r0, c1, c0, 0
+	bic	r0, r0, #0x00002300	@ clear bits 13, 9:8 (--V- --RS)
+	bic	r0, r0, #0x00000087	@ clear bits 7, 2:0 (B--- -CAM)
+	orr	r0, r0, #0x00000002	@ set bit 2 (A) Align
+	orr	r0, r0, #0x00001000	@ set bit 12 (I) I-Cache
+	mcr	p15, 0, r0, c1, c0, 0
+
+	/* Peri port setup */
+	/* 通过CP15 c15 设置外设基地址为0x70000000，地址空间为256M 
+	 * 
+	 *  Base Address   UPN/SBZ  SIZE
+	 * |31----------12|11---5 | 4--0|
+	 *
+	 * 0x13 Means b10011 b10011 = 256MB
+	 *  
+	*/
+	
+	ldr	r0, =0x70000000
+	orr	r0, r0, #0x13
+    	mcr	p15,0,r0,c15,c2,4       @ 256M(0x70000000-0x7fffffff)
+]]></programlisting>
+接着执行位于board/samsung/smdk6410/lowlevel_init.S内的lowlevel_init子程序，设置时钟相关的PLL，MUX和内存。
+<programlisting><![CDATA[
+	bl	lowlevel_init	/* go setup pll,mux,memory */
+
+	/* 判断当前uboot是否在内存RAM中运行，如果是那么运行after_copy，否则顺序执行
+	 */
+	ldr	r0, =0xff000fff
+	bic	r1, pc, r0		/* r0 <- current base addr of code */
+	ldr	r2, _TEXT_BASE		/* r1 <- original base addr in ram */
+	bic	r2, r2, r0		/* r0 <- current base addr of code */
+	cmp     r1, r2                  /* compare r0, r1                  */
+	beq     after_copy		/* r0 == r1 then skip flash copy   */
+]]></programlisting>
+一部分代码初始化堆栈，以及MMU，对于Nand Flash启动来说，一个重要的子程序是copy_from_nand，这将会把U-Boot镜像拷贝到内存中。
+<programlisting><![CDATA[
+copy_from_nand:
+
+	/* 设置返回地址 */
+	mov	r10, lr		/* save return address */
+	
+  /* 注意r0此时为4096 */
+	mov	r9, r0
+	/* get ready to call C functions */
+	/* 使用伪指令，设置栈顶sp指针为_TEXT_PHY_BASE ，fp为栈第指针*/
+	ldr	sp, _TEXT_PHY_BASE	/* setup temp stack pointer */
+	sub	sp, sp, #12 /* 分配12bytes */
+	mov	fp, #0			/* no previous frame, so fp=0 */
+	mov	r9, #0x1000
+	bl	copy_uboot_to_ram // 位于 nand_cp.c it the first C functions
+	// r0存储copy_uboot_to_ram的返回值，即从FLASH向内存0x57e00000拷贝的字节数
+]]></programlisting>
+copy_uboot_to_ram位于nand_cp.c，这里需要注意NAND控制器支持每FLASH页读取的大小为512B/2K，所以当Flash页大小为4K的时候，它只能每块读取前2K，这里就需要在写Uboot的时候前面4页(实际上只要前两个2页面即可，因为STEPPINGSTONE只是用了4K，这里为4页)每个只能写入2K。而拷贝出的时候是反操作。
+<programlisting><![CDATA[
+include/configs/smdk6410.h
+#define MEMORY_BASE_ADDRESS     0x50000000
+#define CFG_PHY_UBOOT_BASE	MEMORY_BASE_ADDRESS + 0x7e00000
+
+cpu/s3c64xx/nand_cp.c
+int copy_uboot_to_ram (void)
+{
+	......
+	/* read NAND Block.
+	 * 128KB ->240KB because of U-Boot size increase. by scsuh
+	 * So, read 0x3c000 bytes not 0x20000(128KB).
+	 */
+	return nandll_read_blocks(CFG_PHY_UBOOT_BASE, 0x3c000, large_block);
+}
+]]></programlisting>
+copy_uboot_to_ram调用nandll_read_blocks读取了0x3c000(240K)数据，显然这是因为U-boot的体积在不断变大，当前版本的镜像大约为208K。这里的前4页只读取了前半页(page_shift - 1)。
+<programlisting><![CDATA[
+static int nandll_read_blocks (ulong dst_addr, ulong size, int large_block)
+{
+......
+		/* Read pages */
+		for (i = 0; i < 4; i++, buf+=(1<<(page_shift-1))) {
+		        nandll_read_page(buf, i, large_block);
+		}
+
+		/* Read pages */
+		for (i = 4; i < (0x3c000>>page_shift); i++, buf+=(1<<page_shift)) {
+		        nandll_read_page(buf, i, large_block);
+		}
+......
+}
+]]></programlisting>
+值得注意的是CFG_PHY_UBOOT_BASE，也即Uboot被写入的地址。这里为RAM物理地址MEMORY_BASE_ADDRESS加上0x7e00000的偏移，显然这相当于物理地址的第126M偏移处。
+<programlisting><![CDATA[
+3:	tst 	r0, #0x0
+	bne	copy_failed
+
+	ldr	r0, =0x0c000000
+	ldr	r1, _TEXT_PHY_BASE // 即CFG_PHY_UBOOT_BASE，也即0x57e00000
+1:	ldr	r3, [r0], #4
+	ldr	r4, [r1], #4
+	teq	r3, r4					
+	bne	compare_failed	/* not matched */
+	subs	r9, r9, #4
+	bne	1b
+
+4:	mov	lr, r10		/* all is OK */
+	mov	pc, lr
+]]></programlisting>
+如果存放在r0中的copy_uboot_to_ram的返回值不为0，则跳转到copy_failed。否则校验第一个4KB的代码是否和当前代码相同，如果不同跳转到compare_failed执行。否则跳转回bl copy_from_nand后的下一条指令继续执行。接下来执行after_copy子程序。
+<programlisting><![CDATA[
+after_copy:
+#ifdef CONFIG_ENABLE_MMU
+enable_mmu:
+	/* enable domain access */
+	ldr	r5, =0x0000ffff
+	mcr	p15, 0, r5, c3, c0, 0		@ load domain access register
+
+	/* Set the TTB register */
+	ldr	r0, _mmu_table_base
+	ldr	r1, =CFG_PHY_UBOOT_BASE
+	ldr	r2, =0xfff00000
+	bic	r0, r0, r2
+	orr	r1, r0, r1
+	mcr	p15, 0, r1, c2, c0, 0
+
+	/* Enable the MMU */
+mmu_on:
+	mrc	p15, 0, r0, c1, c0, 0
+	orr	r0, r0, #1			/* Set CR_M to enable MMU */
+	mcr	p15, 0, r0, c1, c0, 0
+	nop
+	nop
+	nop
+	nop
+#endif
+]]></programlisting>
+根据CONFIG_ENABLE_MMU的配置情况，通过mmu_on使能MMU单元。接下来执行stack_setup初始化栈，调用clear_bss清除BSS段等，最终调用start_armboot，它位于lib_arm/board.c。此时执行的代码已经是复制到126M处的Uboot的代码，为什么？请看_mmu_table_base引用的mmu_table在board/samsung/smdk6410/lowlevel_init.S中的定义。
+<programlisting><![CDATA[
+	ldr	pc, _start_armboot
+
+_start_armboot:
+	.word start_armboot
+]]></programlisting>
+<figure><title>Uboot在内存中的映像</title><graphic fileref="images/ubootmap.jpg"/></figure>	
+</para>
+</sect2>
+<sect2><title>bootm</title>
+<para>
+bootm是Uboot启动内核的指令，它用来加载内核镜像，和go命令类似，但是支持r0，r1，r2和bootargs传递参数。一个通常的启动参数如下为：
+<programlisting><![CDATA[
+bootcmd=nand read 0xc0008000 0x100000 0x300000;bootm 0xc0008000
+]]></programlisting>	
+其中nand read 0xc0008000 0x100000 0x300000表示从FLASH中的0x100000地址处读取长度为0x300000的数据放到内存的0xc0008000地址中，而bootm 0xc0008000则是调用do_bootm函数来启动内核镜像。
+bootm的实现位于common/cmd_bootm.c中：
+<programlisting><![CDATA[
+int do_bootm(cmd_tbl_t *cmdtp, int flag, int argc, char *argv[])
+{
+	ulong	iflag;
+	ulong	addr;
+	ulong	data, len, checksum;
+	ulong  *len_ptr = NULL; /* not to make warning. by scsuh */
+	uint	unc_len = CFG_BOOTM_LEN;
+	int	i, verify;
+	char	*name, *s;
+	int	(*appl)(int, char *[]);
+	image_header_t *hdr = &header;
+
+	s = getenv ("verify");
+	verify = (s && (*s == 'n')) ? 0 : 1;
+
+	if (argc < 2) {
+		addr = load_addr;
+	} else {
+		addr = simple_strtoul(argv[1], NULL, 16);
+	}
+]]></programlisting>	
+do_bootm的函数第一部分很简单，它首先查看环境变量"verify"，如果不为"n"，那么将对镜像进行Checksum的校验。do_bootm可以接受一个可选参数，即镜像文件在内存中的地址。如果没有指明addr，那么将使用默认的load_addr，它在早些时候被赋值为CFG_LOAD_ADDR。定义在include/configs/smdk6410.h。0x50000000即是SDRAM对应的物理地址：存储器端口2DDR/SDRAM Bank0。注意到hdr = &amp;Theader，一个代表系统镜像头的结构体image_header_t header在本文件中定义为全局变量，它将在其它函数中被引用。
+<programlisting><![CDATA[
+#define MEMORY_BASE_ADDRESS     0x50000000
+......
+#define CFG_LOAD_ADDR           MEMORY_BASE_ADDRESS     /* default load address */
+]]></programlisting>
+<programlisting><![CDATA[
+#ifdef CONFIG_ZIMAGE_BOOT
+#define LINUX_ZIMAGE_MAGIC	0x016f2818
+	if (*(ulong *)(addr + 9*4) == LINUX_ZIMAGE_MAGIC) {
+		printf("Boot with zImage\n");
+		addr = virt_to_phys(addr);
+		hdr->ih_os = IH_OS_LINUX;
+		hdr->ih_ep = ntohl(addr);
+		goto after_header_check;
+	}
+#endif
+]]></programlisting>
+使用MAGIC来验证内核的ZIMAGE镜像的正确性。addr + 9 * 4将定位到镜像中的MAGIC数，它的定义位于内核的arch/arm/boot/compressed/head.S的开始处，与此同时，这也很好的解释了.rept 8的真正意图。
+<programlisting><![CDATA[
+start:
+	.type   start,#function
+	.rept   8
+	mov     r0, r0
+	.endr
+	
+	b       1f
+	.word   0x016f2818              @ Magic numbers to help the loader
+	.word   start                   @ absolute load/run zImage address
+	.word   _edata                  @ zImage end address
+......
+]]></programlisting>
+在看到Boot with zImage信息后，addr将从逻辑地址转换为物理地址。virt_to_phys函数根据不同的系统配置将不同并只在CONFIG_ENABLE_MMU开始起使能。
+它实际上是一个宏定义，位于include/configs/smdk6410.h。virt_to_phy_smdk6410定义在board/samsung/smdk6410/smdk6410.c。分析下列代码可以清晰的看到，逻辑地址向物理地址转换的过程，首先减去内核逻辑地址的偏移，通常为0xc0000000，然后加上物理地址的偏移，这里为0x50000000。
+<programlisting><![CDATA[
+#define CONFIG_ENABLE_MMU
+#ifdef CONFIG_ENABLE_MMU
+#define virt_to_phys(x) virt_to_phy_smdk6410(x)
+#else
+#define virt_to_phys(x) (x)
+#endif
+]]></programlisting>
+<programlisting><![CDATA[
+#ifdef CONFIG_ENABLE_MMU
+ulong virt_to_phy_smdk6410(ulong addr)
+{
+        if ((0xc0000000 <= addr) && (addr < 0xc8000000))
+                return (addr - 0xc0000000 + 0x50000000);
+        else
+                printf("do not support this address : %08lx\n", addr);
+
+        return addr;
+}
+#endif
+]]></programlisting>
+描述镜像头信息的image_header_t结构体中的ih_os记录系统的类型，为IH_OS_LINUX，而其中的ih_ep则表示系统镜像的入口点(Entry Point Address)，addr也即是入口点，但是需要转换为本机字节序。after_header_che
+ck将根据系统类型使用不同的函数对镜像进行加载。
+<programlisting><![CDATA[
+	switch (hdr->ih_os) {
+	default:			/* handled by (original) Linux case */
+	case IH_OS_LINUX:
+#ifdef CONFIG_SILENT_CONSOLE
+	    fixup_silent_linux();
+#endif
+	    do_bootm_linux(cmdtp, flag, argc, argv, addr, len_ptr, verify);
+	    break;
+	......
+}
+]]></programlisting>
+	</para></sect2>
+	<sect2><title>do_bootm_linux</title>
+	<para>
+	do_bootm_linux函数因不同的硬件架构而不同，对于arm来说，它位于lib_arm/armlinux.c，一个有些复杂的函数。这个函数的开始定义了一些变量：initrd_start和initrd_end顾名思义自然是一个虚拟的Ram Disk（initrd: boot loader initialized RAM disk
+）；checksum用来校验之用，自然它由参数verify来决定；header从cmd_bootm.c extern而来，它在do_bootm函数中ih_os和ih_ep已被赋值。
+<programlisting><![CDATA[
+void do_bootm_linux (cmd_tbl_t *cmdtp, int flag, int argc, char *argv[],
+		     ulong addr, ulong *len_ptr, int verify)
+{
+	ulong len = 0, checksum;
+	ulong initrd_start, initrd_end;
+	ulong data;
+	void (*theKernel)(int zero, int arch, uint params);
+	image_header_t *hdr = &header;
+	bd_t *bd = gd->bd;
+
+#ifdef CONFIG_CMDLINE_TAG
+	char *commandline = getenv ("bootargs");
+#endif
+	theKernel = (void (*)(int, int, uint))ntohl(hdr->ih_ep);
+]]></programlisting>
+bd_t类型的bd变量是一个用来表示Uboot中串口，板卡ID，IP等板卡相关信息配置接口。commandline则是Uboot传递给Linux系统的参数，一个实际使用的bootargs环境变量如下：
+<programlisting><![CDATA[
+bootargs=root=/dev/mtdblock2 rootfstype=cramfs console=ttySAC0,115200
+]]></programlisting>
+一个值得注意的参数是theKernel，它有三个参数，并且用它来指向系统镜像的入口地址。继续回顾arch/arm/boot/compressed/head.S中的start入口，它通过.type   start,#function被定义为了函数。根据ATPCS参数传递规则，int arch, uint params参数将分别对应r1和r2寄存器，这与注释相符合。
+<programlisting><![CDATA[
+start:
+	.type   start,#function
+	.rept   8
+	mov     r0, r0
+	.endr
+......
+1:mov     r7, r1                  @ save architecture ID
+  mov     r8, r2                  @ save atags pointer
+]]></programlisting>
+接下来是一个三分支的判断，判断是否从initrd镜像，多系统文件镜像还是其他方式启动，这里将进入最后一个分支，它看起来相当简单：
+<programlisting><![CDATA[
+	if (argc >= 3) {
+	......
+	}
+	else if ((hdr->ih_type == IH_TYPE_MULTI) && (len_ptr[1])) {
+	......}
+	else{
+		/* no initrd image */
+		SHOW_BOOT_PROGRESS (14);
+
+		len = data = 0;
+	}
+]]></programlisting>
+SHOW_BOOT_PROGRESS是一个宏，它通常定义在每个.c文件的开始，它通常使用LED灯的动作来指示Uboot的启动阶段。它由CONFIG_SHOW_BOOT_PROGRESS开关来控制。打开它将有助于对Uboot启动的分析。并不是所有板卡都定义了该函数，如果没有定义将出现编译错误。一个简单的实现方法是直接printf当前的arg值，尽管这会丢失一些串口初始化前的信息。另一个用来追踪信息的选项是DEBUG宏，它用来开关common.h中的debug函数。
+<programlisting><![CDATA[
+#ifdef CONFIG_SHOW_BOOT_PROGRESS
+# include <status_led.h>
+# define SHOW_BOOT_PROGRESS(arg)	show_boot_progress(arg)
+#else
+# define SHOW_BOOT_PROGRESS(arg)
+#endif
+]]></programlisting>
+如果定义了DEBUG宏，那儿一个阶段信息将打印出来：## Transferring control to Linux (at address 50008000) ...，参考上面的地址转换函数很容易得到50008000的由来。
+<programlisting><![CDATA[
+	SHOW_BOOT_PROGRESS (15);
+
+	debug ("## Transferring control to Linux (at address %08lx) ...\n",
+	       (ulong) theKernel);
+]]></programlisting>
+<programlisting><![CDATA[
+#if defined (CONFIG_SETUP_MEMORY_TAGS) || \
+    defined (CONFIG_CMDLINE_TAG) || \
+	......
+	setup_start_tag (bd);
+	......
+#ifdef CONFIG_SETUP_MEMORY_TAGS
+	setup_memory_tags (bd);
+#endif
+#ifdef CONFIG_CMDLINE_TAG
+	setup_commandline_tag (bd, commandline);
+#endif
+	......
+	setup_end_tag (bd);
+#endif
+]]></programlisting>
+一些Uboot使用的环境变量将在这里得到解析，这些宏定义在include/configs/smdk6410.h中。当前的系统定义了CONFIG_SETUP_MEMORY_TAGS
+，CONFIG_CMDLINE_TAG和CONFIG_INITRD_TAG。这些函数协作处理Uboot传递给内核的bi_boot_params参数。下一小节将对它们进行详细的分析。
+<programlisting><![CDATA[
+	printf ("\nStarting kernel ...\n\n");	
+	......
+	cleanup_before_linux ();
+
+	theKernel (0, bd->bi_arch_number, bd->bi_boot_params);
+]]></programlisting>
+如果定义了CONFIG_USE_IRQ，那么cleanup_before_linux用来关中断，另外它关闭并清除使用的I/D Cache。当看到"Starting kernel ..."信息的时候。Uboot的工作业已结束，Linux多彩缤纷的新纪元已经来临。
+	</para>	
+	</sect2>
+	<sect2><title>tag处理函数</title>
+注意到tag处理函数的主要数据结构params，它被定义为static struct tag *params。struct tag定义在include/asm-arm/setup.h，注意到成员u是联合体，core，mem等相关的参数将共用。
+<programlisting><![CDATA[
+struct tag_header {
+	u32 size;
+	u32 tag;
+};
+struct tag {
+	struct tag_header hdr;
+	union {
+		struct tag_core		core;
+		struct tag_mem32	mem;
+		struct tag_videotext	videotext;
+		struct tag_ramdisk	ramdisk;
+		struct tag_initrd	initrd;
+		struct tag_serialnr	serialnr;
+		struct tag_revision	revision;
+		struct tag_videolfb	videolfb;
+		struct tag_cmdline	cmdline;
+		......
+	} u;
+};
+]]></programlisting>
+另外一个引人注目的参数是bd，它是Uboot配置信息的集合，bd_t类型定义在include/asm-arm/u-boot.h，bd指向被封装在一个全局的名为gd的struct global_data结构中，所有的操作均是对该gd->bd的操作。
+<programlisting><![CDATA[
+typedef struct bd_info {
+    int			bi_baudrate;	/* serial console baudrate */
+    unsigned long	bi_ip_addr;	/* IP Address */
+    unsigned char	bi_enetaddr[6]; /* Ethernet adress */
+    struct environment_s	       *bi_env;
+    ulong	        bi_arch_number;	/* unique id for this board */
+    ulong	        bi_boot_params;	/* where this board expects params */
+    struct				/* RAM configuration */
+    {
+	ulong start;
+	ulong size;
+    } 			bi_dram[CONFIG_NR_DRAM_BANKS];
+#ifdef CONFIG_HAS_ETH1
+    /* second onboard ethernet port */
+    unsigned char   bi_enet1addr[6];
+#endif
+} bd_t;
+]]></programlisting>
+	<sect3><title>setup_start_tag</title>
+setup_start_tag是一个静态函数，它对bd中的bi_boot_params进行操作，bi_boot_params被定义为一个ulong类型，这里被作为一个指针进行处理，它存储了一个包含多个tag的动态数组。这个数组的第一个元素中的hdr.tag必需是ATAG_CORE。tag_next的作用是使params指向下一个RAM区，以备后来的TAG元素使用。
+<programlisting><![CDATA[	
+/* The list must start with an ATAG_CORE node */
+#define ATAG_CORE	0x54410001
+#define tag_next(t)	((struct tag *)((u32 *)(t) + (t)->hdr.size))
+#define tag_size(type)	((sizeof(struct tag_header) + sizeof(struct type)) >> 2)
+
+struct tag_core {
+	u32 flags;		/* bit 0 = read-only */
+	u32 pagesize;
+	u32 rootdev;
+};
+
+static void setup_start_tag (bd_t *bd)
+{
+	params = (struct tag *) bd->bi_boot_params;
+
+	params->hdr.tag = ATAG_CORE;
+	params->hdr.size = tag_size (tag_core);
+
+	params->u.core.flags = 0;
+	params->u.core.pagesize = 0;
+	params->u.core.rootdev = 0;
+
+	params = tag_next(params);
+}
+]]></programlisting>	
+一个疑问是Uboot中并没有malloc类似的内存管理函数，而bi_boot_params也仅仅是一个指针而已，那么这里直接对它指向的地址进行操作会不会出现问题呢？位于board/samsung/smdk6410/smdk6410.c的board_init对其进行了初始化，MEMORY_BASE_ADDRESS即RAM的物理起始地址0x50000000。这里把参数起始地址定义到0x100的偏移处，也即256Byte处，这段地址是需要保证未被使用的。
+<programlisting><![CDATA[
+#define PHYS_SDRAM_1            MEMORY_BASE_ADDRESS /* SDRAM Bank #1 */
+#define DECLARE_GLOBAL_DATA_PTR     register volatile gd_t *gd asm ("r8")
+#define MACH_TYPE               1626
+
+int board_init(void)
+{
+	DECLARE_GLOBAL_DATA_PTR;
+
+	cs8900_pre_init();
+
+	gd->bd->bi_arch_number = MACH_TYPE;
+	gd->bd->bi_boot_params = (PHYS_SDRAM_1 + 0x100);
+	return 0;
+}
+]]></programlisting>
+另外值得注意的参数是bi_arch_number，它记录当前板卡的ID号，并作为内核启动时的第二个参数。
+	</sect3>
+	<sect3><title>setup_memory_tags</title>
+	<para>
+	<programlisting><![CDATA[
+#define CONFIG_NR_DRAM_BANKS    1  /* we used 1 bank of DRAM */
+/* it is allowed to have multiple ATAG_MEM nodes */
+#define ATAG_MEM	0x54410002
+struct tag_mem32 {
+	u32	size;
+	u32	start;	/* physical start address */
+};
+
+#ifdef CONFIG_SETUP_MEMORY_TAGS
+static void setup_memory_tags (bd_t *bd)
+{
+	int i;
+
+	for (i = 0; i < CONFIG_NR_DRAM_BANKS; i++) {
+		params->hdr.tag = ATAG_MEM;
+		params->hdr.size = tag_size(tag_mem32);
+
+		params->u.mem.start = bd->bi_dram[i].start;
+		params->u.mem.size = bd->bi_dram[i].size;
+
+		params = tag_next (params);
+	}
+}
+#endif /* CONFIG_SETUP_MEMORY_TAGS */
+]]></programlisting>
+u.mem.start和u.mem.size均是从bd->bi_dram获取，它们在dram_init中赋值。显然这里的开始地址依然是0x50000000，而大小是256Mb。
+<programlisting><![CDATA[
+#define PHYS_SDRAM_1            MEMORY_BASE_ADDRESS /* SDRAM Bank #1 */
+#define PHYS_SDRAM_1_SIZE       0x10000000		/* 256M */
+int dram_init(void)
+{
+	DECLARE_GLOBAL_DATA_PTR;
+
+	gd->bd->bi_dram[0].start = PHYS_SDRAM_1;
+	gd->bd->bi_dram[0].size = PHYS_SDRAM_1_SIZE;
+
+	return 0;
+}
+]]></programlisting>
+	</para>
+	</sect3>
+	<sect3><title>setup_commandline_tag</title>
+	<para>
+setup_start_tag是一个非常简单明了的函数，它将传入的commandline参数复制到struct tag_cmdline中cmdline中，并以'\0'结束。这里的cmdline实际就是bootargs环境变量的值。
+<programlisting><![CDATA[	
+/* command line: \0 terminated string */
+#define ATAG_CMDLINE	0x54410009
+
+struct tag_cmdline {
+	char	cmdline[1];	/* this is the minimum size */
+};	
+
+static void setup_commandline_tag (bd_t *bd, char *commandline)
+{
+	char *p;
+
+	if (!commandline)
+		return;
+
+	/* eat leading white space */
+	for (p = commandline; *p == ' '; p++);
+
+	if (*p == '\0')return;
+
+	params->hdr.tag = ATAG_CMDLINE;
+	params->hdr.size =
+		(sizeof (struct tag_header) + strlen (p) + 1 + 4) >> 2;
+
+	strcpy (params->u.cmdline.cmdline, p);
+	params = tag_next (params);
+}
+]]></programlisting>	
+	</para>		
+	</sect3>
+	<sect3><title>setup_end_tag</title>
+	<para>
+tag数组的组后一个元素必须是ATAG_NONE类型，它表示当前数组的结束。	
+<programlisting><![CDATA[	
+/* The list ends with an ATAG_NONE node. */
+#define ATAG_NONE	0x00000000
+
+static void setup_end_tag (bd_t *bd)
+{
+	params->hdr.tag = ATAG_NONE;
+	params->hdr.size = 0;
+}	
+]]></programlisting>
+	</para>
+	</sect3>
+
+<figure><title>Uboot传递给内核的tag组织形式</title><graphic fileref="images/boot_params.jpg"/></figure>	
+</sect2>
+</sect1>

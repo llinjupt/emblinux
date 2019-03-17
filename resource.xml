@@ -1,0 +1,234 @@
+<sect1><title>IO设备管理</title>
+<sect2><title>总线</title>
+	<para>
+为了确保计算机能够工作，必须提供数据通信线路，让信息在连接CPU，RAM和I/O设备之间流动。这些数据通路总称为总线。在x86上一种典型的系统总线是PCI(Peripheral Component Interconnect)总线。其他类型的总线有ISA，MCA，SCSI和USB等。
+</para>	
+<para>
+一台计算机通常包含几种不同类型的总线，它们通常被称作"桥"的硬件设备连接在一起。两条高速总线用于在内存芯片上来回传送数据：前端总线将CPU连接到RAM控制器上，而后端总线将CPU直接连接到外部硬件的高速缓存上。主机上的桥将系统总线和前端总线连接在一起。
+</para>	
+<para>
+任何I/O设备有且仅能连接一条总线。CPU和I/O设备之间的数据通路通常称为I/O总线。每个连接到I/O总线上的设备都有自己的I/O地址集，通常称为I/O端口(I/O Port)。于此对应，连接地址的数据通路被称为地址总线，另外还有线路较少的控制总线。
+</para>
+<para>
+随着超大规模集成电路的迅速发展，器件特征尺寸越来越小，芯片规模越来越大，可以在单芯片上集成上百万到数亿只晶体管。如此密集的集成度使现在能够在一小块芯片上把以前由CPU和若干I/O接口等数块芯片实现的功能集成起来，由单片集成电路构成功能强大的、完整的系统，这就是通常所说的片上系统SoC(System on Chip)。由于功能完整，SoC逐渐成为嵌入式系统发展的主流。 
+</para><para>
+SoC的设计过程中，最具特色的是IP复用技术。即选择所需功能的IP核，集成到一个芯片中。由于IP核的设计千差万别，IP核的连接就成为构造SoC的关键。片上总线0CB(On-Chip Bus)是实现SoC中IP核连接最常见的技术手段，它以总线方式实现IP核之间数据通信。	
+</para>
+<para>
+业界有很多片上总线标准，其中由ARM公司推出的AMBA(Advanced Microcontroller Bus Architecture)片上总线受到了广大IP开发商和SoC系统集成者的青睐，已成为一种流行的工业标准片上结构。AMBA规范主要包括了AHB(Advanced High performance Bus)系统总线(ASB系统总线与AHB类似，性能不如AHB)和APB(Advanced Peripheral Bus)外围总线。
+<figure><title>ARM总线布局</title><graphic fileref="images/res_bus.gif"/></figure></para>
+AMBA的发展历史如下表所示：
+<table><title>AMBA发展史</title>
+<tgroup cols="2">
+<thead><row><entry>版本</entry><entry>描述</entry></row></thead>
+<tbody>
+<row><entry>AMBA 1.0</entry><entry>ASB 和 APB</entry></row>
+<row><entry>AMBA 2.0</entry><entry>AHB, ASB 和 APB</entry></row>
+<row><entry>AMBA 3.0</entry><entry>Advanced eXtensible Interface(AXI)</entry></row>
+</tbody>
+</tgroup>
+</table>
+AMBA 3.0 AXI总线与2003年发布，兼容符合AMBA 2.0标准总线的设备。
+<sect3><title>AMBA AHB</title>
+AHB(Advanced High-performance Bus)主要用于高性能模块(如CPU、DMA和DSP等)之间的连接，作为SoC的片上系统总线，它包括以下一些特性：
+<itemizedlist> 
+	<listitem>上升沿触发操作；</listitem>
+	<listitem>非三态的实现方支持突发传输；</listitem>
+	<listitem>流水线操作；</listitem>	
+	<listitem>可支持多个总线主设备（最多16个）；</listitem>
+	<listitem>支持burst突发多数据传输；</listitem>
+	<listitem>可配置总线带宽：8、16、32、64、128bits；</listitem>	
+</itemizedlist>
+典型的AMBA AHB系统设计包含以下的成分：
+<itemizedlist>
+<listitem>AHB 主机 总线主机能够通过提供地址和控制信息发起读写操作。任何时候只允许一个总线主机处于有效状态并能使用总线。</listitem>
+<listitem>AHB 从机 总线从机在给定的地址空间范围内响应读写操作。总线从机将成功、失败或者等待数据传输的信号返回给有效的主机。</listitem>
+<listitem>AHB 仲裁器 总线仲裁器确保每次只有一个总线主机被允许发起数据传输。即使仲裁协议已经固定，任何一种仲裁算法，比如最高优先级或者公平访问都能够根据应用要求而得到执行。AHB必须只包含一个仲裁器，尽管在单总线主机系统中这显得并不重要。</listitem>
+<listitem>AHB 译码器 AHB 译码器用来对每次传输进行地址译码并且在传输中包含一个从机选择信号。</listitem>
+</itemizedlist>
+AMBA AHB 总线协议设计使用一个中央多路选择器互联方案。使用该方案所有总线主机设备输出地址和控制信号来指示它们想执行的传输同时仲裁器决定哪一个主机能够将它的地址和控制信号连通到所有的从机。当然也需要一个译码器来控制读数据和响应多路信号选择器，多路信号选择器选中来自传输中所包含从机的适当信号。
+<figure><title>多路选择器互联</title><graphic fileref="images/res_ahb.gif"/></figure>
+当主设备想要读取或者写出数据时，一个精简过的过程描述如下所示：
+<itemizedlist> 
+<listitem>主机通过发出一个请求信号给仲裁器。</listitem>
+<listitem>仲裁器仲裁主机能够被授予使用总线时，指示主机获取总线并将多路选择器选通当前主机总线。</listitem>
+<listitem>被授权的总线主机通过驱动地址和控制信号来发起一次AMBA AHB传输。</listitem>
+<listitem>译码器地址总线上的地址产生从机选择信号。此时建立了一个主机到一个从机之间的握手。</listitem>
+<listitem>读或者写数据。</listitem>
+<listitem>主从设备释放总线。</listitem>
+</itemizedlist>
+</sect3>
+<sect3><title>AMBA APB</title>
+<para>
+APB(Advanced Peripheral Bus)主要用于低带宽的周边外设之间的连接，例如UART、1284等，它的总线架构不像AHB支持多个主模块，在APB里面唯一的主模块就是APB 桥。其特性包括：两个时钟周期传输；无需等待周期和回应信号；控制逻辑简单，只有四个控制信号。</para>
+<para>APB 表现为一个局部二级总线，封装为AHB 或者ASB 的一个外设：APB桥。APB 在AHB 和ASB信号的基础上直接为系统总线提供了低功耗的延伸。
+APB 规定所有信号的传输只和时钟的上升沿相关。具有以下特点：
+<itemizedlist>
+<listitem>APB 桥将AHB 或者ASB 传输转变成适合于APB 从设备的形式。</listitem>
+<listitem>APB 桥提供所有地址、数据和控制信号的锁存</listitem>
+<listitem>同时提供一个二级译码以产生APB 外设的从机选择信号。</listitem>
+<listitem>APB总线上的所有其他模块都是APB从设备</listitem>
+</itemizedlist>
+</para>
+<figure><title>APB桥接口图</title><graphic fileref="images/res_apb.gif"/></figure>
+</sect3>
+<sect3><title>AMBA AXI</title>
+<para>随着超大规模Soc的兴起，嵌入式系统的性能需求越来越高，导致对片上总线的带宽要求也越来越苛刻。虽然AHB总线协议在理论上可以让用户不断地增加总线位宽以达到更高带宽，但在节省功耗的前提下，用户希望通过极窄的总线宽度、极低的总线频率来实现很高的数据吞吐量，也就是对协议传输效率的要求达到极致。AMBA 3.0 AXI(Advanced eXtensible Interface)协议正是在这种背景下应运而生。</para>
+AXI 协议的主要特点包括:
+<itemizedlist>
+<listitem>通道体系结构:5个独立的通道，分别是读地址、写地址、读数据、写数据通道和写响应通道。地址和
+数据 通道分开，能对每一个通道进行单独优化，可以根据需要控制时序通道，将时钟频率提升到最高，
+并将 延时降到最低。信息流只以单方向传输，因而简化了时钟域间的桥接;</listitem>
+<listitem>支持多项数据交换:通过并行执行突发操作，极大地提高了数据吞吐能力，因而可以在
+更短 时间内完成所需任务，不但可叨足所需的高性能要求，还能减少功耗;</listitem>
+<listitem>VALID和READY的双向握手机制:每个通道都有一套这种握手机制。在源端，当数据、控制信息在通道
+上有 效时，置VALID信号有效;在终端，当接收到数据时，置READY信号有效。读、写数据通道均有LAST
+信 号，当传输最后一个数据时置此信号有效;</listitem>
+<listitem>增强的灵活性:AXI技术拥有对称的主从接口，无论在点对点或在多层系统中，都能十分方便地使用
+AX I技术;</listitem>
+<listitem>低功耗节电模式:AXI协议定义了在进出低功耗节电模式前后的握手协议。规定如何通知进入低功耗模
+式， 何时关断时钟，何时开启时钟，如何退出低功耗模式。这使得所有IP在进行功耗控制的设计时，
+有 据可依，容易集成在统一的系统中。</listitem>
+</itemizedlist>
+AXI协议是一种多通道传输总线，其最大特色是将读/写地址、读数据、写数据、
+写响应信号在不同的通道中发送，支持乱序传输数据，用功来标识各个访问的归属。主设备在没有得到
+返回数据的情况下可发出多个读写操作。相较于AHB总线有如下区别：
+<table><title>AHB和AXI比较</title>
+<tgroup cols="2">
+<thead><row><entry>AMBA 2.0 AHB协议</entry><entry>AMBA 3.0 AXI协议</entry></row></thead>
+<tbody>
+<row><entry>固定的地址数据传输通道</entry><entry>5个独立的读/写地址、数据、响应通道</entry></row>
+<row><entry>双向连接时序关系复杂</entry><entry>除握手信号反向外每一通道均单向</entry></row>
+<row><entry>时序隔离困难序</entry><entry>寄存器隔离时</entry></row>
+<row><entry>工作频率受限</entry><entry>流水线时钟</entry></row>
+<row><entry>低效率的异步桥接</entry><entry>高性能异步桥接</entry></row>
+<row><entry>每个数据对应单独地址</entry><entry>一次突发只需要首地址</entry></row>
+<row><entry>每一时刻支持单一传输</entry><entry>同时支持多重传输，读/写并发传输</entry></row>
+<row><entry>﻿地址数据一一对应</entry><entry>乱序数据传输</entry></row>
+<row><entry>不能天然支持ARM v6体系</entry><entry>支持独占(exclusive)访A方式</entry></row>
+<row><entry>无安全性支持</entry><entry>对非法传输的安全性支持</entry></row>
+</tbody>
+</tgroup>
+</table>
+当前多数IP广泛采用的片上总线是AMBA2.0 协议。如何利用IP复用技术，使用这些现存IP构建基于AXI协议的Soc系统呢?AMBA3 .0A XI 协议其中的一个优点是向后兼容AMBA2.0，支持现有使用AMBA2.0 协议的子系统。这一特点让IP复用成为可能。
+</sect3>
+<sect3><title>S3C6410总线</title>
+<para>S3C6410 是一个16/32 位RISC 微处理器，采用了64/32 位内部总线架构。该64/32 位内部总线结构由AXI、AHB 和APB 总线组成。它还包括许多强大的硬件加速器，像视频处理，音频处理，二维图形，显示操作和缩放。一个集成的多格式编解码器（ MFC ）支
+持MPEG4/H.263/H.264 编码、译码以及VC1 的解码。这个H/W 编码器/解码器支持实时视频会议和NTSC、PAL 模式的TV 输出。</para>
+<para>S3C6410 有一个优化的接口连线到外部存储器。存储器系统具有双重外部存储器端口、 DRAM 和FLASH/ROM/ DRAM 端口。 DRAM 的端口可以配置为支持移动DDR，DDR，移动SDRAM 和SDRAM 。FLASH/ROM/DRAM端口支持NOR-FLASH，NAND-FLASH，ONENAND，CF，ROM 类型外部存储器和移动DDR，DDR，移动SDRAM 和SDRAM 。</para>
+<para>为减少系统总成本和提高整体功能，S3C6410 包括许多硬件外设，如一个相机接口，TFT 24 位真彩色液晶显示控制器，系统管理器（电源管理等），4 通道UART，32 通道DMA，4 通道定时器，通用的I/O 端口，
+IIS 总线接口，IIC 总线接口，USB 主设备，在高速（480 MB/S）时USB OTG 操作，SD 主设备和高速多媒体卡接口、用于产生时钟的PLL。</para>
+<figure><title>S3C6410功能框图</title><graphic fileref="images/res_block.gif"/></figure>
+ARM1176 处理器是通过64 位AXI 总线连接到几个内存控制器上的。这样做是为了满足带宽需求。而外设挂载到AXI/APB桥，并通过AXI32位接口连入CPU。而DMA控制器同时接入了AXI64和AXI32总线，显然它可以在CPU处理其他工作时，获取总线，并在高速设备和低速设备之间完成数据的搬移。
+</sect3>
+<sect3><title>IP间通信</title>
+通信主要涉及到CPU和IP，IP和IP之间的通信。ARM中为了支持这类通信，通过对从设备统一编址，所有从设备都被编排到0-4G地址空间内：设备访问区。
+<itemizedlist> 
+	<listitem>每一个从设备都占用系统中的一段地址空间。</listitem>
+	<listitem>由于每个设备的地址空间都不同，所以从设备都是可寻址的。</listitem>
+  <listitem>寄存器/存储器都是内存映射方式访问。如果在MMU启用的情况下，需要进行物理地址到虚拟地址的映射。</listitem>
+	<listitem>CPU/IP读写其他IP的数据类似于读写存储器。</listitem>	
+</itemizedlist>
+<para>
+主设备被仲裁授权(Arbiter Grant)后，可以访问总线上的所有从设备。典型的IP之间的通信如DMA传输。CPU总是作为主设备存在，而其他IP相对于CPU来说总是作为从设备存在。IP可以发出一个中断请求，CPU进入中断模式，由ISR来处理中断：通常是对设备地址的读写。只有在CPU不占用总线时，其他IP才有可能成为主设备。
+<figure><title>CPU和IP通信</title><graphic fileref="images/cpu_ip.gif"/></figure>
+一个完整的DMA传输，同时需要CPU和IP，IP和IP之间的通信：
+<itemizedlist> 
+	<listitem>CPU通过DMA的状态寄存器，检查DMA是否可用。</listitem>
+	<listitem>CPU通过DMA的控制寄存器设置数据源地址（source address）、目的地址（destination address）和数据长度（size）。</listitem>
+	<listitem>通过控制寄存器启动DMA。</listitem>
+	<listitem>DMA把数据从数据源地址所属的设备搬移到数据目的地址所属的设备。</listitem>
+	<listitem>DMA传输完毕或者出错时设置状态寄存器，并向CPU发出中断请求。</listitem>
+	<listitem>CPU检查DMA的状态寄存器，确定数据是否传输完毕。</listitem>
+</itemizedlist>
+</para>
+<para>
+其实CPU对外设物理地址的访问有两种方式：
+</para>
+<para><emphasis>内存映射:</emphasis>
+有些体系结构的CPU（如ARM，PowerPC等）通常只实现一个物理地址空间（RAM）。在这种情况下，外设I/O端口的物理地址就被映射到CPU的单一物理地址空间中，而成为存储空间的一部分。此时，CPU可以象访问一个内存单元那样访问外设I/O端口，而不需要设立专门的外设I/O指令。这就是所谓的“存储空间映射方式”（Memory Mapped）。简而言之，就是内存（一般是SDRAM）与外设寄存器统一编址。
+</para>
+<para><emphasis>端口映射:</emphasis>
+一些体系结构的CPU（典型地如x86）则为外设专门实现了一个单独地地址空间，称为“I/O地址空间”或者“I/O端口空间”。这是一个与CPU地RAM物理地址空间不同的地址空间，所有外设的I/O端口均在这一空间中进行编址。CPU通过设立专门的I/O指令（如X86的IN和OUT指令）来访问这一空间中的地址单元（也即I/O端口）。这就是所谓的“I/O映射方式”（I/O Mapped）。与RAM物理地址空间相比，I/O地址空间通常都比较小，如x86 CPU的I/O空间就只有64KB（0-0xffff）。这是“I/O映射方式”的一个主要缺点。而且必须要专门的汇编指令才能处理。
+</para>
+<para>
+访问I/O端口是非常简单的，但是如何检测哪些I/O端口分配给哪些设备使用就不那么简单了。通常内核设备驱动程序为了探测硬件设备，需要盲目地向某一I/O端口写入数据，但是如果其他硬件设备已经使用了这个区域，那么系统就会崩溃。为了防止这种情况的发生，内核必须使用"资源"来记录分配给每个硬件设备的I/O端口。
+</para>
+</sect3>
+</sect2>
+<sect2><title>资源resource</title>
+资源(resource)表示某个实体的一部分，这部分被互斥地非配给设备驱动程序。Linux中一个资源表示一定范围的I/O端口地址。每个资源对应的信息保存在resource数据结构中。所有的同种资源都插入到一个树形结构中。
+<programlisting><![CDATA[
+include/linux/ioport.h
+
+/* Resources are tree-like, allowing nesting etc.. */
+struct resource {
+        resource_size_t start;
+        resource_size_t end;
+        const char *name;
+        unsigned long flags;
+        struct resource *parent, *sibling, *child;
+};
+]]></programlisting>
+<itemizedlist> 
+	<listitem>name资源拥有者的描述，它被定义为const类型，所以是一常量字符串。</listitem>
+	<listitem>start和end则代表了资源范围的起止端口的物理地址。</listitem>
+	<listitem>flags中的一些位描述资源的类型，一些位描述资源的当前状态。</listitem>
+	<listitem>parent，sibling和child分别指向资源树中当前资源的父，兄弟和第一个孩子节点。</listitem>
+</itemizedlist>
+当前Linux系统定义了两种资源ioport_resource和iomem_resource，它们对应两种I/O端口访问方式。在ARM上通常只用到iomem_resource。
+<programlisting><![CDATA[
+kernel/resource.c
+
+struct resource ioport_resource = {
+        .name   = "PCI IO",
+        .start  = 0,
+        .end    = IO_SPACE_LIMIT,
+        .flags  = IORESOURCE_IO,
+};
+EXPORT_SYMBOL(ioport_resource);
+
+struct resource iomem_resource = {
+        .name   = "PCI mem",
+        .start  = 0,
+        .end    = -1,
+        .flags  = IORESOURCE_MEM,
+};
+]]></programlisting>
+节点的蛤仔被收益在一个链表中，其第一个元素由child指向。sibling字段指向链表中的下一个节点。为何要使用这种树形结构呢？一个设备控制器可能控制同一类型的多个设备，那么该控制器就可以作为一个父设备存在，它所占用的I/O端口就非别分配给这些设备使用，那么这些设备就依据它们占据I/O端口地址的高低链接到一个链表中，它们之间建立兄弟关系，最后第一个设备就和该设备控制器建立父子关系，如下图所示：
+<figure><title>I/O设备内存映射树</title><graphic fileref="images/res_tree.gif"/></figure>
+内核procfs文件系统提供了查看当前I/O设备端口或者地址使用情况的接口：
+<programlisting><![CDATA[
+#cat /proc/iomem
+# cat /proc/iomem 
+50000000-5fffffff : System RAM
+  5002a000-504b7fff : Kernel text
+  504b8000-5053bc8d : Kernel data
+......
+
+#cat /proc/ioports	// 对于使用端口映射方式的系统(ex. x86)
+0000-0cf7 : PCI Bus 0000:00
+  0000-001f : dma1
+  0020-0021 : pic1
+  0040-0043 : timer0
+......
+]]></programlisting>
+</sect2>
+<sect2><title>系统实现</title>
+request_resource();
+把一个给定范围分配给一个I/O设备。
+allocate_resource();
+在资源树中寻找一个给定大小和排列方式的可用范围；若存在，就将这个范围分配给一个I/O设备。
+release_resource();
+释放以前分配给I/O设备的给定范围。
+内核也为以上应用于I/O端口的函数定义了一些快捷函数:request_region()从ioport_resource中自动分配一块满足请求大小的资源;check_mem_region则是从iomem_resource中分配。与此同时release_region和release_mem_region是对应的资源释放函数。
+<para>
+Linux resource机制存在的原因总结如下：
+<itemizedlist> 
+	<listitem>用来记录当前系统中I/O设备对地址或者端口资源的使用情况，方便查询。</listitem>
+	<listitem>在资源分配记录的基础上实现资源的分配，检查以及回收。</listitem>
+	<listitem>将设备I/O资源统一管理，封装函数，方便使用。resource机制并不做端口和地址向虚拟地址映射的工作，这些工作在页面初始化中或者通过动态映射(ioremap)函数来完成，只有做过地址映射，才能通过虚拟地址访问外设。</listitem>
+</itemizedlist>
+</para>
+</sect2>
+</sect1>

@@ -1,0 +1,397 @@
+<sect1><title>Linux模式设计</title>
+<sect2><title>数据大小</title>
+内核为了保持最大的兼容性和代码灵活性，不可能直接对某个数据类型定义它的大小范围。但是很多时候又要用到这些最大值最小值或者该数据类型可以表示的数据范围，比如初始化一个值为最大/小值，或者检验数据是否位于某个类型的范围内。
+<programlisting><![CDATA[
+include/linux/kernel.h
+#define USHORT_MAX      ((u16)(~0U))
+#define SHORT_MAX       ((s16)(USHORT_MAX>>1))
+#define SHORT_MIN       (-SHORT_MAX - 1)
+
+#define INT_MAX         ((int)(~0U>>1))
+#define INT_MIN         (-INT_MAX - 1)
+#define UINT_MAX        (~0U)
+
+#define LONG_MAX        ((long)(~0UL>>1))
+#define LONG_MIN        (-LONG_MAX - 1)
+#define ULONG_MAX       (~0UL)
+
+#define LLONG_MAX       ((long long)(~0ULL>>1))
+#define LLONG_MIN       (-LLONG_MAX - 1)
+#define ULLONG_MAX      (~0ULL)
+]]></programlisting>
+内核通过C语言的强制转换来实现，首先定义无符号数的最大值，比如USHORT_MAX。然后去掉符号位可以得到该类型有符号的最大值，而最小值的绝对值则比最大值的大1，所以通过对有符号的最大值取反减1，就可以得到有符号的最小值。根据这一规则可以很容易写出char类型的相关数据大小。转换的原理从下图中可以更清晰的看出来：
+<figure><title>char型数据有无符号转换图</title><graphic fileref="images/mode_cov.gif"/></figure>
+根据Linux对short，int，long以及long long数据类型大小的定义，可以很容易定义出char型的数据大小，示例如下：
+<programlisting><![CDATA[
+#include <stdio.h>
+
+#define UCHAR_MAX      ((unsigned char)(~0U))
+#define CHAR_MAX       ((char)(UCHAR_MAX >> 1))
+#define CHAR_MIN       (-CHAR_MAX - 1)
+
+int main()
+{
+  printf("UCHAR_MAX:\t%u\n", UCHAR_MAX);
+  printf("CHAR_MAX:\t%d\n", CHAR_MAX);
+  printf("CHAR_MIN:\t%d\n", CHAR_MIN);
+
+  return 0;
+}
+]]></programlisting>
+得到如下结果：
+<programlisting><![CDATA[
+UCHAR_MAX:	255
+CHAR_MAX:	127
+CHAR_MIN:	-128
+]]></programlisting>
+定义数据大小的方法有很多种，比如通过接下来数据对齐小节中的偏移位机制，但是这会在生成第一个数值时产生移位运算，并且在生成宽度大于32位的类型时要分别考虑，没有上面方法的效率高。一个完成相同功能的示例如下，它的思想参考数据对齐小节。
+<programlisting><![CDATA[
+#define CHAR_SHIFT      (sizeof(char) << 3 + 1)
+#define UUCHAR_MAX      ((unsigned char)((1 << CHAR_SHIFT) - 1))
+......
+]]></programlisting>
+</sect2>
+<sect2><title>数据比较</title>
+由于Linux代码采用Gcc编译器编译，所以它可以采用Gcc对C语言的扩展特性，以实现高效的代码。其中运用非常广泛的扩展就是复合语句。Gcc把包含在圆括号和大括号双层括号内的复合语句看作是一个表达式，它可以出现在任何允许表达式的地方，而复合语句中可以声明局部变量，以及循环条件判断等复杂处理。而表达式的最后一条语句必须是一个表达式，它的计算结果作为返回值。
+<programlisting><![CDATA[
+int a = ({typeof(a) _a = 0; ++_a;});
+]]></programlisting>
+上例中符合表达式中声明了局部变量_a，而返回值为++_a的结果，所以a的值为1。基于这种扩展，内核可以通过在复合语句中定义局部变量而表面自加自减运算符的副作用问题。内核中的min_t和max_t宏就是这样实现的。
+<programlisting><![CDATA[
+include/linux/kernel.h
+#define min_t(type, x, y) ({			\
+	type __min1 = (x);			\
+	type __min2 = (y);			\
+	__min1 < __min2 ? __min1: __min2; })
+
+#define max_t(type, x, y) ({			\
+	type __max1 = (x);			\
+	type __max2 = (y);			\
+	__max1 > __max2 ? __max1: __max2; })
+]]></programlisting>
+尽管多数时候通过使用这类宏，可以避免参数的副作用，但是这会增加内存的开销和执行效率，所以如果能够保证参数不存在副作用，那么使用通常的如下定义即可：
+<programlisting><![CDATA[
+#define min(a, b) ((a) > (b)? (b) : (a))
+#define max(a, b) ((a) > (b)? (a) : (b))
+]]></programlisting>
+以上的min_t和max_t宏适需要提供数据类型，typeof的出现使这一步也可被省略。
+<programlisting><![CDATA[
+include/linux/kernel.h
+#define min(x, y) ({				\
+	typeof(x) _min1 = (x);			\
+	typeof(y) _min2 = (y);			\
+	(void) (&_min1 == &_min2);		\
+	_min1 < _min2 ? _min1 : _min2; })
+
+#define max(x, y) ({				\
+	typeof(x) _max1 = (x);			\
+	typeof(y) _max2 = (y);			\
+	(void) (&_max1 == &_max2);		\
+	_max1 > _max2 ? _max1 : _max2; })
+]]></programlisting>
+观察min和max的实现，它们通过typeof获取x和y的类型，然后定义局部变量以消除参数副作用。注意到中间的比较运算，如果x和y的类型不同，那么编译器将提示如下警告信息，这对检查代码很有帮助。
+<programlisting><![CDATA[
+xxx.c:35: warning: comparison of distinct pointer types lacks a cast
+]]></programlisting>
+</sect2>
+<sect2><title>数据圆整</title>
+圆整通常被理解为为满足某种要求而进行的数据修正。按照修正后的数据在数值上是否比原数据大，又可分为向上圆整和向下圆整。它们很像对模拟信号进行采样，对一定范围的数据向一个固定的数据靠拢。Linux内核中定义了面向整除的圆整计算宏。第一个叫做roundup。
+<programlisting><![CDATA[
+#define roundup(x, y) ((((x) + ((y) - 1)) / (y)) * (y))
+]]></programlisting>
+roundup类似于一个数学函数，它总是尝试找到大于x并接近x的可以整除y的那个数，也即向上圆整。那么为何内核不同是提供roundown宏定义呢？这是由于对于整型相除而言，所得的结果本身就是向下圆整的了。所以roundown可以很容易定义：
+<programlisting><![CDATA[
+#define roundown(x, y) (((x) / (y)) * (y))
+]]></programlisting>
+那么如何理解roundup的定义呢？看起来是尝试将(x) + ((y) - 1)的结果对y做向下取整，为何这样就可以实现x对y的向上取整呢？除法的本质在于对量的均分，那么观察下图：
+<figure><title>向上圆整算法证明</title><graphic fileref="images/mode_round.gif"/></figure>
+<para><![CDATA[对于x = βy + δ来说，β>=0，y>0，并且0<=δ<y。因为y>0且为整数，那么0<=δ<y等价于0<=δ<=y-1。对于圆整运算来说，可以将x中可以整除y的部分βy提取出来，只对剩下的δ部分做圆整运算然后加上βy。同理这里对δ+y-1部分进行圆整，由于0<=δ<=y-1，得到y-1 <= δ + y-1 <= 2y-2。考虑两种情况：
+当可以整除时，δ=0，也即取y-1，显然圆整值为0，也即不用向上圆整；而不可整除时，δ>0，所以y-1 < δ + y-1 <= 2y-2，又因为y为整数，所以y <= δ + y-1 <= 2y-2成立，由于y=1时符合第一种情况，所以只需考虑y>=2的情况。y==y并且2y-2在y>=2时>=y且<2y，所以保证δ + y-1的圆整值为1，也即不整除则要始终向上圆整。]]>
+</para>
+一种更易被人理解的定义方式如下，它根据取余的结果计算圆整，由于整除的概率很低，所以这种算法每次都要多计算一次取余，而不能完全避免对除法的运算以消减取余算法的影响，它的效率要低。
+<programlisting><![CDATA[
+#define roundup(x, y) ((x)%(y) ? ((x)/(y) + 1) * (y) : x)
+]]></programlisting>
+一段如下的测试程序可以看到它的作用：
+<programlisting><![CDATA[
+  int divisor = 0;
+  printf("divisor\troundup\trounddown\n");
+  for(; divisor < 5; divisor++)
+	  printf("%d:\t%d\t%d\n", divisor, roundup(divisor, 2), roundown(divisor, 2));
+]]></programlisting>
+输出结果如下：
+<programlisting><![CDATA[
+divisor	roundup	rounddown
+0:	0	0
+1:	2	0
+2:	2	2
+3:	4	2
+4:	4	4
+]]></programlisting>
+内核提供的另一个宏DIV_ROUND_UP用来对除法的结果进行圆整，也即总是取大于n并接近n的那个数整除d后的结果。DIV_ROUND_UP类似于roundup，只是少了乘的动作，原理也是相同的。
+<programlisting><![CDATA[
+#define DIV_ROUND_UP(n,d) (((n) + (d) - 1) / (d))
+]]></programlisting>
+DIV_ROUND_UP的处理结果如下：
+<programlisting><![CDATA[
+0, 0
+1, 1
+2, 1
+3, 2
+4, 2
+]]></programlisting>
+圆整可以通过除法实现，另一种实现方式是通过对低比特位进行清0操作，但是它们只适合对对齐到2的幂指数的操作有效。
+</sect2>
+<sect2><title>数据对齐</title>
+<para>
+内核在某些应用中，为了实现某种机制，比如分页，或者提高访问效率需要保证数据或者指针地址对齐到某个特定的整数值，比如连接代码脚本。这个值必须是2<superscript>N</superscript>。数据对齐，可以看做向上圆整的一种运算。
+<programlisting><![CDATA[
+include/linux/kernel.h
+#define ALIGN(x, a)              __ALIGN_MASK(x, (typeof(x))(a) - 1)
+#define __ALIGN_MASK(x, mask)    (((x) + (mask))&~(mask))
+#define PTR_ALIGN(p, a)         ((typeof(p))ALIGN((unsigned long)(p), (a)))
+#define IS_ALIGNED(x, a)        (((x) & ((typeof(x))(a) - 1)) == 0)
+]]></programlisting>
+内核提供了两个用来对齐的宏ALIGN和PTR_ALIGN，一个实现数据对齐，而另一个实现指针的对齐。它们实现的核心都是__ALIGN_MASK，其中mask参数为低N位全为1，其余位全为0的掩码，它从圆整目标值2<superscript>N</superscript> - 1得到。__ALIGN_MASK得到对齐值，对于数据来说直接返回即可，而对于指针则需要进行强制转换。IS_ALIGNED宏用来判断当前值是否对齐与指定的值。内核中的分页对齐宏定义如下：
+<programlisting><![CDATA[
+arch/arm/include/asm/page.h
+/* PAGE_SHIFT determines the page size */
+#define PAGE_SHIFT              12
+#define PAGE_SIZE               (1UL << PAGE_SHIFT)
+
+include/linux/mm.h
+/* to align the pointer to the (next) page boundary */
+#define PAGE_ALIGN(addr) ALIGN(addr, PAGE_SIZE)
+]]></programlisting>
+PAGE_SIZE定义在体系架构相关的代码中，通常为4K。内核中提供的特性功能的对齐宏均是对ALIGN的扩展。下面提供一个代码示例，并给出结果：
+<programlisting><![CDATA[
+#include <stdio.h>
+......
+int main()
+{
+  int a = 0 ,i = 0;
+  int *p = &a;
+
+  for(; i < 6; i++)
+	  printf("ALIGN(%d, 4): %x\n", i, ALIGN(i, 4));
+	
+  printf("p:%p, PTR_ALIGN(p, 8): %p\n", p, PTR_ALIGN(p, 8));
+  printf("IS_ALIGNED(7, 8): %d, IS_ALIGNED(16, 8): %d\n", IS_ALIGNED(7, 8), IS_ALIGNED(16, 8));
+	
+  return 0;
+}
+]]></programlisting>
+对齐宏测试结果：
+<programlisting><![CDATA[
+ALIGN(0, 4): 0
+ALIGN(1, 4): 4
+......
+ALIGN(4, 4): 4
+ALIGN(5, 4): 8
+p:0xbf96c01c, PTR_ALIGN(p, 8): 0xbf96c020
+IS_ALIGNED(7, 8): 0, IS_ALIGNED(16, 8): 1
+]]></programlisting>
+<figure><title>数据对齐图</title><graphic fileref="images/mode_align.gif"/></figure>
+	</para>
+</sect2>
+<sect2><title>位图操作</title>
+通过位图提供的两种状态可以在非常节约内存的情况下表示开关变量，并且同类这类变量可以紧凑而高效的统一进行处理。有很多内核子系统都需要位图的支持，但是不同的情况又需要不同的位图个数，比如SMP系统上的CPU位图cpumask的位数位NR_CPUS，而内存管理区的位图数为MAX_ZONES_PER_ZONELIST。但是所有的位图都要转换为基本的数据类型，比如int，short等，Linux将定义位图的功能集中到一个名为DECLARE_BITMAP的宏。
+<programlisting><![CDATA[
+include/linux/types.h
+#define DECLARE_BITMAP(name,bits) \
+	unsigned long name[BITS_TO_LONGS(bits)]
+]]></programlisting>
+这里可以看到DECLARE_BITMAP的作用是尝试定义一个类型为unsigned long，名字为name的数组。而数组的维度由位图中的位数通过BITS_TO_LONGS计算而得。
+<programlisting><![CDATA[
+include/linux/bitops.h
+#define BITS_PER_BYTE		8
+#define BITS_TO_LONGS(nr)	DIV_ROUND_UP(nr, BITS_PER_BYTE * sizeof(long))
+]]></programlisting>
+<para>BITS_TO_LONGS通过DIV_ROUND_UP宏完成。DIV_ROUND_UP根据nr参数计算至少需要几个long型才能满足当前位图的需求。不知道为什么Linux不使用char型，这样不是更节约内存吗？显然DECLARE_BITMAP的引入的根本目的并不是用来节约内存，而是方便对长位图的操作，而通常8位位图的定义并不通过它来定义，而是直接定义位掩码，比如对文件权限的定义。</para>
+<figure><title>基于无符号长整型的位图表示</title><graphic fileref="images/mode_bitmap.gif"/></figure>
+<para>内核定义了一系列的宏和函数来对DECLARE_BITMAP定义的位图进行操作，它们分别位于bitmap.h和bitmap.c中。这些宏和函数的操作思想是一致的。
+<programlisting><![CDATA[
+/arch/arm/include/asm/types.h
+#define BITS_PER_LONG 32
+
+include/linux/bitmap.h
+static inline void bitmap_zero(unsigned long *dst, int nbits)
+{
+	if (nbits <= BITS_PER_LONG)
+		*dst = 0UL;
+	else {
+		int len = BITS_TO_LONGS(nbits) * sizeof(unsigned long);
+		memset(dst, 0, len);
+	}
+}
+]]></programlisting>
+尽管在特定体系的代码中BITS_PER_LONG被定义为32以增加运算速度，但是它更应该通过sizeof(long) * BITS_PER_BYTE来定义。bitmap_zero用来清空所有的位图。分析它发现，它首先判断是否超过一个long型，如果没有那么直接对它赋值0UL即可。否则就要通过memset对整个数组进行操作。其他函数亦同。一些常用的位图操作函数如下所示：
+<itemizedlist>
+	<listitem>bitmap_zero 清所有比特位为0，被用来初始化位图。圆整到unsigned long。</listitem>
+	<listitem>bitmap_fill 置nbits指定个数的比特位为1。精确到位。</listitem>
+	<listitem>bitmap_copy 从src复制所有比特位到dst。圆整到unsigned long。</listitem>
+	<listitem>bitmap_and 将nbits指定的位数按位与结果存放到dst。圆整到unsigned long。</listitem>
+	<listitem>bitmap_or 将nbits指定的位数按位或结果存放到dst。圆整到unsigned long。</listitem>
+	<listitem>bitmap_xor 将nbits指定的位数按位异或结果存放到dst。圆整到unsigned long。</listitem>
+	<listitem>bitmap_andnot 根据nbits指定的位数, 将src1按位与上src2的按位非，结果存放到dst。圆整到unsigned long。</listitem>
+	<listitem>bitmap_complement 根据nbits指定的位数, 按位取反后存放到dst。精确到位。</listitem>
+	<listitem>bitmap_equal 比较nbits指定的位数，如果这些为全部相同返回1，否则返回0。精确到位。</listitem>
+	<listitem>bitmap_intersects 比较nbits指定的位数中是否有重合(相交Overlap)的1比特位，也即src1和src2中有共同设置为1的标志位。有则返回1，否则返回0。精确到位。</listitem>
+	<listitem>bitmap_subset src1的nbits指定位数中设置1的比特位是src2中nbits指定位数中设置1的比特的子集，则返回1，否则返回0。精确到位。</listitem>
+	<listitem>bitmap_empty 测试src中的低nbits位是否全为0，是则返回1，否则返回0。精确到位。</listitem>
+	<listitem>bitmap_full 测试src中的低nbits位是否全为1，是则返回1，否则返回0。精确到位。</listitem>
+	<listitem>bitmap_weight 返回低nbits位的汉明重量(Hamming Weight)。</listitem>
+	<listitem>bitmap_shift_right 逻辑右移n位，左边补0。n可以大于nbits数。圆整到unsigned long。</listitem>
+	<listitem>bitmap_shift_left 逻辑左移n位，右边补0。n可以大于nbits数。圆整到unsigned long。</listitem>
+</itemizedlist>
+</para>
+</sect2>
+<sect2><title>结构体成员互访</title>
+<para>
+由于内核中定义了很多复杂的数据结构，而它们的实例中的成员在作为函数参数传递的时，函数中可能需要对它的包含者中的其他的兄弟成员进行处理，这就需要只根据成员地址就可以获取整个结构体变量的地址的操作。container_of提供了这样的操作：
+<programlisting><![CDATA[
+include/linux/kernel.h
+/**
+ * container_of - cast a member of a structure out to the containing structure
+ * @ptr:        the pointer to the member.
+ * @type:       the type of the container struct this is embedded in.
+ * @member:     the name of the member within the struct.
+ *
+ */
+#define container_of(ptr, type, member) ({                      \
+        const typeof( ((type *)0)->member ) *__mptr = (ptr);    \
+        (type *)( (char *)__mptr - offsetof(type,member) );})
+]]></programlisting>
+巧妇难为无米之炊，无论如何，都需要告知container_of该整体结构体变量的类型以及当前成员的指针和成员名。typeof用来获取成员的类型并定义一个临时变量__mptr来存储当前成员的地址。offsetof用来获取当前成员相对于整体结构体地址的偏移。它定义为：
+<programlisting><![CDATA[
+include/linux/compiler-gcc4.h
+#define __compiler_offsetof(a,b) __builtin_offsetof(a,b)
+
+include/linux/stddef.h
+#ifdef __compiler_offsetof
+#define offsetof(TYPE,MEMBER) __compiler_offsetof(TYPE,MEMBER)
+#else
+#define offsetof(TYPE, MEMBER) ((size_t) &((TYPE *)0)->MEMBER)
+#endif
+]]></programlisting>
+如果定义了__compiler_offsetof，则使用Gcc编译器内建的offsetof宏，它的作用和此处定义的offsetof相同。它将0地址作为当前结构的首地址，从而直接通过指针访问成员得到的地址即为偏移。将实际使用的结构体中的成员指针__mptr减去offsetof，就得到了结构体的地址。
+<programlisting><![CDATA[
+#include <stdio.h>
+......
+typedef struct man
+{
+	char name[32];
+	unsigned int id;	
+	unsigned char age;
+	char address[64];
+}man_t;
+
+int main()
+{
+	man_t tom = {"Tom", 0, 24, "ShangHai China"};
+	man_t *man = NULL;
+	
+	printf("tom:%p, tom.age:%p, offsetof(man_t, age): %d\n", 
+					&tom, &tom.age, offsetof(man_t, age));
+					
+	man = container_of(&tom.age, man_t, age);
+	printf("tom.name:%s, tom.id:%d, tom.age:%u, tom.address:%s\n", 
+					man->name, man->id, man->age, man->address);
+	
+	return 0;
+}
+]]></programlisting>
+测试结果如下：
+<programlisting><![CDATA[
+tom:0xbf85cda4, tom.age:0xbf85cdc8, offsetof(man_t, age): 36
+tom.name:Tom, tom.id:0, tom.age:24, tom.address:ShangHai China
+]]></programlisting>
+</para>
+</sect2>
+<sect2><title>结构体大小运算</title>
+<sect3><title>FIELD_SIZEOF获取成员大小</title>
+FIELD_SIZEOF用来获取成员大小。它需要两个参数，第一个指定结构体的类型，第二个则指明成员的名字。
+<programlisting><![CDATA[
+include/linux/kernel.h
+#define FIELD_SIZEOF(t, f) (sizeof(((t*)0)->f))
+]]></programlisting>
+它通过对0指针灵活运用，是对sizeof的一种变相扩展。
+</sect3>
+<sect3><title>ARRAY_SIZE获取数组维数</title>
+ARRAY_SIZE用来获取一维或者多维数组的第一维大小，并对非数组指针进行合法性检查。
+<programlisting><![CDATA[
+include/linux/kernel.h
+#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]) + __must_be_array(arr))
+]]></programlisting>
+它的思想很简单，就是通过sizeof获取整个数组大大小，然后除以单个数组元素的大小。__must_be_array用来检查arr参数是否为数组指针。在gcc中它被支持，其他编译器可能将它直接定义为0：
+<programlisting><![CDATA[
+include/linux/kernel.h
+#define BUILD_BUG_ON_ZERO(e) (sizeof(char[1 - 2 * !!(e)]) - 1)
+
+include/linux/compiler-gcc.h
+#define __must_be_array(a) \
+  BUILD_BUG_ON_ZERO(__builtin_types_compatible_p(typeof(a), typeof(&a[0])))
+]]></programlisting>
+__builtin_types_compatible_p是gcc编译器的内嵌函数，它用于判断一个变量的类型是否为某指定的类型，假如是就返回1，否则返回0。这里通过判断指针和指针指向的第一个元素的指针是否是相同类型来判断是否为数组。BUILD_BUG_ON_ZERO的作用在于将返回值转化为编译错误信息。显然当内嵌函数返回值为0时，也即类型相同时，由于BUILD_BUG_ON_ZERO参数为非0而导致char[-1]而发出编译器警告。经过以上分析也很容易写出判断数组指针的宏，如果是返回1，否则返回0。
+<programlisting><![CDATA[
+#define IS_ARRAY_PTR(p)	(!__builtin_types_compatible_p(typeof(p), typeof(&p[0])))
+]]></programlisting>
+无论是ARRAY_SIZE还是扩展的IS_ARRAY_PTR宏，它们只接受明确的指针参数名，而无法接受&amp;a这样的参数，这是由于宏的扩展引起的，报错信息如下：
+<programlisting><![CDATA[
+xxx.c:17: error: subscripted value is neither array nor pointer
+]]></programlisting>
+</sect3>
+</sect2>
+<sect2><title>编译器检查</title>
+尽管在大多数时候只需关心代码运行的正确性，但是很多时候需要在编译期间就发现这些潜在的致命错误。内核提供了两个有力的宏定义：
+<programlisting><![CDATA[
+include/linux/kernel.h
+/* Force a compilation error if condition is true */
+#define BUILD_BUG_ON(condition) ((void)sizeof(char[1 - 2*!!(condition)]))
+
+/* Force a compilation error if condition is true, but also produce a
+   result (of value 0 and type size_t), so the expression can be used
+   e.g. in a structure initializer (or where-ever else comma expressions
+   aren't permitted). */
+#define BUILD_BUG_ON_ZERO(e) (sizeof(char[1 - 2 * !!(e)]) - 1)
+]]></programlisting>
+<para>注意核心表达式sizeof(char[1 - 2*!!(condition)])的作用，首先对条件表达式进行两次取反，这可以保证进行1 - 2*!!(condition)的结果只有两种值：条件为0时结果为1或者不为0则结果为-1，显然char[-1]将会导致编译器报错。</para>
+<itemizedlist> 
+	<listitem>BUILD_BUG_ON：只有条件condition为0时可编译，但不返回值，否则编译器报错。</listitem>
+	<listitem>BUILD_BUG_ON_ZERO：只有条件e为0时返回0，否则编译器报错。</listitem>
+</itemizedlist>
+总结：BUILD_BUG_ON和BUILD_BUG_ON_ZERO作用类似，都是在参数为非0时编译报错，但是BUILD_BUG_ON_ZERO可以返回0值，BUILD_BUG_ON不可。编译器警告的格式如下，这与char[-1]的错误定义相一致。如果不熟悉它，那么将很难根据警告找到出错的真正位置：
+<programlisting><![CDATA[
+xxx.c:42: error: size of array ‘type name’ is negative
+]]></programlisting>
+目前内核对BUILD_BUG_ON_ZERO的使用有两处：一个是在数组大小计算中用来判定指针合法行的__must_be_array宏。另一个是对模块参数进行权限检查时的__module_param_call宏。<?linebreak?>内核对BUILD_BUG_ON的使用则要普遍的多，它被用来做编译期间的参数检查，广泛存在于内核的源码文件中。某些情况下需要一个数据结构满足特定的大小，比如jffs2文件系统中的jffs2_raw_inode结构的大小必须为68。另外可能需要为了兼容性考虑，可能需要定义一些别名，比如：
+<programlisting><![CDATA[
+include/linux/net.h
+#define SOCK_CLOEXEC    O_CLOEXEC
+]]></programlisting>
+则可以在编码时检测是否定义正确：
+<programlisting><![CDATA[
+net/socket.c
+BUILD_BUG_ON(SOCK_CLOEXEC != O_CLOEXEC);
+]]></programlisting>
+大多数情况下，它们属于调试信息，在调试完毕后需要移除，除非它们可以指示一些特定的信息，比如第一种情况用来强调数据结构的大小为固定值。一个详细的示例如下，如果struct map结构体的大小不为32，则编译时报错。
+<programlisting><![CDATA[
+struct map
+{
+  int used[2];		/* 8 */
+  int empty[5];		/* 20 */	
+	
+  char pad[32 - 28];
+} men = {{1, 2}, {0, 3, 4, 5, 6}};
+
+int main()
+{
+  BUILD_BUG_ON(sizeof(men) != 32);
+  printf("BUILD_BUG_ON_ZERO(0):%d, %d\n", BUILD_BUG_ON_ZERO(0), sizeof(men));
+	
+  return 0;
+}
+]]></programlisting>
+</sect2>
+</sect1>
+

@@ -1,0 +1,1362 @@
+<sect1><title>Linux设备模型</title>
+<sect2><title>设备文件</title>
+<para>
+类UNIX操作系统有一个深为人知的概念：一切皆文件(尽管有些设备并不以文件的形式存在，比如网络设备或者杂合设备)。设备文件是一类特殊的文件，我们可以通过file命令来区分它们，尽管它们通常被集中放置在/dev下：
+<programlisting><![CDATA[
+# file test.c 
+spi.c: ASCII C program text
+
+# file /dev/null 
+/dev/null: character special
+]]></programlisting>
+可以看到普通的ASCII文件和设备文件的区别，file可以鉴别出通常的字符设备和块设备，也即character和block的提示。另一个鉴别设备文件的命令是ls：
+<programlisting><![CDATA[
+# ls -l test.c 
+-rw-r--r--    1 root     root             0 Mar  2 11:39 hello.c
+
+]# ls -l /dev/null 
+crw-rw-rw-    1 root     root        1,   3 Mar  2  2012 /dev/null
+# ls -l /dev/mtdblock0
+brw-rw----    1 root     root       31,   0 Mar  2  2012 /dev/mtdblock0
+]]></programlisting>
+除了访问权限和所属用户及用户组这些属性相同以外，区别是明显的：
+<itemizedlist> 
+	<listitem>访问权限之前的字母是c或b，分别表示字符设备和块设备。</listitem>
+	<listitem>设备文件的长度字段被主设备号和从设备号代替，二者可以唯一标识一个设备。</listitem>
+</itemizedlist>
+</para>
+<sect3><title>创建设备文件</title>
+<sect4><title>静态创建</title>
+设备文件的存在从感官上表明它的存在，并且设备名可以很好的令人记忆它，甚至是它的作用。创建设备文件的方法很简单：
+<programlisting><![CDATA[
+Usage: mknod [OPTIONS] NAME TYPE MAJOR MINOR
+
+# mknod hello c 20 1
+# ls -l hello
+crw-r--r--    1 root     root       20,   1 Mar  2 11:48 hello
+]]></programlisting>
+mknode的语法很简单，设备类型通过一个字符表示：c表示字符设备，b表示块设备，p表示管道文件(管道文件不是设备文件，无需指定主从设备号)。
+<programlisting><![CDATA[
+        b:      Make a block device
+        c or u: Make a character device
+        p:      Make a named pipe (MAJOR and MINOR are ignored)
+]]></programlisting>
+<para>通过mknode手动创建设备文件可以用于已知设备号的情况下，可以在创建文件系统时直接创建，当然如果文件系统不是可写的，那么也必须在制作文件系统时手动创建(这意味着所有主从设备号都需事先确定)。</para>
+</sect4>
+<sect4><title>动态创建</title>
+<para>手动创建丧失了创建设备文件的灵活性：有些时候我们希望内核自动分配未用的主从设备号，并且在设备驱动加载时动态创建设备文件：比如USB设备，SD卡等。另外手动创建会导致尽量创建更多的设备文件，尽管它们没有用，也要有备无患，这导致我们不知道实际的系统中到底哪个设备是活动的。</para>
+<para>
+早期的 Linux 版本中就是如此，/dev目录包含了所有可能出现的设备的设备文件。很难想象 Linux 用户如何在这些大量的设备文件中找到匹配条件的设备文件。udev是Linux2.6内核引入的一个功能，它替代了原来的devfs，成为当前Linux 默认的设备管理工具。udevd在用户空间以守护进程的形式运行，通过侦听内核发出来的uevent事件来动态创建 /dev目录下的设备文件。不像之前的设备管理工具，udevd在用户空间运行，而不在内核空间运行。
+</para>
+<para>
+现在 udev 只为那些连接到 Linux 操作系统的设备产生设备文件。udevd守护进程通过inotify机制监测sys/class下的文件变动，一旦检测到内核创建了dev文件，则使用该文件中指定的设备主从设备号在/dev下创建设备文件：
+<programlisting><![CDATA[
+[root@OK6410 /sys/class/tty]# ls -l ttySAC0
+lrwxrwxrwx    1 root     root             0 Mar  2  2012 ttySAC0 -> ../../devices/platform/s3c6400-uart.0/tty/ttySAC0
+
+[root@OK6410 /sys/class/tty]#cd ttySAC0 && ls -l
+total 0
+-r--r--r--    1 root     root          4096 Mar  2  2012 dev
+lrwxrwxrwx    1 root     root             0 Mar  2  2012 device -> ../../../s3c6400-uart.0
+lrwxrwxrwx    1 root     root             0 Mar  2  2012 subsystem -> ../../../../../class/tty
+-rw-r--r--    1 root     root          4096 Mar  2  2012 uevent
+[/sys/devices/platform/s3c64xx-rtc/rtc/rtc0]# cat dev
+204:64
+]]></programlisting>
+一旦串口驱动通过内核提供的驱动模型在内核加载，内核将在/sys/class/tty下创建ttySAC0，该文件是一个指向设备文件属性文件夹的链接，其中的dev记录了设备的主从号。用户空间的udevd检测测到这一动作，则在/dev下创建名为ttySAC0的设备文件：
+<programlisting><![CDATA[
+# ls -l /dev/ttySA
+C0
+crw-rw----    1 root     root      204,  64 Mar  2 13:15 /dev/ttySAC0
+]]></programlisting>
+在嵌入式软件平台中，busybox提供了mdev来模拟udevd，它的原理与udevd类似，但是并没有使用inotify机制，而是通过不停的扫描sys/class下的文件夹来实现文件监测。与此同时/dev文件夹不用在创建到实际的文件系统中，而和/tmp目录一样，建立在内存中即可：
+<programlisting><![CDATA[
+mount -t ramfs none /dev
+]]></programlisting>
+</para>
+</sect4>
+</sect3>
+<sect3><title>主从设备号</title>
+传统上, 主编号标识设备相连的驱动。例如/dev/null和/dev/zero都由驱动1来管理, 虚拟控制台
+和串口终端都由驱动4管理;现代 Linux 内核允许多个驱动共享主编号, 但是看到的大部分设备仍然按照一个主编号一个驱动的原则来组织。当前新驱动程序分配主从设备号时，主要通过一个半官方组织管理。只有遵循该列表的设备驱动才可能包含到内核标准发布版中。Linux内核中的Documentation/devices.txt也给出了该版本发布时所用的设备号数据。设备号用dev_t类型定义：
+<programlisting><![CDATA[
+linux/types.h
+typedef __u32 __kernel_dev_t;
+typedef __kernel_dev_t dev_t;
+]]></programlisting>
+一个无符号32位整型数，同时包括了主次设备号。其中此设备号占用低20位，主设备号为12位。内核定义了两个宏来获取主次设备号：
+<programlisting><![CDATA[
+linux/kdev_t.h
+#define MINORBITS	20
+#define MINORMASK	((1U << MINORBITS) - 1)
+
+#define MAJOR(dev)	((unsigned int) ((dev) >> MINORBITS))
+#define MINOR(dev)	((unsigned int) ((dev) & MINORMASK))
+]]></programlisting>
+MKDEV宏根据主设备和次设备号生成dev_t。驱动用户应该使用这三个宏来操作设备号，以保证代码的移植性。
+<programlisting><![CDATA[
+#define MKDEV(ma,mi)	(((ma) << MINORBITS) | (mi))
+]]></programlisting>
+<sect4><title>申请设备号</title>
+在建立一个字符驱动时你的驱动需要做的第一件事是获取一个或多个设备编号来使用，register_chrdev_region函数提供了该功能：
+<programlisting><![CDATA[
+linux/fs.h
+int register_chrdev_region(dev_t from, unsigned count, const char *name);
+]]></programlisting>
+from记录了希望分配了设备号的开始值，而count则指明分配几个设备号，所以分配成功的设备号位于[from, from + count)之间。name 是连接到这个编号范围的设备的名子; 它会出现在/proc/devices中。一个示例程序如下：
+<programlisting><![CDATA[
+static int __init dev_number_init(void)
+{
+	int ret;
+	dev_t devno = MKDEV(TEST_MAJOR, 0);
+
+	ret = register_chrdev_region(devno, 2, DEVICE_NAME);	
+	if(ret < 0)
+	{
+		printk(KERN_NOTICE "can not register test for %d\n", ret);
+		return ret;
+	}
+	......
+
+	return 0;
+}
+]]></programlisting>
+它尝试从devno开始分配2个设备号，如果成功返回0，否则返回一个负数。执行成功后，可以在/proc/devices中找到DEVICE_NAME，注意前面的编号是主设备号：
+<programlisting><![CDATA[
+# cat /proc/devices
+Character devices:
+......
+100 test
+......
+]]></programlisting>
+register_chrdev_region可以申请几个连续的设备号，它是对__register_chrdev_region函数的封装，该函数每次申请一个主设备号，以及可以在这个主设备号范围内的一个次设备号范围：
+<programlisting><![CDATA[
+fs/char_dev.c
+static struct char_device_struct *
+__register_chrdev_region(unsigned int major, unsigned int baseminor,
+			   int minorct, const char *name);
+]]></programlisting>
+前两个参数分别指明申请设备号的主次编号，如果major为0，则自动选择一个主设备号，minorct(minor counter)指明位于此设备号内可以表示的一个范围。注意到该函数的返回值为struct char_device_struct结构，它代表了一类使用同一设备驱动的字符设备的存在，该结构记录了一个主设备号，以及次设备号范围的开始编号，以及连续的编号范围。
+<programlisting><![CDATA[
+fs/char_dev.c
+static struct char_device_struct {
+	struct char_device_struct *next;
+	unsigned int major;
+	unsigned int baseminor;
+	int minorct; /* minor counter */
+	char name[64];
+	struct cdev *cdev;		/* will die */
+} *chrdevs[CHRDEV_MAJOR_HASH_SIZE];
+]]></programlisting>
+所有的字符设备号的分配情况均记录在一个名为chrdevs的哈希表中，这个表的大小为CHRDEV_MAJOR_HASH_SIZE。它在fs.h中被定义为255。散列算法是把每个编号范围的字符设备的主设备号以 255 取模插入相应的散列表中。同一个散列表中的字符设备编号范围是按起始次设备号递增排序的。
+<itemizedlist> 
+	<listitem>next是指向散列冲突链表中的下一个元素的指针。</listitem>
+	<listitem>major和baseminor记录了主设备号以及此设备号范围的起始编号。</listitem>
+	<listitem>minorct 记录了次设备号的范围，也即从baseminor开始，可以使用的个数。但是注意从编号的范围是[baseminor，baseminor + minorct)。</listitem>
+	<listitem>name 指明该设备编号范围内的设备驱动的名称，它代表了一个char_device_struct结构体。
+</listitem>
+	<listitem>cdev指向字符设备驱动程序描述符的指针。由于Linux设备模型的出现，它已经不再有大的用处，除了用在老式的注册方法__register_chrdev和__unregister_chrdev中以为了保持向后兼容外，它的功能已经被kobject对象cdev_map完全取代。</listitem>	
+</itemizedlist>
+<figure><title>申请跨主设备号的设备号</title><graphic fileref="images/device/devnum.gif"/></figure>
+如果申请的从设备号位于两个主设备号之间呢？如上图所示，此时将创建两个char_device_struct的实例，所以使用同一类驱动的设备依然可能位于不同的char_device_struct实例中，尽管这基本上不会发生。该函数通常返回的错误是-16，这表示需要申请的设备号已被占用，提示信息为：
+<programlisting><![CDATA[
+Device or resource busy
+]]></programlisting>
+<note>图中没有使用主设备号0，是因为，当__register_chrdev_region的第一个参数为0是，将自动分配一个主设备号，也即主设备0保留使用。</note>
+</sect4>
+<sect4><title>动态申请设备号</title>
+在已知某一类型设备的统一分配的设备号后，使用register_chrdev_region是一个不错的选择，但是一些设备，可能并没有统一规定的设备号，此时使用动态分配是合适的，因为这可以避免不必要的冲突。register_chrdev_region在提供的第一个dev_t参数中，如果主设备号为0将自动分配主设备号，但是内核还专门提供了一个动态分配主设备号的程序alloc_chrdev_region，显然它就是对__register_chrdev_region的第一个参数设置为0实现动态分配的。
+<programlisting><![CDATA[
+int alloc_chrdev_region(dev_t *dev, unsigned int firstminor, unsigned int count, char *name)
+{
+	struct char_device_struct *cd;
+	cd = __register_chrdev_region(0, baseminor, count, name);
+	if (IS_ERR(cd))
+		return PTR_ERR(cd);
+	*dev = MKDEV(cd->major, cd->baseminor);
+	return 0;
+}
+]]></programlisting>
+动态分配主设备号的原则是从散列表的最后一个表项向前寻找，如果是空的，主设备号就是相应散列表的序号。所以动态分配的主设备号总是小于256，如果每个散列项都有字符设备占据了，那动态分配就会失败。该函数的第一个参数用来返回第一个设备号。第二个参数为从设备号范围的第一个设备号。
+<para>
+一个令人颇感奇怪的地方时，该函数不对count做任何限制，所以提供一个非常大的值，并且足以超过该主设备号可以支持的从设备号(通常为2<superscript>20</superscript>)的个数是可能的，这里之所以不做检查，基于对内核开发人员自律的假设，因为通常如此多的从设备号显然是恶意的行为，并且这导致该主设备号的浪费，另外unregister_chrdev_region对这种情况将会注销失败，而无任何提示。
+</para>
+动态分配的缺点是你无法提前创建设备节点, 因为分配给你的模块的主编号会变化。对于驱动的正常使用, 这不是问题, 因为一旦编号分配了, 你可从/proc/devices中读取它，或者当该设备号被真正关联到设备驱动后可以从/sys下获取更详尽的信息。
+</sect4>
+<sect4><title>释放设备号</title>
+任何已分配的设备编号, 应当在不再使用它们时释放它。设备编号的释放使用:
+<programlisting><![CDATA[
+void unregister_chrdev_region(dev_t from, unsigned count)
+{
+	dev_t to = from + count;
+	dev_t n, next;
+
+	for (n = from; n < to; n = next) {
+		next = MKDEV(MAJOR(n)+1, 0);
+		if (next > to)
+			next = to;
+		kfree(__unregister_chrdev_region(MAJOR(n), MINOR(n), next - n));
+	}
+}
+]]></programlisting>
+它核心实现是__unregister_chrdev_region，在该函数中将根据三元素(主，从起始号，范围)来删除char_device_struct结构体，从该函数的实现可以清楚的看到，<emphasis>如果使用alloc_chrdev_region申请了一个大于主设备号可容纳的从设备号的个数的字符设备，使用unregister_chrdev_region将无法释放。</emphasis>通常在模块module_exit的清理函数中调用它。继续上面的示例：
+<programlisting><![CDATA[
+static void __exit dev_number_exit(void)
+{
+	unregister_chrdev_region(MKDEV(TEST_MAJOR, 0), 2); 
+	......
+}
+]]></programlisting>
+</sect4>
+</sect3>
+<sect3><title>字符设备的哈希表</title>
+前面已经非常详细的介绍了管理字符设备的哈希表chrdevs[CHRDEV_MAJOR_HASH_SIZE]，并且说明了它的一些特性，它根据主设备号与CHRDEV_MAJOR_HASH_SIZE余数来决定该字符设备对应的struct char_device_struct实例放在哪一个哈希表项上，而相同主设备号的不同设备，将按照起始从设备号的大小排序，而注册它们的函数register_chrdev_region保证它们不会相互重叠。
+<figure><title>字符设备的哈希表</title><graphic fileref="images/device/charhash.gif"/></figure>
+此外，该哈希表使用名为chrdevs_lock的互斥锁来保证对它的顺序访问。
+<programlisting><![CDATA[
+static DEFINE_MUTEX(chrdevs_lock);
+]]></programlisting>
+<sect4><title>相关的proc接口</title>
+/proc/devices是一个古老的接口，尽管当前sysfs系统渐渐取代了它的全部功能，但是依然是一个简洁明了的查看系统内设备注册情况的好途径。它可以输出字符设备和块设备的情况。
+<programlisting><![CDATA[
+# cat /proc/devices 
+Character devices:
+  1 mem
+  4 /dev/vc/0
+ ...... 
+Block devices:
+259 blkext
+  8 sd
+ 31 mtdblock
+ ......
+]]></programlisting>
+相关的实现代码位于fs/proc/devices.c下，其中的显示操作位于devinfo_show，而它调用了char_dev.c中的chrdev_show以及块设备相关的blkdev_show。
+<programlisting><![CDATA[
+static int __init proc_devices_init(void)
+{
+        proc_create("devices", 0, NULL, &proc_devinfo_operations);
+        return 0;
+}
+module_init(proc_devices_init);
+]]></programlisting>
+chrdev_show根据offset值遍历了哈希表chrdevs，seq_printf函数首先打印出主设备号，然后打印设备名称，如果看到两个连续的主设备号，并且设备名相同，那么很可能是注册了一个跨主设备号的设备，它实际对应了多个char_device_struct实例。
+<programlisting><![CDATA[
+void chrdev_show(struct seq_file *f, off_t offset)
+{
+	struct char_device_struct *cd;
+
+	if (offset < CHRDEV_MAJOR_HASH_SIZE) {
+		mutex_lock(&chrdevs_lock);
+		for (cd = chrdevs[offset]; cd; cd = cd->next)
+			seq_printf(f, "%3d %s\n", cd->major, cd->name);
+		mutex_unlock(&chrdevs_lock);
+	}
+}
+]]></programlisting>
+</sect4>
+</sect3>
+创建块设备的方式与此类似，但是没有提供动态分配设备号的函数，但是管理的方式依然采用哈希表，这里不再单独分析，相关的函数和结构体定义位于block/genhd.c。
+</sect2>
+<sect2><title>字符设备注册</title>
+尽管我们知道了如何创建设备文件，以及申请一系列的设备号，但是它们只不过是存在于哈希表chrdevs中的char_device_struct实例，注意到该结构中的struct cdev *cdev成员，它指向了封装真正字符设备驱动的cdev结构体。
+<programlisting><![CDATA[
+linux/cdev.h
+struct cdev {
+	struct kobject kobj;
+	struct module *owner;
+	const struct file_operations *ops;
+	struct list_head list;
+	dev_t dev;
+	unsigned int count;
+};
+]]></programlisting>
+注意到ops参数，它指向一个struct file_operations结构体的示例，所有对cdev的初始化都需要填充它，它封装了所有对字符设备的操作指针。
+<sect3><title>分配和初始化cdev</title>
+对cdev结构体的分配有两种方式：动态分配和静态分配，内核提供了cdev_alloc函数实现动态分配，它与用户空间的malloc功能相似：
+<programlisting><![CDATA[
+struct cdev *cdev_alloc(void)
+{
+	struct cdev *p = kzalloc(sizeof(struct cdev), GFP_KERNEL);
+	if (p) {
+		INIT_LIST_HEAD(&p->list);
+		kobject_init(&p->kobj, &ktype_cdev_dynamic);
+	}
+	return p;
+}
+]]></programlisting>
+注意到kobject_init中第二个参数，它与cdev结构体的释放操作有关，这也决定了通过cdev_alloc申请的结构体一定不可以接下里静态分配初始化所用的函数cdev_init来初始化。
+<programlisting><![CDATA[
+struct cdev *vcdev = cdev_alloc();
+if (!vcdev)
+	goto err;
+
+vcdev->owner = THIS_MODULE;
+vcdev->ops = &vcdev_fops;
+]]></programlisting>
+动态分配适用于获得一个独立的cdev结构，当然也适用于内嵌cdev指针的结构体，如下所示。当然采用静态分配将更适合这种应用，因为可以方便的通过cdev的指针获取struct test_cdev的指针。
+<programlisting><![CDATA[
+struct vcdev {
+	char name[16];
+	/* case1 struct cdev *cdev; */
+	struct cdev cdev; 
+};
+]]></programlisting>
+采用静态分配的结构体中的cdev成员应该使用cdev_init来初始化，而非手动指定，这取决于ktype_cdev_default和ktype_cdev_dynamic的区别。
+<programlisting><![CDATA[
+void cdev_init(struct cdev *cdev, const struct file_operations *fops)
+{
+	memset(cdev, 0, sizeof *cdev);
+	INIT_LIST_HEAD(&cdev->list);
+	kobject_init(&cdev->kobj, &ktype_cdev_default);
+	cdev->ops = fops;
+}
+]]></programlisting>
+关于kobject机制将在特定章节详细分析，这里注意到kobject_init的第二个参数struct kobj_type *ktype，其中的release函数会在cdev_del时被调用：
+<programlisting><![CDATA[
+fs/char_dev.c
+static struct kobj_type ktype_cdev_default = {
+	.release	= cdev_default_release,
+};
+
+static struct kobj_type ktype_cdev_dynamic = {
+	.release	= cdev_dynamic_release,
+};
+]]></programlisting>
+注意到cdev_dynamic_release中的kfree调用，就可以明白两种分配cdev实例的方式，需要对应的初始化方法。
+<programlisting><![CDATA[
+static void cdev_default_release(struct kobject *kobj)
+{
+	struct cdev *p = container_of(kobj, struct cdev, kobj);
+	cdev_purge(p);
+}
+
+static void cdev_dynamic_release(struct kobject *kobj)
+{
+	struct cdev *p = container_of(kobj, struct cdev, kobj);
+	cdev_purge(p);
+	kfree(p);
+}
+]]></programlisting>
+</sect3>
+<sect3><title>注册cdev</title>
+当cdev结构体被初始化完毕后，应该加入内核，它代表了真正的字符设备，内核将对它进行统一管理：分配相关资源，挂载到设备号对应的结构体char_device_struct内的*cdev指针上。
+<programlisting><![CDATA[
+int cdev_add(struct cdev *p, dev_t dev, unsigned count)
+{
+	p->dev = dev;
+	p->count = count;
+	return kobj_map(cdev_map, dev, count, NULL, exact_match, exact_lock, p);
+}
+]]></programlisting>
+<itemizedlist> 
+	<listitem>参数p即为需要加入内核的cdev结构体的指针。</listitem>
+	<listitem>dev是第一个设备号。</listitem>
+	<listitem>count是关联到此设备的设备号的数目(也即子设备号的个数)，通常为1，对于磁盘块设备，可能大于1。</listitem>
+</itemizedlist>
+cdev_add的核心操作在于kobj_map函数，它是Linux设备模型中的一种设备号映射到内核对象kobject的机制，以实现统一的设备管理模型。一个重要的结构体与该函数同名：
+<programlisting><![CDATA[
+drivers/base/map.c
+struct kobj_map {
+	struct probe {
+		struct probe *next;
+		dev_t dev;
+		unsigned long range;
+		struct module *owner;
+		kobj_probe_t *get;
+		int (*lock)(dev_t, void *);
+		void *data;
+	} *probes[255];
+	struct mutex *lock;
+};
+]]></programlisting>
+注意到struct probe结构体，它用来实现设备的探测，包含了设备驱动号等信息，以及对应的操作函数的指针。probes是一个255个元素的散列表，散列算法与哈希表chrdevs相同，均为主设备号对255取余。
+<itemizedlist> 
+	<listitem>next将所有探测设备用的probe结构体散列元素串联在一起。</listitem>
+	<listitem>dev和range分别对应了设备号以及设备号的范围。</listitem>
+	<listitem>owner指向提供设备驱动程序的模块(如果是模块的话)。</listitem>
+	<listitem>get函数指针用于返回与设备关联的kobject实例。</listitem>
+	<listitem>lock函数指针用于操作kobject中计数器，以实现对设备引用的统一计数。</listitem>
+	<listitem>data指向真正的设备驱动，如果是字符设备，就为struct cdev的实例，对于块设备指向struct genhd的实例，它被给传递给get和lock函数。</listitem>	
+</itemizedlist>
+统一设备模型中管理字符设备的结构体是一个struct kobj_map类型的指针，被声明如下(块设备中对应的变量为bdev_map)：
+<programlisting><![CDATA[
+fs/char_dev.c
+static struct kobj_map *cdev_map;
+]]></programlisting>
+该指针在函数中chrdev_init申请空间，并被初始化。
+<programlisting><![CDATA[
+fs/char_dev.c
+start_kernel->vfs_caches_init->chrdev_init
+
+void __init chrdev_init(void)
+{
+	cdev_map = kobj_map_init(base_probe, &chrdevs_lock);
+	bdi_init(&directly_mappable_cdev_bdi);
+}
+]]></programlisting>
+kobj_map_init是一个相当简单的函数，它同时申请一个kobj_map实例和一个probe实例，并对probe中的设备号，设备号范围以及get函数赋值。base_probe是一个默认的探测函数。另外可以看到probes的每个元素都指向了probe实例base，而锁指向了保护哈希表chrdevs的chrdevs_lock锁，此时看起来如下图所示：
+<figure><title>初始化kmap</title><graphic fileref="images/device/kmapinit.gif"/></figure>
+<programlisting><![CDATA[
+drivers/base/map.c
+struct kobj_map *kobj_map_init(kobj_probe_t *base_probe, struct mutex *lock)
+{
+	struct kobj_map *p = kmalloc(sizeof(struct kobj_map), GFP_KERNEL);
+	struct probe *base = kzalloc(sizeof(*base), GFP_KERNEL);
+	int i;
+  ......
+	base->dev = 1;
+	base->range = ~0;
+	base->get = base_probe;
+	for (i = 0; i < 255; i++)
+		p->probes[i] = base;
+	p->lock = lock;
+	return p;
+}
+]]></programlisting>
+base_probe根据设备号在系统模块所在的默认文件夹中查找匹配的名为char-major-MAJOR(dev)-MANOR(dev).ko的模块文件，并加载。
+<programlisting><![CDATA[
+static struct kobject *base_probe(dev_t dev, int *part, void *data)
+{
+	if (request_module("char-major-%d-%d", MAJOR(dev), MINOR(dev)) > 0)
+		/* Make old-style 2.4 aliases work */
+		request_module("char-major-%d", MAJOR(dev));
+	return NULL;
+}
+]]></programlisting>
+kobj_kmap函数的实现有些复杂，它首先会创建一个probe对象，然后根据dev中对应的主设备号相对于255区域后找到散列值，将probe对象插入，并关联probe中的data指向cdev。对插入的操作根据range进行升序排列，在操作cdev_map时，共用保护chrdevs的锁chrdevs_lock。
+<programlisting><![CDATA[
+int kobj_map(struct kobj_map *domain, dev_t dev, unsigned long range,
+	     struct module *module, kobj_probe_t *probe,
+	     int (*lock)(dev_t, void *), void *data)
+{
+	......
+	p = kmalloc(sizeof(struct probe) * n, GFP_KERNEL);
+	......
+	for (i = 0; i < n; i++, p++) {
+		p->owner = module;
+		p->get = probe;
+		p->lock = lock;
+		p->dev = dev;
+		p->range = range;
+		p->data = data;
+	}
+	mutex_lock(domain->lock);
+	for (i = 0, p -= n; i < n; i++, p++, index++) {
+		struct probe **s = &domain->probes[index % 255];
+		while (*s && (*s)->range < range)
+			s = &(*s)->next;
+		p->next = *s;
+		*s = p;
+	}
+	mutex_unlock(domain->lock);
+	return 0;
+}
+]]></programlisting>
+插入两个主设备号为1的设备后列表如下图所示：
+<figure><title>注册cdev设备</title><graphic fileref="images/device/kmap.gif"/></figure>
+在使用cdev_add时要注意它可能返回失败，如果已经进行过cdev_init，那么仍然需要调用cdev_del清除已经初始化的资源，这通常是对cdev的释放动作。一个奇怪的事实是cdev_add一返回成功，那么设备就是"活的"，并且内核可以调用它的操作，所以驱动必须完全准备好处理设备上的操作才可调用该函数注册设备。对于为何cdev_add操作后设备就是"活的"，将在下一节继续分析。
+<para>
+<note>cdev_map和chrdevs的区别在于：cdev_map中注册真正的设备驱动，chrdevs除了用于老的方式的设备注册外，只用于管理设备号的分配和回收。另外在通过cdev_add注册cdev时，并不检查设备号是否已经申请，所以编码者必须清楚这一点！</note>
+</para>
+</sect3>
+<sect3><title>注销cdev</title>
+注销cdev的函数为cdev_del，其中调用cdev_unmap间接调用kobj_unmap，它是kobj_map的反操作。kobject_put则调用注册时给定的release函数来释放cdev实例，这一点在通过动态分配cdev时，相当重要。
+<programlisting><![CDATA[
+void cdev_del(struct cdev *p)
+{
+	cdev_unmap(p->dev, p->count);
+	kobject_put(&p->kobj);
+}
+]]></programlisting>
+<note>如果在调用cdev_add注册失败时，依然要调用cdev_del来注销已经申请的资源。</note>
+</sect3>
+</sect2>
+<sect2><title>关联文件系统</title>
+除了极少数例外，设备文件均是由虚拟文件系统的标准函数处理，这看起来很像处理普通文件。在此需要熟悉一些虚拟文件系统中重要的数据结构。
+<sect3><title>inode内的设备文件成员</title>
+虚拟文件系统中的每个文件都关联到一个inode，用于管理文件的属性。它包含有繁杂的数据成员，这里仅列出与设备驱动程序相关的成员：
+<programlisting><![CDATA[
+linux/fs.h
+struct inode
+{
+	umode_t			i_mode;
+......
+	dev_t			i_rdev;
+......
+	const struct file_operations	*i_fop;	/* former ->i_op->default_file_ops */
+......
+	struct list_head	i_devices;
+	union {
+......
+		struct block_device	*i_bdev;
+		struct cdev		*i_cdev;
+	};	
+}
+]]></programlisting>
+<itemizedlist> 
+	<listitem>i_mode与普通文件一样，记录了设备文件的读写等权限。</listitem>
+	<listitem>dev_t类型的设备号唯一标识了一个设备文件，一个标识设备文件的inode，其i_rdev成员记录了主从设备号。</listitem>
+	<listitem>i_fop是一组函数指针的集合，它是设备驱动的核心。</listitem>
+	<listitem>多个设备可以共用同一个驱动程序，通过字符设备的inode中的i_devices 和 cdev中的list组成一个链表。</listitem>
+	<listitem>i_bdev和i_cdev用来执行更多的设备文件特有的信息部分，通常为struct genhd或者struct cdev对象实例。</listitem>
+</itemizedlist>
+为了程序的可移植性, 内核提供了两个宏, 用来从一个inode中获取主次编号：
+<programlisting><![CDATA[
+unsigned int iminor(struct inode *inode);
+unsigned int imajor(struct inode *inode);
+]]></programlisting>
+一个疑问是合适创建可以调用设备驱动的inode结构？它是通过mknod命令生成在磁盘(也可能在RAMFS中)上的设备文件对应的inode吗？在设备文件打开时和创建设备文件时都创建了inode,但这两个inode不是同一个，是两个不同类型的数据。设备文件创建的时候生成的inode是保存在硬盘中的，它的结构比较简单，随设备文件的删除会消失的。而设备文件打开的时候创建的inode是struct inode结构体，它是保存在内存中的，随着文件的关闭会消失。分清了这两类inode就看看何时创建内存中的inode吧。
+<para>
+虚拟文件系统统一了文件的打开函数，这就是open。从open到创建inode，经历了一个相对复杂的过程，查看函数调用的过程的简便方法是在最终的函数用加入dump_stack函数，另外添加linux/printk.h头文件。
+<note>短小的静态函数会存储在全局数据区，类似汇编语言中的.data段，所以在栈中它们可能并不出现，这在使用该方法时应该注意。</note>
+<programlisting><![CDATA[
+sys_open->do_sys_open->do_filp_open->path_openat->do_last->nameidata_to_filp->__dentry_open
+
+[<c002e788>] (unwind_backtrace+0x0/0xf8) from [<bf01c00c>] (vcdev_open+0xc/0x18 [vcdev])
+[<bf01c00c>] (vcdev_open+0xc/0x18 [vcdev]) from [<c00b79dc>] (chrdev_open+0x9c/0x160)
+[<c00b79dc>] (chrdev_open+0x9c/0x160) from [<c00b2e94>] (__dentry_open+0xd4/0x268)
+[<c00b2e94>] (__dentry_open+0xd4/0x268) from [<c00b3c8c>] (nameidata_to_filp+0x5c/0x64)
+[<c00b3c8c>] (nameidata_to_filp+0x5c/0x64) from [<c00be974>] (do_last+0xc0/0x6bc)
+[<c00be974>] (do_last+0xc0/0x6bc) from [<c00bfc80>] (path_openat+0xb8/0x38c)
+[<c00bfc80>] (path_openat+0xb8/0x38c) from [<c00c003c>] (do_filp_open+0x30/0x84)
+[<c00c003c>] (do_filp_open+0x30/0x84) from [<c00b2cf8>] (do_sys_open+0xe8/0x184)
+[<c00b2cf8>] (do_sys_open+0xe8/0x184) from [<c0029a80>] (ret_fast_syscall+0x0/0x30)
+]]></programlisting>
+无论如何open函数都要去打开一个文件，而文件的路径自然在参数中指定，经过一些列的调用后，将会找的/dev/xxx设备文件对应的struct inode，注意到__dentry_open函数中的fops_get操作，它获取设备文件对应的inode，显然该inode由mknod创建该文件时指定。
+<programlisting><![CDATA[
+fs/open.c
+static struct file *__dentry_open(struct dentry *dentry, struct vfsmount *mnt,
+					struct file *f,
+					int (*open)(struct inode *, struct file *),
+					const struct cred *cred)
+{
+......
+	f->f_op = fops_get(inode->i_fop);
+
+	error = security_dentry_open(f, cred);
+	if (error)
+		goto cleanup_all;
+
+	if (!open && f->f_op)
+		open = f->f_op->open;
+	if (open) {
+		error = open(inode, f);
+		if (error)
+			goto cleanup_all;
+	}
+......	
+}
+]]></programlisting>
+这里以假设/dev使用RAMFS文件系统为例，ramfs_mknod中调用了ramfs_get_inode，ramfs_get_inode中则通过init_special_inode函数指定了设备文件对应的inode创建函数的指针。
+<programlisting><![CDATA[
+fs/ramfs/inode.c
+static int ramfs_mknod(struct inode *dir, struct dentry *dentry, int mode, dev_t dev)
+{
+        struct inode * inode = ramfs_get_inode(dir->i_sb, dir, mode, dev);
+......
+}
+
+struct inode *ramfs_get_inode(struct super_block *sb,
+                                const struct inode *dir, int mode, dev_t dev)
+{
+        struct inode * inode = new_inode(sb);
+
+        if (inode) {
+......
+                switch (mode & S_IFMT) {
+                default:
+                        init_special_inode(inode, mode, dev);
+                        break;
+......
+]]></programlisting>
+注意到new_inode函数，它分配了inode节点。init_special_inode是一个分支函数，根据不同的文件类型，挂接不同的文件处理函数def_chr_fops。
+<programlisting><![CDATA[
+fs/inode.c
+void init_special_inode(struct inode *inode, umode_t mode, dev_t rdev)
+{
+	inode->i_mode = mode;
+	if (S_ISCHR(mode)) {
+		inode->i_fop = &def_chr_fops;
+		inode->i_rdev = rdev;
+	} else if (S_ISBLK(mode)) {
+		inode->i_fop = &def_blk_fops;
+		inode->i_rdev = rdev;
+	}
+	......
+}
+]]></programlisting>
+继续回到__dentry_open，它在获取到文件的open函数指针后，对它的调用将引发chrdev_open的执行。
+<programlisting><![CDATA[
+fs/char_dev.c
+const struct file_operations def_chr_fops = {
+	.open = chrdev_open,
+	.llseek = noop_llseek,
+};
+]]></programlisting>
+</para>
+</sect3>
+<sect3><title>创建设备文件的inode</title>
+chrdev_open是创建字符设备inode的核心函数，与此对应的块设备函数是def_blk_fops。
+<programlisting><![CDATA[
+static int chrdev_open(struct inode *inode, struct file *filp)
+{
+	struct cdev *p;
+	struct cdev *new = NULL;
+	int ret = 0;
+
+	spin_lock(&cdev_lock);
+	p = inode->i_cdev;
+	if (!p) {
+		struct kobject *kobj;
+		int idx;
+		spin_unlock(&cdev_lock);
+		kobj = kobj_lookup(cdev_map, inode->i_rdev, &idx);
+		if (!kobj)
+			return -ENXIO;
+		new = container_of(kobj, struct cdev, kobj);
+		spin_lock(&cdev_lock);
+		/* Check i_cdev again in case somebody beat us to it while
+		   we dropped the lock. */
+		p = inode->i_cdev;
+		if (!p) {
+			inode->i_cdev = p = new;
+			list_add(&inode->i_devices, &p->list);
+			new = NULL;
+		} else if (!cdev_get(p))
+			ret = -ENXIO;
+	} else if (!cdev_get(p))
+		ret = -ENXIO;
+	spin_unlock(&cdev_lock);
+	cdev_put(new);
+	if (ret)
+		return ret;
+
+	ret = -ENXIO;
+	filp->f_op = fops_get(p->ops);
+	if (!filp->f_op)
+		goto out_cdev_put;
+
+	if (filp->f_op->open) {
+		ret = filp->f_op->open(inode,filp);
+		if (ret)
+			goto out_cdev_put;
+	}
+
+	return 0;
+
+ out_cdev_put:
+	cdev_put(p);
+	return ret;
+}
+]]></programlisting>
+<itemizedlist> 
+	<listitem>针对设备文件的操作，需要cdev_lock的保护。</listitem>
+	<listitem>如果系统中没有任何一个进程打开了当前设备文件，那么inode中的i_cdev将为空。</listitem>
+	<listitem>如果为空，则根据i_rdev设备号通过kobj_lookup查找设备驱动中的kobj指针。</listitem>
+	<listitem>根据kobj指针通过container_of宏获取cdev的指针，并赋值给inode中的i_cdev成员。与此同时将i_devices放入cdev的链表。</listitem>
+	<listitem>释放cdev_lock，接着的fops_get将获取我们通过cdev_init或者手动注册的file_operations结构体。</listitem>
+	<listitem>紧接着，如果不为空，则执行其中的open操作。</listitem>
+</itemizedlist>
+可以注意到，一旦建立了一个inode，如果没有关闭，当其他进程通过open打开时将直接inode中的操作赋值给filp中的f_op，关于struct file结构体将在下一节展开。
+</sect3>
+<sect3><title>文件结构</title>
+struct file是设备驱动中函数操作的第二个最重要的数据结构，注意file与用户空间程序的FILE 指针没有任何关系. 一个 FILE 定义在 C 库中, 从不出现在内核代码中. 一个 struct file, 另一方面, 是一个内核结构, 从不出现在用户程序中。文件结构代表一个打开的文件。(它不特定给设备驱动; 系统中每个打开的文件有一个关联的 struct
+file 在内核空间)。它由内核在open时创建, 并传递给在文件上操作的任何函数, 直到最后的close关闭。在内核源码中, struct file 的指针常常称为 file 或者 filp("file pointer")。这里介绍与设备文件操作相关的成员：
+<itemizedlist> 
+	<listitem>mode_t f_mode;
+文件模式确定文件是可读的或者是可写的(或者都是), 通过位 FMODE_READ 和FMODE_WRITE. 你可能想在你的 open 或者 ioctl 函数中检查这个成员的读写许可, 但是你不需要检查读写许可, 因为内核在调用你的方法之前检查. 当文件还没有为那种存取而打开时读或写的企图被拒绝, 驱动甚至不知道这个情况.</listitem>
+	<listitem>loff_t f_pos; 当前读写位置. loff_t 在所有平台都是 64 位( 在 gcc 术语里是 long long ). 驱动可以读这个值,如果它需要知道文件中的当前位置, 但是正常地不应该改变它; 读和写应当使用它们作为最后参数而收到的指针来更新一个位置, 代替直接作用于 filp->f_pos. 这个规则的一个例外是在 llseek 方法中, 它的目的就是改变文件位置.</listitem>
+	<listitem>unsigned int f_flags; 这些是文件标志, 例如 O_RDONLY, O_NONBLOCK, 和 O_SYNC. 驱动应当检查O_NONBLOCK 标志来看是否是请求非阻塞操作( 我们在第一章的"阻塞和非阻塞操作"一节中讨论非阻塞 I/O ); 其他标志很少使用. 特别地, 应当检查读/写许可, 使用 f_mode 而不是f_flags. 所有的标志在头文件linux/fcntl.h中定义.</listitem>
+	<listitem>struct file_operations *f_op; 和文件关联的操作. 内核安排指针作为它的 open 实现的一部分, 接着读取它当它需要分派任
+何的操作时. filp->f_op 中的值从不由内核保存为后面的引用; 这意味着你可改变你的文件关联的文件操作, 在你返回调用者之后新方法会起作用. 例如, 关联到主编号 1 (/dev/null, /dev/zero, 等等)的 open 代码根据打开的次编号来替代 filp->f_op 中的操作. 这个做法允许实现几种行为, 在同一个主编号下而不必在每个系统调用中引入开销. 替换文件操作的能力是面向对象编程的"方法重载"的内核对等体.</listitem>
+	<listitem>void *private_data; open 系统调用设置这个指针为 NULL, 在为驱动调用 open 方法之前. 你可自由使用这个成员或者忽略它; 你可以使用这个成员来指向分配的数据, 但是接着你必须记住在内核销毁文件结构之前, 在 release 方法中释放那个内存. private_data 是一个有用的资源, 在系统调用间保留状态信息.</listitem>
+	<listitem>struct dentry *f_dentry; 关联到文件的目录入口( dentry )结构. 设备驱动编写者正常地不需要关心 dentry 结构, 除了作为 filp->f_dentry->d_inode 存取 inode 结构.</listitem>
+</itemizedlist>
+回顾open系统调用的过程，file结构体在path_openat申请，其中的get_empty_filp函数通过kmemcache机制申请可用的file结构体。
+<programlisting><![CDATA[
+fs/namei.c
+static struct file *path_openat(int dfd, const char *pathname,
+		struct nameidata *nd, const struct open_flags *op, int flags)
+{
+	struct file *base = NULL;
+	struct file *filp;
+	struct path path;
+	int error;
+
+	filp = get_empty_filp();
+	if (!filp)
+		return ERR_PTR(-ENFILE);
+......		
+]]></programlisting>
+path_openat的后半部分均是在对filp指向的file结构体进行初始化。直至在chrdev_open处理中其f_op成员被赋值为我们定义的字符设备对应的操作集。
+</sect3>
+<figure><title>inode，file和cdev间关系</title><graphic fileref="images/device/fops.gif"/></figure>
+一个驱动可以驱动多个字符设备，所以这里将对应这些设备文件的inode放入驱动对应的cdev中，便于管理。
+</sect2>
+<sect2><title>字符设备操作</title>
+字符设备的操作基于标准文件的操作，它们是这些操作的子集，所有操作被定义在名为file_operation结构中，设备文件的操作集由驱动开发者定义，并在open的过程中赋值给file结构体中的f_op指针，然后一系列的操作都会定位到设备文件的操作集。解析来将分析这些操作的公用。
+<sect3><title>open和release</title>
+open 方法提供给驱动来做任何的初始化来准备后续的操作。在大部分驱动中, open应当进行下面的工作:
+<itemizedlist> 
+	<listitem>确定设备有没有就绪等类似的错误。</listitem>
+	<listitem>如果它第一次打开, 初始化设备。</listitem>
+	<listitem>如果需要, 更新f_op指针，这一点可以实现相同主设备号设备的不同操作集的替换。</listitem>
+	<listitem>分配并填充要放进 filp->private_data 的任何数据结构。当cdev等是内嵌入其他结构体中时，可以指向该结构体。</listitem>	
+</itemizedlist>
+操作集中open的原型定义如下：
+<programlisting><![CDATA[
+int (*open)(struct inode *inode, struct file *filp);
+]]></programlisting>
+<para>
+inode参数有我们需要的信息，以它的i_cdev成员的形式，里面包含之前建立的cdev结构。如果cdev内嵌在其他结构体中，那么唯一的问题是通常不需要cdev结构本身, 而是包含cdev结构的vcdev结构。内核实现了container_of 宏，以从成员得到结构体的开始指针。
+<programlisting><![CDATA[
+struct vcdev *dev;
+dev = container_of(inode->i_cdev, struct vcdev, cdev);
+filp->private_data = dev;
+]]></programlisting>
+一旦它找到vcdev结构，open函数就在文件结构的 private_data 成员中存储一个它的指针，为以后更易存取。对于该结构的另一个操作是对其中的f_op实施偷梁换柱。考虑到主设备号为1的几个设备：
+<programlisting><![CDATA[
+# ls /dev/ -l |grep -wrn 1,
+......
+31:crw-rw-rw-    1 root     root        1,   3 Mar  6  2012 null
+35:crw-rw-rw-    1 root     root        1,   8 Mar  6  2012 random
+110:crw-rw----    1 root     root        1,   9 Mar  6  2012 urandom
+123:crw-rw-rw-    1 root     root        1,   5 Mar  6  2012 zero
+]]></programlisting>
+它们均是字符设备，具有相同的主设备号，但是实现了截然不同的功能。
+<programlisting><![CDATA[
+drivers/char/mem.c
+static const struct memdev {
+        const char *name;
+        mode_t mode;
+        const struct file_operations *fops;
+        struct backing_dev_info *dev_info;
+} devlist[] = {
+......
+         [3] = { "null", 0666, &null_fops, NULL },
+......
+         [5] = { "zero", 0666, &zero_fops, &zero_bdi },
+         [7] = { "full", 0666, &full_fops, NULL },
+         [8] = { "random", 0666, &random_fops, NULL },
+         [9] = { "urandom", 0666, &urandom_fops, NULL },
+......
+};
+]]></programlisting>
+它们的操作和相关信息均定义在一个名为devlist的数组中，有意思的是它们的从设备号就是它们在该数组的下标。根据前几节的分析chardev_open在打开设备文件时，将file结构中的f_op指针赋值为该设备文件的open函数，这里就是memory_open。
+<programlisting><![CDATA[
+static int memory_open(struct inode *inode, struct file *filp)
+{
+  int minor;
+  const struct memdev *dev;
+
+  minor = iminor(inode);
+  if (minor >= ARRAY_SIZE(devlist))
+          return -ENXIO;
+
+  dev = &devlist[minor];
+  if (!dev->fops)
+          return -ENXIO;
+
+  filp->f_op = dev->fops; /* 偷梁换柱 */
+  if (dev->dev_info)
+          filp->f_mapping->backing_dev_info = dev->dev_info;
+......
+  if (dev->fops->open)
+          return dev->fops->open(inode, filp);
+
+  return 0;
+}
+
+static const struct file_operations memory_fops = {
+	.open = memory_open,
+	.llseek = noop_llseek,
+};
+]]></programlisting>
+memory_open实现了一个分支器的作用，它首先根据宏iminor取出inode中的从设备号，然后从数组中找到从设备号对应的操作，接着实现了“偷梁换柱”。其他设备类型也采用了同样的方法，首先根据主设备号设置一个特定的文件操作集，在其open函数中又根据从设备号选择特定的操作替换当前的操作。
+</para>
+<para>
+open中还会涉及另外的一类操作：权限检查和信息统计。如果设备是只读，那么设备文件权限上即便可读写，那么实际也只能读，此时就需要返回错误信息。如果是写操作，可能需要清除内容的动作。这些标志位于file结构中的f_flags中。相关的掩码定义如下：
+<programlisting><![CDATA[
+include/asm-generic/fcntl.h
+#define O_ACCMODE       00000003
+#define O_RDONLY        00000000
+#define O_WRONLY        00000001
+#define O_RDWR          00000002
+......
+]]></programlisting>
+信息统计可以包含，打开的次数，模式等。
+</para>
+<programlisting><![CDATA[
+int (*release) (struct inode *, struct file *);
+]]></programlisting>
+release 方法具有与open相同的参数，它的角色与open相反。有时会发现方法的实现称为device_close, 而不是device_release。 任一方式, 设备方法应当进行下面的任务:
+<itemizedlist> 
+	<listitem>释放 open 分配在 filp->private_data 中的任何东西：动态分配的资源的释放是必须的。</listitem>
+	<listitem>在最后的 close 关闭设备。</listitem>
+</itemizedlist>
+当一个设备文件关闭次数超过它被打开的次数会发生什么？dup 和 fork 系统调用不调用 open 来创建打开文件的拷贝; 每个拷贝接着在程序终止时被关闭。 这里分析一下close函数的系统调用。
+<programlisting><![CDATA[
+fs/open.c
+SYSCALL_DEFINE1(close, unsigned int, fd)
+
+[<c002e788>] (unwind_backtrace+0x0/0xf8) from [<bf00000c>] (vcdev_release+0xc/0x18 [vcdev])
+[<bf00000c>] (vcdev_release+0xc/0x18 [vcdev]) from [<c00b5b40>] (fput+0xc0/0x1e8)
+[<c00b5b40>] (fput+0xc0/0x1e8) from [<c00b2b9c>] (filp_close+0x64/0x88)
+[<c00b2b9c>] (filp_close+0x64/0x88) from [<c00b3a94>] (sys_close+0x90/0xbc)
+[<c00b3a94>] (sys_close+0x90/0xbc) from [<c0029a80>] (ret_fast_syscall+0x0/0x30)
+]]></programlisting>
+通过在release函数中查看栈，容易找到整个调用流程，由于__fput是static类型，静态函数会被自动分配在一个一直使用的存储区，直到退出应用程序实例，避免了调用函数时压栈出栈，所以这里看不到它。相比open调用，这里简单许多。
+<programlisting><![CDATA[
+sys_close->filp_close->fput->__fput->.release
+]]></programlisting>
+不是每个 close 系统调用都引起调用 release。只有真正释放设备数据结构的调用会调用这个方法。内核维持一个文件结构被使用多少次的计数，它就是file结构中的f_count。 fork 和 dup 都不创建新文件(只有 open 这样); 它们通过函数fget(fget_raw)只递增正存在的结构中的计数。 close 统调用仅在文件结构计数掉到 0 时执行 release 方法, 这在结构被销毁时发生。release 方法和 close 系统调用之间的这种关系保证了驱动一次 open 只看到一次 release。
+<programlisting><![CDATA[
+fs/file_table.c
+void fput(struct file *file)
+{
+	if (atomic_long_dec_and_test(&file->f_count))
+		__fput(file);	
+}
+]]></programlisting>
+fput中的atomic_long_dec_and_test就是用来测试f_count是否递减为0，如果是才调用__fput完成file结构体的释放。
+</sect3>
+<sect3><title>read和write</title>
+读和写的操作类似，其实现函数的参数也类似。会注意到不少参数包含字串 __user。这种注解是一种文档形式, 注意，一个指针是一个不能被直接解引用的用户空间地址. 对于正常的编译, __user 没有效果，但是它可被外部检查软件使用来找出对用户空间地址的错误使用。
+<programlisting><![CDATA[
+ssize_t read(struct file *filp, char __user *buff, size_t count, loff_t *offp);
+ssize_t write(struct file *filp, const char __user *buff, size_t count, loff_t *offp);
+]]></programlisting>
+对于这两个方法，filp是文件指针，count是请求的传输数据大小。buff参数指向持有被写入数据的缓存，或者放入新数据的空缓存。最后, offp 是一个指针指向一个"long offset type"对象，它指出用户正在存取的文件位置。返回值是一个"signed size type"。
+<para>
+read 和 write 方法的 buff 参数是用户空间指针. 因此, 它不能被内核代码直接解引用。内核提供了两个函数实现内核与用户空间数据的搬移：
+<programlisting><![CDATA[
+unsigned long copy_to_user(void __user *to,const void *from,unsigned long count);
+unsigned long copy_from_user(void *to,const void __user *from,unsigned long count);
+]]></programlisting>	
+这 2 个函数的角色不限于拷贝数据到和从用户空间: 它们还检查用户空间指针是否有效. 如果指针无效, 不进行拷贝; 如果在拷贝中遇到一个无效地址, 另一方面, 只拷贝部分数据. 在 2 种情况下, 返回值是还要拷贝的数据量。不管这些方法传送多少数据, 它们通常应当更新 *offp 中的文件位置来表示在系统调用成功完成后当前的文件位置。
+</para>
+<para>
+read 和 write 方法都在发生错误时返回一个负值. 相反, 大于或等于 0 的返回值告知调用程序有多少字节已经成功传送。尽管内核函数返回一个负数指示一个错误，这个数的值指出所发生的错误类型，用
+户空间运行的程序常常看到 -1 作为错误返回值。 它们需要存取 errno 变量来找出发生了什么。用户空间的行为由 POSIX 标准来规定, 但是这个标准没有规定内核内部如何操作。
+</para>
+<para>
+read 的返回值由调用的应用程序解释:
+<itemizedlist> 
+	<listitem>如果这个值等于传递给 read 系统调用的 count 参数, 请求的字节数已经被传送. 这是最好的情况。</listitem>
+	<listitem>如果是正数, 但是小于 count, 只有部分数据被传送. 这可能由于几个原因, 依赖于设备。 常常,
+应用程序重新试着读取。例如, 如果你使用 fread 函数来读取, 库函数重新发出系统调用直到请求的数据传送完成。</listitem>
+	<listitem>如果值为 0, 到达了文件末尾(没有读取数据)。</listitem>	
+	<listitem>一个负值表示有一个错误. 这个值指出了什么错误, 根据linux/errno.h。出错的典型返回值包括 -EINTR( 被打断的系统调用) 或者 -EFAULT(坏地址)。</listitem>
+</itemizedlist>
+write, 象 read, 可以传送少于要求的数据, 根据返回值的下列规则:
+<itemizedlist> 
+	<listitem>如果值等于 count, 要求的字节数已被传送.</listitem>
+	<listitem>如果正值, 但是小于 count, 只有部分数据被传送. 程序最可能重试写入剩下的数据.</listitem>
+	<listitem>如果值为 0, 什么没有写. 这个结果不是一个错误, 没有理由返回一个错误码. 再一次, 标准库重试写调用。</listitem>
+	<listitem>一个负值表示发生一个错误; 如同对于读, 有效的错误值是定义于linux/errno.h中。</listitem>
+</itemizedlist>
+</para>
+</sect3>
+<sect3><title>ioctl接口</title>
+大部分驱动除了需要读写设备的能力，还通过设备驱动进行各种硬件控制的能力。大部分设备可进行超出简单的数据传输之外的操作; 用户空间必须常常能够请求, 例如, led设备可以亮，灭和闪烁，温度控制器可以设置报警阈值，或者开启关闭。这些操作常常通过 ioctl 方法来支持, 它通过相同名子的系统调用来实现。在用户空间, ioctl 系统调用有下面的原型:
+<programlisting><![CDATA[
+#include <sys/ioctl.h>
+int ioctl(int d, int request, ...);
+]]></programlisting>
+ioctl函数并不具有数目不定的参数。在实际系统中一个系统调用不能真正有变数目的参数。系统调用必须有一个很好定义的原型，因为用户程序可存取它们必须满足硬件的限制。ioctl函数是一个单个可选的参数, 传统上标识为char *argp，这些点在那里只是为了阻止在编译时的类型检查。第3个参数的实际特点依赖所发出的特定的控制命令(第2个参数 ). 一些命令不用参数, 一些用一个整数值, 以及一些使用指向其他数据的指针。使用一个指针是传递任意数据到ioctl调用的方法; 设备
+接着可与用户空间交换任何数量的数据。
+<para>
+ioctl 调用的非结构化特性使它在内核开发者中失宠。每个ioctl命令, 基本上, 是一个单独的, 常常无文档的系统调用, 并且没有方法以任何类型的全面的方式核查这些调用. 也难于使非结构化的 ioctl参数在所有系统上一致工作; 例如, 考虑运行在 32-位模式的一个用户进程的 64-位系统。 结果, 有很大的压力来实现混杂的控制操作, 只通过任何其他的方法. 可能的选择包括嵌入命令到数据流, 要么是 sysfs 要么是设备特定的文件系统。但是, 事实是 ioctl 常常是最容易的和最直接的选择。
+</para>
+<para>
+ioctl 驱动方法有和用户空间版本不同的原型:
+<programlisting><![CDATA[
+	/* old system */
+	int (*ioctl) (struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg);
+
+	long (*unlocked_ioctl) (struct file *, unsigned int, unsigned long);
+	long (*compat_ioctl) (struct file *, unsigned int, unsigned long);
+]]></programlisting>
+在kernel 2.6.36 中已经完全删除了struct file_operations 中的ioctl 函数指针，取而代之的是unlocked_ioctl。这个指针函数变了之后最大的影响是参数中少了inode ， 不过这个不是问题，因为用户程序中的ioctl对应的系统调用接口没有变化，所以用户程序不需要改变，一切都交给内核处理了，如果想在unlocked_ioctl中获得inode 等信息可以用如下方法：
+<programlisting><![CDATA[
+struct inode *inode = file->f_mapping->host;
+]]></programlisting>
+compat_ioctl被使用在用户空间为32位模式，而内核运行在64位模式时。这时候，需要将64位转成32位。compat_ioctl少了inode参数, 可以通过如下方法获得。新函数的第二个参数与ioctl中的cmd作用相同，而第三个参数依然表示用户空间传递来的指针。
+<programlisting><![CDATA[
+struct inode *inode = filp->f_dentry->d_inode;
+]]></programlisting>
+</para>
+<sect4><title>ioctl调用流程</title>
+ioctl通过一种可用于处理文件的特殊方法实现。该方法对设备文件有效，但对普通文件无效。内核使用sys_ioctl处理用户空间ioctl调用。
+根据调用栈可以得到调用流程：
+<programlisting><![CDATA[
+[<c002e788>] (unwind_backtrace+0x0/0xf8) from [<bf004050>] (vcdev_ioctl+0x24/0x1b0 [vcdev])
+[<bf004050>] (vcdev_ioctl+0x24/0x1b0 [vcdev]) from [<c00c212c>] (vfs_ioctl+0x30/0x44)
+[<c00c212c>] (vfs_ioctl+0x30/0x44) from [<c00c23d0>] (do_vfs_ioctl+0x6c/0x534)
+[<c00c23d0>] (do_vfs_ioctl+0x6c/0x534) from [<c00c28d0>] (sys_ioctl+0x38/0x60)
+[<c00c28d0>] (sys_ioctl+0x38/0x60) from [<c0029a80>] (ret_fast_syscall+0x0/0x30)
+
+sys_ioctl->do_vfs_ioctl->vfs_ioctl->unlocked_ioctl
+]]></programlisting>
+do_vfs_ioctl将判断文件的类型，如果是常规文件(regular)，则调用file_ioctl，否则调用VFS中的vfs_ioctl。
+<programlisting><![CDATA[
+int do_vfs_ioctl(struct file *filp, unsigned int fd, unsigned int cmd,
+	     unsigned long arg)
+{
+......
+	default:
+		if (S_ISREG(inode->i_mode))
+			error = file_ioctl(filp, cmd, arg);
+		else
+			error = vfs_ioctl(filp, cmd, arg);
+		break;
+	}
+	return error;
+}
+]]></programlisting>
+vfs_ioctl中调用unlocked_ioctl，如果没有则返回ENOTTY。
+<programlisting><![CDATA[
+static long vfs_ioctl(struct file *filp, unsigned int cmd,
+		      unsigned long arg)
+{
+	int error = -ENOTTY;
+
+	if (!filp->f_op || !filp->f_op->unlocked_ioctl)
+		goto out;
+
+	error = filp->f_op->unlocked_ioctl(filp, cmd, arg);
+	if (error == -ENOIOCTLCMD)
+		error = -EINVAL;
+ out:
+	return error;
+}
+]]></programlisting>
+</sect4>
+<sect4><title>ioctl命令</title>
+在为 ioctl 编写代码之前, 需要选择对应命令的数字。许多程序员的第一个本能的反应是选择一组小数从0或1开始，并且从此开始向上。 但是，有充分的理由不这样做。ioctl命令数字应当在这个系统是唯一的, 为了阻止向错误的设备发出正确的命令而引起的错误。 命令编码已被划分为几个位段：
+<programlisting><![CDATA[
+cmd的大小为 32位，共分 4 个域：
+b[31:30] 2位为 “区别读写” 区，作用是区分是读取命令还是写入命令。
+b[29:15] 14位为 "参数大小" 区，表示 ioctl() 中的arg变量传送的内存大小。
+b[14:08]  8位为 “魔数"(也称为"幻数")区，这个值用以与其它设备驱动程序的 ioctl 命令进行区别。
+b[07:00]  8位为 "区别序号" 区，是区分命令的命令顺序序号，也被称为基数。
+]]></programlisting>
+根据 Linux 内核惯例来为你的驱动选择 ioctl 号，应当首先检查include/asm/ioctl.h和Documentation/ioctl/ioctl-number.txt。这个头文件定义你将使用的位段: 传输方向，参数大小，type(魔数), 序号和参数大小。
+<para>
+像命令码中的 “区分读写区” 里的值被定义为宏_IOC_NONE （0值）表示无数据传输，_IOC_READ (读)， _IOC_WRITE (写) ， _IOC_READ|_IOC_WRITE (双向)。内核定义了 _IO() , _IOR() , IOW() 和 _IOWR() 这 4 个宏来辅助生成上面的宏。
+<programlisting><![CDATA[
+include/asm/ioctl.h
+#define _IO(type,nr)            _IOC(_IOC_NONE,(type),(nr),0)
+#define _IOR(type,nr,size)      _IOC(_IOC_READ,(type),(nr),(_IOC_TYPECHECK(size)))
+#define _IOW(type,nr,size)      _IOC(_IOC_WRITE,(type),(nr),(_IOC_TYPECHECK(size)))
+#define _IOWR(type,nr,size)     _IOC(_IOC_READ|_IOC_WRITE,(type),(nr),(_IOC_TYPECHECK(size)))
+]]></programlisting>
+type魔数的范围必须为0~255，通常用英文字符 "A" ~ "Z" 或者 "a" ~ "z" 来表示。设备驱动程序从传递进来的命令获取魔数，然后与自身处理的魔数想比较，如果相同则处理，不同则不处理。魔数是拒绝误使用的初步辅助状态。设备驱动程序可以通过 _IOC_TYPE (cmd)来获取魔数。不同的设备驱动程序最好设置不同的魔数，但并不是要求绝对，也是可以使用其他设备驱动程序已用过的魔数。
+</para>
+<para>
+基数nr用于区别各种命令。通常，从0开始递增，相同设备驱动程序上可以重复使用该值。例如，读取和写入命令中使用了相同的基数，设备驱动程序也能分辨出来，原因在于设备驱动程序区分命令时使用switch，且直接使用命令变量cmd值。创建命令的宏生成的值由多个域组合而成，所以即使是相同的基数，也会判断为不同的命令。设备驱动程序想要从命令中获取该基数，就使用宏_IOC_NR (cmd)。通常，switch 中的 case 值使用的是命令的本身。
+</para>
+<para>
+size是变量类型，变量类型使用 arg 变量指定传送的数据大小，但是不直接代入输入，而是代入变量或者是变量的类型，原因是在使用宏创建命令，已经包含了sizeof编译命令。设备驱动程序想要从传送的命令获取相应的值，就要使用宏_IOC_SIZE(cmd)。
+</para>
+<para>
+几个示例如下，_IO只用来传递命令，而没有而外的参数，_IOR用来传递只读的参数，_IOW用来传递只写的参数，_IOWR传递读写的参数，方向均是参考用户空间，也即读是读取设备内容。
+<programlisting><![CDATA[
+#define AGPIOC_ACQUIRE    _IO  (AGPIOC_BASE, 1)
+#define AGPIOC_INFO       _IOR (AGPIOC_BASE, 0, struct agp_info*)
+#define AGPIOC_SETUP      _IOW (AGPIOC_BASE, 3, struct agp_setup*)
+#define AGPIOC_ALLOCATE   _IOWR(AGPIOC_BASE, 6, struct agp_allocate*)
+]]></programlisting>
+</para>
+</sect4>
+</sect3>
+</sect2>
+<sect2><title>阻塞I/O</title>
+有些时候，一个系统调用可能无法马上取到或者送出数据：一个温度采集器如果没有采用中断或者轮询的策略，而是在用户发出请求时才进行采集，并在一定的时间后返回结果。如果用户程序希望调用read或write并且在调用返回时能确保得到想要的结果，那么用户程序应该阻塞，直到有结果或者错误后返回，用户程序的阻塞体现为进程的睡眠，也即系统调用中将进程状态切换为睡眠态。
+<sect3><title>睡眠和等待队列</title>
+<para>一个进程的睡眠意味着它的进程状态标识符被置为睡眠，并且从调度器的运行队列中去除，直到某些事件的发生将它们从睡眠态中唤醒，在睡眠态，该进程将不被CPU调度，并且，如果不被唤醒，它将永远不被运行。</para>
+<para>
+在驱动中很容易通过调度等方式使当前进程睡眠，但是进程并不是在任何时候都是可以进入睡眠状态的。
+<itemizedlist> 
+	<listitem>第一条规则是：当运行在原子上下文时不能睡眠：比如持有自旋锁，顺序锁或者RCU锁。</listitem>
+	<listitem>在关中断中也不能睡眠。</listitem>
+	<listitem>持有信号量时睡眠是合法的，但它所持有的信号量不应该影响唤醒它的进程的执行。另外任何等待该信号量的线程也将睡眠，因此发生在持有信号量时的任何睡眠都应当短暂。</listitem>
+	<listitem>进程醒来后应该进行等待事件的检查，以确保它确实发生了。</listitem>
+</itemizedlist>
+等待队列可以完成进程的睡眠并在事件发生时唤醒它，它由一个进程列表组成。在 Linux 中, 一个等待队列由一个"等待队列头"来管理：
+<programlisting><![CDATA[
+linux/wait.h
+struct __wait_queue_head {
+	spinlock_t lock;
+	struct list_head task_list;
+};
+typedef struct __wait_queue_head wait_queue_head_t;
+]]></programlisting>
+</para>
+<para>由于睡眠的进程很有可能在等待一个中断来改变某些状态，或通告某些事件的发生，那么中断上下文很有可能修改该等待队列，所以该结构中的自旋锁lock必须考虑禁中断，也即使用spin_lock_irqsave。</para>
+<para>
+队列中的成员是如下数据结构的实例，它们组成了一个双向链表：
+<figure><title>等待队列</title><graphic fileref="images/device/waitqueue.gif"/></figure>
+<programlisting><![CDATA[
+typedef struct __wait_queue wait_queue_t;
+typedef int (*wait_queue_func_t)(wait_queue_t *wait, unsigned mode, int flags, void *key);
+int default_wake_function(wait_queue_t *wait, unsigned mode, int flags, void *key);
+
+struct __wait_queue {
+	unsigned int flags;
+#define WQ_FLAG_EXCLUSIVE	0x01
+	void *private;
+	wait_queue_func_t func;
+	struct list_head task_list;
+};
+]]></programlisting>
+<itemizedlist> 
+	<listitem>flags的值或者为0，或者为WQ_FLAG_EXCLUSIVE。后者表示等待进程想要被独占地唤醒。</listitem>
+	<listitem>private指针指向等待进程的task_struct实例。该变量本质上可以指向任何私有数据，单内核只有很少情况下才这么用。</listitem>
+	<listitem>调用func，唤醒等待进程。</listitem>
+	<listitem>task_list用作一个链表元素，将wait_queue_t实例放置到等待队列中。</listitem>
+</itemizedlist>
+为了使用等待队列，通常需要如下步骤：首先应该建立一个等待队列头：
+<programlisting><![CDATA[
+DECLARE_WAIT_QUEUE_HEAD(name);
+]]></programlisting>
+另外一种方法是静态声明，并显式初始化它：
+<programlisting><![CDATA[
+wait_queue_head_t wait_queue;
+
+init_waitqueue_head(&wait_queue);
+]]></programlisting>
+接着为使得当前进程进入睡眠，并等待某一事件的发生，需要将它加入到等待队列中，内核提供了以下函数完成此功能：
+<programlisting><![CDATA[
+wait_event(queue, condition);
+wait_event_interruptible(queue, condition);
+wait_event_timeout(queue, condition, timeout);
+wait_event_interruptible_timeout(queue, condition, timeout);
+]]></programlisting>
+在所有的形式中，参数queue是要等待的队列头，由于这几个函数都是通过宏实现的，这里的队列头不是指针类型，而是对它的直接使用。条件condition是一个被这些宏在睡眠前后所要求值的任意的布尔表达式。直到条件求值为真，进程持续睡眠。
+</para>
+<para>
+通过wait_event进入睡眠的进程是不可中断的，此时进程的state成员置TASK_UNINTERRUPTIBLE位。但是它应该被wait_event_interruptible所替代，它可以被信号中断，这意味着用户程序在等待的过程中可以通过信号中断程序的执行。一个不能被信号中断的程序很容易激怒使用它的用户。wait_event函数没有返回值，而wait_event_interruptible有一个可以识别睡眠被某些信号打断的返回值-ERESTARTSYS。
+</para>
+<para>
+wait_event_timeout和wait_event_interruptible_timeout意味着等待一段时间，它以滴答数表示，在这个时间期间超时后，该宏返回一个0值，而不管事件是否发生。
+</para>
+<para>
+最后，我们需要在其他进程或者线程(也可能是中断)中通过相对应的函数，唤醒这些队列上沉睡的进程。内核提供了如下函数：
+<programlisting><![CDATA[
+void wake_up(wait_queue_head_t *queue);
+void wake_up_interruptible(wait_queue_head_t *queue);
+]]></programlisting>
+<itemizedlist> 
+	<listitem>wake_up唤醒所有的在给定队列上等待的进程。</listitem>
+	<listitem>wake_up_interruptible唤醒所有的在给定队列上等待的可中断的睡眠的进程。</listitem>
+</itemizedlist>
+尽管wake_up可以替代wake_up_interruptible的功能，但是它们应该使用与wait_event对应的函数。通过等待队列实现一个管道的读写是可行的，内核中fs/pipe.c对管道的实现就是基于等待队列实现的，尽管它有些复杂。另外对于设备驱动来说，一个温度采集器在收到读数据请求后，该进程被放入等待队列，然后唤醒它的布尔变量在该设备对应的中断处理程序中被置为真。</para>
+<note>wake_up_interruptible的调用可能使多个个睡眠进程醒来，而它们又是独占访问某一资源，如何使仅一个进程看到这个真值，这就是WQ_FLAG_EXCLUSIVE的作用，其他进程将继续睡眠。</note>
+<sect4><title>等待队列原理</title>
+wait_event函数的核心实现如下：
+<programlisting><![CDATA[
+#define __wait_event(wq, condition) 					\
+do {									\
+	DEFINE_WAIT(__wait);						\
+									\
+	for (;;) {							\
+		prepare_to_wait(&wq, &__wait, TASK_UNINTERRUPTIBLE);	\
+		if (condition)						\
+			break;						\
+		schedule();						\
+	}								\
+	finish_wait(&wq, &__wait);					\
+} while (0)
+]]></programlisting>
+<itemizedlist> 
+	<listitem>DEFINE_WAIT注册了一个名为__wait的队列元素，其中包含一个名为autoremove_wake_function的钩子函数，它用来唤醒的进程并将该元素从等待队列中删除。</listitem>
+	<listitem>prepare_to_wait用来将队列元素计入等待队列，并指定进程的state状态标识为TASK_UNINTERRUPTIBLE，当然对应wait_event_interruptible，则是TASK_INTERRUPTIBLE。</listitem>
+	<listitem>for无限循环决定了当前进程在不满足condition时总是被调度，其他进程将替换该进程执行。并且这个循环实际上永远只执行一次，并且只在唤醒时直接</listitem>
+	<listitem>在满足条件时，finish_wait将进程状态设置为TASK_RUNNING，并从等待队列中将其移除。</listitem>
+</itemizedlist>
+需要仔细考虑的是for循环的执行，显然它可能执行一次，也可能是多次，当condition不满足时，将会产生调度，而在此被调度时，将执行for的下一次循环，那么prepare_to_wait不是每次都添加一次__wait元素吗？查看prepare_to_wait代码可以发现，只有wait->task_list指向的链表为空时，也即__wait元素没有加入任何其他等待队列时才会把它加入到当前等待队列中，这也表明一个等待队列元素只能加入一个等待队列。
+<programlisting><![CDATA[
+void prepare_to_wait(wait_queue_head_t *q, wait_queue_t *wait, int state)
+{
+	unsigned long flags;
+
+	wait->flags &= ~WQ_FLAG_EXCLUSIVE;
+	spin_lock_irqsave(&q->lock, flags);
+	if (list_empty(&wait->task_list))
+		__add_wait_queue(q, wait);
+	set_current_state(state);
+	spin_unlock_irqrestore(&q->lock, flags);
+}
+]]></programlisting>
+唤醒一个等待队列是通过wake_up系列函数完成的，一些列的唤醒函数都有对应的可中断形式：
+<programlisting><![CDATA[
+#define wake_up(x)			__wake_up(x, TASK_NORMAL, 1, NULL)
+#define wake_up_nr(x, nr)		__wake_up(x, TASK_NORMAL, nr, NULL)
+#define wake_up_all(x)			__wake_up(x, TASK_NORMAL, 0, NULL)
+#define wake_up_locked(x)		__wake_up_locked((x), TASK_NORMAL)
+]]></programlisting>
+这里分析它们的核心实现：
+<programlisting><![CDATA[
+kernel/sched.c
+void __wake_up(wait_queue_head_t *q, unsigned int mode,
+			int nr_exclusive, void *key)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&q->lock, flags);
+	__wake_up_common(q, mode, nr_exclusive, 0, key);
+	spin_unlock_irqrestore(&q->lock, flags);
+}
+]]></programlisting>
+__wake_up首先获取了自旋锁，然后调用__wake_up_common。该函数通过list_for_each_entry_safe遍历等待队列，如果没有设置独占标志，则根据mode唤醒每个睡眠的进程。nr_exclusiv表示需要唤醒的设置了独占标志进程的数目，它在wake_up中设置为1，表明当处理了一个含有WQ_FLAG_EXCLUSIVE标志进程后，将不再处理，独占标志的意义也在于此。另外看到这里通过func指针执行了真正的唤醒函数。
+<programlisting><![CDATA[
+kernel/sched.c
+static void __wake_up_common(wait_queue_head_t *q, unsigned int mode,
+			int nr_exclusive, int wake_flags, void *key)
+{
+	wait_queue_t *curr, *next;
+
+	list_for_each_entry_safe(curr, next, &q->task_list, task_list) {
+		unsigned flags = curr->flags;
+
+		if (curr->func(curr, mode, wake_flags, key) &&
+				(flags & WQ_FLAG_EXCLUSIVE) && !--nr_exclusive)
+			break;
+	}
+}
+]]></programlisting>
+如果含有独占标志的进程并不位于队列尾部，将导致其后的不含有该标志的进程无法执行，prepare_to_wait_exclusive解决了该问题，它总是将含有独占标志的进程插入到队列尾部，该函数被wait_event_interruptible_exclusive宏调用。
+</sect4>
+</sect3>
+<sect3><title>阻塞和非阻塞</title>
+尽管等待队列可以实现阻塞执行，但是用户可以通过描述符属性O_NONBLOCK来明确指定不阻塞，所以对应的驱动程序也应该满足这一行为，该标志通过filp中的f_flags标志位O_NONBLOCK来指示。阻塞操作是缺省的,除非指定了O_NONBLOCK：
+<itemizedlist> 
+	<listitem>如果一个进程调用 read 但是没有数据可用(尚未), 这个进程必须阻塞. 这个进程在有数据达到时被立刻唤
+醒, 并且那个数据被返回给调用者, 即便小于在给方法的 count 参数中请求的数量。</listitem>
+	<listitem>如果一个进程调用 write 并且在缓冲中没有空间, 这个进程必须阻塞, 并且它必须在一个与用作 read 的不同的等待队列中。当一些数据被写入硬件设备, 并且在输出缓冲中的空间变空闲, 这个进程被唤醒并且写调用成功, 尽管数据可能只被部分写入如果在缓冲只没有空间给被请求的 count 字节。</listitem>
+</itemizedlist>
+<para>
+这 2 句都假定有输入和输出缓冲; 实际上, 几乎每个设备驱动都有。要求有输入缓冲是为了避免丢失到达的数据, 当无人在读时。相反, 数据在写时不能丢失, 因为如果系统调用不能接收数据字节, 它们保留在用户空间缓冲。即便如此, 输出缓冲几乎一直有用, 这可以减少应为等待而造成的进程切换时间损失，可从硬件挤出更多的性能。
+</para>
+<para>
+一个阻塞读取的例子如下，首先会测试代表资源的布尔量是否为真，如果不是则直接返回EAGAIN，当然这也意味着gen_rtc_irq_data会在其他事件(比如中断处理程序)中将被改变。对于write来说，如果可以承载写出数据的资源不可得，也应该直接返回EAGAIN。
+<programlisting><![CDATA[
+drivers/char/genrtc.c
+  if (file->f_flags & O_NONBLOCK && !gen_rtc_irq_data)
+          return -EAGAIN;
+
+  retval = wait_event_interruptible(gen_rtc_wait,
+                  (data = xchg(&gen_rtc_irq_data, 0)));
+]]></programlisting>
+自然地, O_NONBLOCK 也在 open 方法中有意义. 这个发生在当这个调用真正阻塞长时间时; 例如, 当打开(为读存取)一个 没有写者的(尚无)FIFO, 或者存取一个磁盘文件使用一个悬挂锁. 常常地, 打开一个设备或者成功或者失败, 没有必要等待外部的事件. 有时, 但是, 打开这个设备需要一个长的初始化, 并且你可能选择在你的 open方法中支持 O_NONBLOCK , 通过立刻返回 -EAGAIN,如果这个标志被设置. 在开始这个设备的初始化进程之后. 这个驱动可能还实现一个阻塞 open 来支持存取策略, 通过类似于文件锁的方式. 我们将见到这样一个实现在"阻塞 open 作为对 EBUSY 的替代"
+</para>
+</sect3>
+<sect3><title>poll和select</title>
+阻塞的读写操作是当前进程不得不停下来，等待事件的触发，那么只要一个描述符进程就不得不停下来，这是非常糟糕的事情！使用非阻塞的I/O可以通过poll，select和epoll系统调用来同时监听多个描述符，也即描述符集。poll和select功能相同，由不同的开发版本引入，epoll在2.5.45内核版本中加入，它使被监听的文件描述符多达几千个。
+<programlisting><![CDATA[
+#include <poll.h>
+int poll(struct pollfd *fds, nfds_t nfds, int timeout);
+
+/* 驱动中的poll原型 */
+unsigned int (*poll) (struct file *, struct poll_table_struct *);
+]]></programlisting>
+驱动的poll方法提供了用户空间的侦听动作。它负责两方面：
+<itemizedlist> 
+	<listitem>在一个或多个可指示查询状态变化的等待队列上调用 poll_wait。如果没有文件描述符可用作 I/O, 内核使这个进程在等待队列上等待所有的传递给系统调用的文件描述符.</listitem>
+	<listitem>返回一个位掩码, 描述可能不必阻塞就立刻进行的操作。</listitem>
+</itemizedlist>
+为了理清实现过程，从poll的系统调用开始追踪：
+<programlisting><![CDATA[
+fs/select.c
+SYSCALL_DEFINE3(poll, struct pollfd __user *, ufds, unsigned int, nfds,
+		long, timeout_msecs)
+{
+	struct timespec end_time, *to = NULL;
+	int ret;
+
+	if (timeout_msecs >= 0) {
+		to = &end_time;
+		poll_select_set_timeout(to, timeout_msecs / MSEC_PER_SEC,
+			NSEC_PER_MSEC * (timeout_msecs % MSEC_PER_SEC));
+	}
+
+	ret = do_sys_poll(ufds, nfds, to);
+
+	if (ret == -EINTR) {
+		struct restart_block *restart_block;
+		......
+		ret = -ERESTART_RESTARTBLOCK;
+	}
+	return ret;
+}
+]]></programlisting>
+<itemizedlist> 
+	<listitem>poll_select_set_timeout根据当前时间计算超时时间，存放入一个	struct timespec结构体实例to中。显然如果没有设置时间timeout_msecs，to指向NULL。</listitem>
+	<listitem>do_sys_poll实现实际的查询功能。接下来将对它展开分析。</listitem>
+	<listitem>如果do_sys_poll返回-EINTR，则意味着poll操作被信号打断，返回ERESTART_RESTARTBLOCK，由用户注册的信号如果设置了SA_RESTART，则可以在处理完用户注册的信号处理程序后，继续执行。</listitem>	
+</itemizedlist>
+do_sys_poll中首先把用户空间的struct pollfd拷贝到用户空间的struct poll_list类型的链表中，这链表的头定义在栈空间，而其他成员则通过kmalloc在内核空间动态分配，这可以提高对该表的访问效率。接着该函数执行如下代码：
+<programlisting><![CDATA[
+	poll_initwait(&table);
+	fdcount = do_poll(nfds, head, &table, end_time);
+	poll_freewait(&table);
+]]></programlisting>
+每次针对poll的系统调用都会初始化一个类型为poll_wqueues的挑选队列:
+<programlisting><![CDATA[
+linux/poll.h
+struct poll_wqueues {
+	poll_table pt;
+	struct poll_table_page *table;
+	struct task_struct *polling_task;
+	int triggered;
+	int error;
+	int inline_index;
+	struct poll_table_entry inline_entries[N_INLINE_POLL_ENTRIES];
+};
+]]></programlisting>
+poll_initwait用于初始化该挑选队列，其中的polling_task成员被赋值为当前进程的task_struct。
+<programlisting><![CDATA[
+void poll_initwait(struct poll_wqueues *pwq)
+{
+	init_poll_funcptr(&pwq->pt, __pollwait);
+	pwq->polling_task = current;
+	pwq->triggered = 0;
+	pwq->error = 0;
+	pwq->table = NULL;
+	pwq->inline_index = 0;
+}
+]]></programlisting>
+接着调用do_poll，其中参数nfds为用户传入的整数，代表传入的pollfd的数量，而head即为拷贝后的poll_list链表，table是挑选队列，而end_time就是超时时间。do_poll对poll_list链表进行循环处理处理，对于单个fd，则调用do_pollfd进行处理。另外注意到在一次遍历之后一旦返现do_pollfd的返回值不为0，则说明该描述符可操作，计入count，如果count不为0或者超时则直接跳出循环，并返回活跃描述符的计数。
+<programlisting><![CDATA[
+		for (walk = list; walk != NULL; walk = walk->next) {
+			struct pollfd * pfd, * pfd_end;
+
+			pfd = walk->entries;
+			pfd_end = pfd + walk->len;
+			for (; pfd != pfd_end; pfd++) {				
+				if (do_pollfd(pfd, pt)) {
+					count++;
+					pt = NULL;
+				}
+			}
+		}
+		......
+		pt = NULL;
+		if (!count) {
+			count = wait->error;
+			if (signal_pending(current))
+				count = -EINTR;
+		}
+		if (count || timed_out)
+			break;	
+		......	
+		if (!poll_schedule_timeout(wait, TASK_INTERRUPTIBLE, to, slack))
+			timed_out = 1;		
+]]></programlisting>
+do_pollfd调用驱动提供的poll函数，如果没有则永远返回0。poll 返回位掩码, 它描述哪个操作可马上被实现;例如, 如果设
+备有数据可用, 一个读可能不必睡眠而完成; poll 方法应当指示这个时间状态。
+<programlisting><![CDATA[
+static inline unsigned int do_pollfd(struct pollfd *pollfd, poll_table *pwait)
+{
+	unsigned int mask;
+	int fd;
+
+	mask = 0;
+	fd = pollfd->fd;
+	if (fd >= 0) {
+		int fput_needed;
+		struct file * file;
+
+		file = fget_light(fd, &fput_needed);
+		mask = POLLNVAL;
+		if (file != NULL) {
+			mask = DEFAULT_POLLMASK;
+			if (file->f_op && file->f_op->poll) {
+				if (pwait)
+					pwait->key = pollfd->events |
+							POLLERR | POLLHUP;
+				mask = file->f_op->poll(file, pwait);
+			}
+			/* Mask out unneeded events. */
+			mask &= pollfd->events | POLLERR | POLLHUP;
+			fput_light(file, fput_needed);
+		}
+	}
+	pollfd->revents = mask;
+
+	return mask;
+}
+]]></programlisting>
+可以惊奇的发现pwait参数就是挑选队列中的pt成员的指针，所以驱动的poll要实现加入设备等待队列的功能。poll_table结构, 作为poll 方法的第2个参数, 最终在内核中用来实现poll, select, 和 epoll 调用。驱动编写者不必要知道所有它的内容并且必须作为一
+个不透明的对象使用它; 它被传递给驱动方法以便驱动可用每个能唤醒进程的等待队列来加载它，并且可改变 poll 操作状态。驱动通过调用函数 poll_wait增加一个等待队列到 poll_table 结构:
+<programlisting><![CDATA[
+poll_wait(filp, &wtqueue, wait);
+if (bool)
+	return |= POLLIN | POLLRDNORM; /* readable */
+]]></programlisting>
+poll_wait实际上就是调用__pollwait添加poll_table成员到wtqueue。
+<programlisting><![CDATA[
+static inline void poll_wait(struct file * filp, wait_queue_head_t * wait_address, poll_table *p)
+{
+	if (p && wait_address)
+		p->qproc(filp, wait_address, p);
+}
+
+/* Add a new entry */
+static void __pollwait(struct file *filp, wait_queue_head_t *wait_address,
+				poll_table *p)
+{
+	struct poll_wqueues *pwq = container_of(p, struct poll_wqueues, pt);
+	struct poll_table_entry *entry = poll_get_entry(pwq);
+	if (!entry)
+		return;
+	get_file(filp);
+	entry->filp = filp;
+	entry->wait_address = wait_address;
+	entry->key = p->key;
+	init_waitqueue_func_entry(&entry->wait, pollwake);
+	entry->wait.private = pwq;
+	add_wait_queue(wait_address, &entry->wait);
+}
+]]></programlisting>
+<itemizedlist> 
+	<listitem>poll_get_entry用来分配struct poll_table_page结构，它的大小是一个页面，这表明它的尾部包含多个struct poll_table_entry结构体。如果已经分配过，并且POLL_TABLE_FULL判断poll_table_entry结构体未完全使用，则直接返回该表中的下一个poll_table_entry结构体指针。</listitem>
+	<listitem>接下来初始化一个poll_table_entry，其中的wait_address成员总是指向等待队列头。</listitem>
+	<listitem>init_waitqueue_func_entry用来填充poll_table_entry中的等待队列成员，其中的唤醒函数被赋值为pollwake，而私有数据赋值为poll_wqueues，它是挑选队列的头部地址。</listitem>
+	<listitem>add_wait_queue将等待队列成员放入等待队列。</listitem>
+</itemizedlist>
+在经过__pollwait的一系列处理后，整个结构图看起来如下所示：
+<figure><title>poll队列拓扑图</title><graphic fileref="images/device/poll.gif"/></figure>
+那么进程何时被休眠呢？注意do_poll中的poll_schedule_timeout函数，注意到它的第二个参数被设置为了TASK_INTERRUPTIBLE，它总是让进程休眠到超时(如果设置了超时)为止，并可被中断：
+<programlisting><![CDATA[
+fs/select.c
+int poll_schedule_timeout(struct poll_wqueues *pwq, int state,
+			  ktime_t *expires, unsigned long slack)
+{
+	int rc = -EINTR;
+
+	set_current_state(state);
+	if (!pwq->triggered)
+		rc = schedule_hrtimeout_range(expires, slack, HRTIMER_MODE_ABS);
+	__set_current_state(TASK_RUNNING);
+
+	set_mb(pwq->triggered, 0);
+
+	return rc;
+}
+]]></programlisting>
+该函数首先设置当前进程的状态为TASK_INTERRUPTIBLE，然后通过schedule_hrtimeout_range进醒休眠，直到被唤醒或者超时，它的状态位被改为TASK_RUNNING继续运行。
+</sect3>
+<sect3><title>刷出缓冲</title>
+如果一些应用程序需要被确保数据被发送到设备, fsync 方法必须被实现为不管 O_NONBLOCK 是否被设置。 对 fsync 的调用应当只在设备被完全刷新时返回。
+<programlisting><![CDATA[
+int (*fsync) (struct file *file, struct dentry *dentry, int datasync);
+]]></programlisting>
+</sect3>
+</sect2>
+<sect2><title>异步通知</title>
+</sect2>
+<para>
+</para>
+</sect1>

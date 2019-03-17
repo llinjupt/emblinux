@@ -1,0 +1,132 @@
+<?xml version='1.0' encoding="UTF-8"?>
+<!DOCTYPE article PUBLIC "-//OASIS//DTD DocBook XML V4.5/zh_cn"
+"http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
+<article>
+  <info>
+    <title>emblinux的Howto</title>
+    <author>Red Liu</author>
+    <address>lli_njupt@163.com</address>
+    <copyright><year>2012</year><holder>Red Liu</holder></copyright>
+  </info>
+<sect1><title>文档结构</title>
+<sect2><title>代码组织结构</title>
+  <para>
+emblinux技术文档的开发工具使用标准的Docbook标记语言，它是xml的一种应用，所以所有文档的原始档均以.xml的文件形式存在，可以使用现有的xml编辑工具来编辑文档，当然也可以使用任何文本编辑工具(vim etc.)，但是必须注意以下要求：
+<itemizedlist> 
+	<listitem>必须符合Docbook标记语言的语法，否则在向目标html文档格式转换时，将提示错误。对于Docbook的语法请参考<ulink url="http://www.worldhello.net/doc/docbook_howto/">DocBook 助你完成传世之作</ulink>。</listitem>
+	<listitem>文档的编码方式必须是UTF-8 Unicode。</listitem>
+</itemizedlist>
+当前的文档组织目录如下：
+<programlisting><![CDATA[
+docbook-xsl-ns-1.75.2  docs  src  vsdtest
+]]></programlisting>
+<itemizedlist>
+	<listitem>docbook-xsl-ns-1.75.2 是Docboot的核心转换库，通常无需改变它。</listitem>
+	<listitem>docs 放置所有参考文档的原始档案。</listitem>
+	<listitem>src 放置所有.xml文档，也即所要编辑的文档。</listitem>
+	<listitem>vsdtest 放置了Windows Viso的测试当，这是emblinux当前生成图片的工具，但是由于授权问题，建议使用开源软件，请参考<ulink url="http://xbeta.info/visio-alternative.htm">Visio(流程图绘制软件)的免费替代品</ulink>。</listitem>
+</itemizedlist>
+除了src文件夹外，其它三个文件夹都不纳入SVN版本控制，这基于以下考虑:
+<itemizedlist> 
+	<listitem>docbook-xsl-ns-1.75.2 是固定的，无需更改，况且它的大小太大，不宜放在SVN上。</listitem>
+	<listitem>docs 是书写文档过程的参考文档，作为个人的参考。</listitem>
+	<listitem>vsdtest是一个固定参考文档。</listitem>
+</itemizedlist>
+  </para>
+</sect2>
+<sect2><title>源文件文档</title>
+src中除了通常的.xml原始文档外，还包含编译所需的Makefile文件，以及以下文件夹：
+<programlisting><![CDATA[
+article code images
+]]></programlisting>
+Makefile文件根据docbook-xsl-ns-1.75.2提供的转换模式将xml文件转换为对应的html文档。此外它提供了针对单个.xml文档的转换方法，位于article下的.xml文件适用当个独立的文档。
+<programlisting><![CDATA[
+all:  html
+
+html : $(HTML_FILE)
+
+%.html : %.xml ksync.xml device.xml armaddr.xml  armasm2.xml  arm.xml  atpcs2.xml  bootlinux.xml  hello1.xml linker.xml loader.xml elf.xml armhead.xml kernelinit.xml kernelinit2.xml linuxmode.xml bitmap.xml pagetab.xml armmu.xml resource.xml memory.xml parser.xml interrupt.xml kernelhead.xml timer.xml notifier.xml platform.xml preface.xml referrence.xml buddy.xml 
+	xsltproc -o $(@F) --stringparam  section.autolabel 1 --stringparam html.stylesheet styles.css $(XSLFILE) $<
+
+art : readme
+
+readme: ./article/readme.xml
+	xsltproc -o ./article/$(@F) --stringparam  section.autolabel 1 --stringparam html.stylesheet styles.css $(XSLFILE) $<
+]]></programlisting>
+<para>Makefile中的依赖关系如上所示，默认编译src下的.xml原始文档。适用make readme命令可以编译article下的readme.xml。然后查看到该Howto的.html文档。
+</para>
+src下有几个特殊文件，通常无需或者没有必要改变它们：
+<itemizedlist> 
+	<listitem>styles.css，它是生成的.html文档的样式单，通常不要改变它。</listitem>
+	<listitem>sandbox.xml 它是一个书写emblinux下.xml文档的模板，生成.html时候没有使用它，但是当创建一个新的章节时可以直接拷贝它，然后基于该文档编辑新章节。</listitem>
+	<listitem>make.sh 在编辑文档的过程中，不停的通过make命令来生成.html文档。并通过浏览器查看它以检验文档书写是否正确是一件非常繁琐的事情，所以在编辑文档时，可以直接运行该make.sh，它每隔一定时间就执行make命令。</listitem>	
+</itemizedlist>  
+<para>
+code文件夹下放置与本文档相关的.c .s文件代码，它们用于验证文档中所提到的实例。通常一个章节应该对应其中的一个子目录，所以没有的话请创建它。
+images下放置图片文件，.xml中如何引用图片文件，请参考Docbook的语法。为规范起见，应该不同的文档章节放在不同的images下的子目录下。
+</para>
+</sect2>
+<sect2><title>添加章节</title>
+  <para>
+目前emblinux已有的章节均通过index.xml来控制，每一个.xml文档代表一个独立的章节。这里以添加一个hello.xml为例。需要以下几个步骤：
+<itemizedlist> 
+	<listitem>复制sandbox.xml为hello.xml。</listitem>
+	<listitem>编辑hello.xml原始档。</listitem>
+	<listitem>在index.xml中添加hello.xml对应的引用名为hello,然后在article条目中通过&amp;hello引用它。在article放置的顺序决定了它在文章中存在的顺序。</listitem>
+	<listitem>在Makefile中的%.html依赖中添加hello.xml。</listitem>
+	<listitem>执行make，如果没有语法错误，应该生成对应的.html文件。.html文件名是Docbook默认的名字。</listitem>
+</itemizedlist>
+</para>
+</sect2>
+<sect2><title>SVN操作</title>
+SVN上主要放置两类文件，一类是生成的.html文档以及图片文件，它们开放给所有的互联网浏览者，另一类是开发源码，包括.xml以及图片等。SVN下载的方式如下，第一次使用时会提示用户名和密码，请正确输入：
+<programlisting><![CDATA[
+svn co https://svn.sinaapp.com/emblinux
+]]></programlisting>
+当代码下载完毕后，本地目录下将出现emblinux文件夹。
+<programlisting><![CDATA[
+# cd emblinux && ls
+1    2
+# cd 1 && ls
+......
+styles.css
+ar01s03.html  ar01s06.html  ar01s09.html  ar01s12.html  ar01s15.html  ar01s18.html  ar01s21.html  ar01s24.html  images
+......
+]]></programlisting>
+其中标号1为生成的.html文档及images文件夹。标号2是原始的.xml文件和images文件夹。
+<para>
+此时为了在2中编译.xml文件，需要将docbook-xsl-ns-1.75.2复制到emblinux文件夹下，然后进入2中执行make即可。
+</para>
+<para>
+通过svn ci代码时，如果是在2中，不要忘记执行make clean，如果实在1中，那么请确保将2中生成的.html文档和新的图片文件添加到1中。注意不要添加太大的图片文件，否则可能服务器空间告急。另外注意不要在emblinux下直接使用svn ci，除非你明白这条命令到底是在干什么。
+</para>
+<para>
+在使用svn上传.xml文件时，请确保已经同步到服务器上最新的文件，然后把新的改动合入主线，上传时注意书写规范的svn log！
+</para>
+</sect2>
+<sect2><title>规范建议</title>
+为了使emblinux更简明，并且具维护性，遵循一定的规范是必要的。请注意这些是强烈建议遵守的：
+<itemizedlist> 
+	<listitem>引用代码时，一定放入programlisting标记，如果是Linux内核代码，并且是在本章第一次引用，那么请在标记内的第一行加入该代码所在的文件路径，比如mm/mmap.c。</listitem>
+	<listitem>不要直接在programlisting标记的代码中注释个人的分析，除非必要。这些分析都应该整理成连贯的自然语言放在文档的正文部分。</listitem>
+	<listitem>每一章的开始应该注明使用的软件环境信息，如果该章节涉及硬件，那么应该注明硬件环境信息。</listitem>
+	<listitem>如果是引用的著作，那么请在附录内添加它，并在正文中注明。</listitem>	
+	<listitem>请不要直接黏贴或者使用他人(网站)文字及图片。</listitem>
+	<listitem>不要在文档中涉及商业广告等无关内容，也不要涉及商业机密信息。</listitem>
+	<listitem>合理使用itemizedlist和制表元素是必要的，这使得思路更加清晰，读者理解更加方便。</listitem>
+	<listitem>合理使用图片是必要的，一张图片可以明了的传递更多信息。</listitem>
+	<listitem>由浅入深是必要的，但不要对过于浅显的东西详加论述，而应该把重点放在核心部分。</listitem>
+	<listitem>图片和代码示例放在对应目录下的该章节的子目录下，如果没有请创建。</listitem>
+	<listitem>如果发生了较大的改动，比如添加了新的章节。请发送Mail告知所有维护人员。如果发现他人文档中存在技术问题，那么请发Mail告知他，有必要请抄送给所有人。</listitem>
+	<listitem>如果有好的建议请添加在这里。</listitem>
+</itemizedlist>
+</sect2>
+<sect2><title>可能的问题</title>
+经过测试的编译环境如下，推荐使用ubuntu，可能需要安装一些命令，比如xsltproc。
+<programlisting><![CDATA[
+# uname -a
+Linux ubuntu 2.6.35-28-generic #50-Ubuntu SMP Fri Mar 18 19:00:26 UTC 2011 i686 GNU/Linux
+]]></programlisting>
+</sect2>
+</sect1>
+</article>

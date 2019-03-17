@@ -1,0 +1,836 @@
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><title>11. &#20869;&#26680;&#21021;&#22987;&#21270;2</title><link rel="stylesheet" href="styles.css" type="text/css"><meta name="generator" content="DocBook XSL-NS Stylesheets V1.75.2"><link rel="home" href="index.html" title="Linux&#20869;&#26680;&#23398;&#20064;&#21644;&#30740;&#31350;&#21450;&#23884;&#20837;&#24335;(ARM)&#23398;&#20064;&#21644;&#30740;&#31350;&#30340;&#24320;&#25918;&#25991;&#26723;"><link rel="up" href="index.html" title="Linux&#20869;&#26680;&#23398;&#20064;&#21644;&#30740;&#31350;&#21450;&#23884;&#20837;&#24335;(ARM)&#23398;&#20064;&#21644;&#30740;&#31350;&#30340;&#24320;&#25918;&#25991;&#26723;"><link rel="prev" href="ar01s10.html" title="10. Bootmem&#26426;&#21046;"><link rel="next" href="ar01s12.html" title="12. &#39029;&#34920;&#26426;&#21046;"></head><body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF"><div class="navheader"><table width="100%" summary="Navigation header"><tr><th colspan="3" align="center">11. &#20869;&#26680;&#21021;&#22987;&#21270;2</th></tr><tr><td width="20%" align="left"><a accesskey="p" href="ar01s10.html">&#19978;&#19968;&#39029;</a> </td><th width="60%" align="center"> </th><td width="20%" align="right"> <a accesskey="n" href="ar01s12.html">&#19979;&#19968;&#39029;</a></td></tr></table><hr></div><div class="sect1" title="11. &#20869;&#26680;&#21021;&#22987;&#21270;2"><div class="titlepage"><div><div><h2 class="title" style="clear: both"><a name="idp80780772"></a>11. &#20869;&#26680;&#21021;&#22987;&#21270;2</h2></div></div></div>
+<div class="sect2" title="11.1. resource&#36164;&#28304;&#20998;&#37197;"><div class="titlepage"><div><div><h3 class="title"><a name="idp80844932"></a>11.1. resource&#36164;&#28304;&#20998;&#37197;</h3></div></div></div>
+	<p>
+request_standard_resources&#20026;&#20869;&#23384;&#21644;&#22806;&#35774;&#39044;&#30041;I/O&#35775;&#38382;&#36164;&#28304;&#12290;
+</p><pre class="programlisting">
+arch/arm/kernel/setup.c
+
+static void __init
+request_standard_resources(struct meminfo *mi, struct machine_desc *mdesc)
+{
+	struct resource *res;
+	int i;
+
+	kernel_code.start   = virt_to_phys(&amp;_text);
+	kernel_code.end     = virt_to_phys(&amp;_etext - 1);
+	kernel_data.start   = virt_to_phys(&amp;__data_start);
+	kernel_data.end     = virt_to_phys(&amp;_end - 1);
+</pre><p>
+mi&#21442;&#25968;&#35760;&#24405;&#20102;&#24403;&#21069;&#31995;&#32479;&#20013;&#30340;&#25152;&#26377;&#20869;&#23384;bank&#65292;&#23427;&#36890;&#36807;Bootloader&#30340;ATAG&#26426;&#21046;&#20256;&#36882;&#32473;&#20869;&#26680;&#65292;&#24182;&#23384;&#25918;&#22312;struct meminfo&#31867;&#22411;&#21516;&#21517;meminfo&#25551;&#36848;&#31526;&#20013;&#12290;&#22914;&#26524;&#31995;&#32479;&#20013;&#21482;&#25552;&#20379;&#20102;&#19968;&#20010;&#20869;&#23384;bank&#65292;&#19988;&#22823;&#23567;&#20026;256M&#65292;&#37027;&#20040;&#25171;&#21360;&#20986;&#35813;&#25551;&#36848;&#31526;&#30340;&#20449;&#24687;&#22914;&#19979;&#25152;&#31034;&#65306;
+</p><pre class="programlisting">
+mi-&gt;nr_banks:1
+bank[0]: start:0x50000000, size:0x10000000, node:0
+</pre><p>
+&#31995;&#32479;&#23450;&#20041;&#20102;&#19977;&#20010;&#26631;&#20934;&#20869;&#23384;&#36164;&#28304;&#65306;&#35270;&#39057;&#20869;&#23384;&#36164;&#28304;&#65292;&#20869;&#26680;&#20195;&#30721;&#21306;&#21644;&#20869;&#26680;&#25968;&#25454;&#21306;&#12290;
+</p><pre class="programlisting">
+static struct resource mem_res[] = {
+	{
+		.name = "Video RAM",
+		.start = 0,
+		.end = 0,
+		.flags = IORESOURCE_MEM
+	},
+	{
+		.name = "Kernel text",
+		.start = 0,
+		.end = 0,
+		.flags = IORESOURCE_MEM
+	},
+	{
+		.name = "Kernel data",
+		.start = 0,
+		.end = 0,
+		.flags = IORESOURCE_MEM
+	}
+};
+</pre><p>
+&#20869;&#26680;&#29992;&#19977;&#20010;&#23439;&#20998;&#21035;&#23545;&#24212;&#36825;&#19977;&#20010;&#26631;&#20934;&#20869;&#23384;&#36164;&#28304;&#12290;&#20989;&#25968;&#20013;&#36890;&#36807;&#36825;&#19977;&#20010;&#23439;&#36827;&#34892;&#36825;&#19977;&#20010;&#20869;&#23384;&#36164;&#28304;&#24341;&#29992;&#12290;&#30001;&#20110;mem_res&#34987;&#23450;&#20041;&#20026;static&#31867;&#22411;&#65292;&#25152;&#20197;&#23427;&#24182;&#19981;&#20250;&#22312;&#20854;&#20182;&#22320;&#26041;&#34987;&#24341;&#29992;&#65292;&#36825;&#37324;&#21482;&#26159;&#20351;&#29992;&#23427;&#26469;&#35760;&#24405;&#20869;&#26680;&#30340;&#20195;&#30721;&#21644;&#25968;&#25454;&#27573;&#22312;&#20869;&#23384;&#20013;&#30340;&#20998;&#24067;&#20449;&#24687;&#12290;
+</p><pre class="programlisting">
+#define video_ram   mem_res[0]
+#define kernel_code mem_res[1]
+#define kernel_data mem_res[2]
+</pre><p>
+&#39318;&#20808;&#36890;&#36807;alloc_bootmem_low&#20998;&#37197;&#19968;&#20010;struct resource&#31867;&#22411;&#30340;&#36164;&#28304;&#25551;&#36848;&#31526;&#65292;&#28982;&#21518;&#36890;&#36807;request_resource&#30003;&#35831;&#35813;&#36164;&#28304;&#21516;&#26102;&#27880;&#20876;&#21040;&#20869;&#26680;&#36164;&#28304;&#31649;&#29702;&#26641;&#20013;&#65292;&#20197;&#22768;&#26126;RAM&#35774;&#22791;&#23545;&#36825;&#19968;I/O&#22320;&#22336;&#21306;&#22495;&#30340;&#21344;&#26377;&#12290;
+</p><pre class="programlisting">
+	for (i = 0; i &lt; mi-&gt;nr_banks; i++) {
+		if (mi-&gt;bank[i].size == 0)
+			continue;
+
+		res = alloc_bootmem_low(sizeof(*res));
+		res-&gt;name  = "System RAM";
+		res-&gt;start = mi-&gt;bank[i].start;
+		res-&gt;end   = mi-&gt;bank[i].start + mi-&gt;bank[i].size - 1;
+		res-&gt;flags = IORESOURCE_MEM | IORESOURCE_BUSY;
+
+		request_resource(&amp;iomem_resource, res);
+
+		if (kernel_code.start &gt;= res-&gt;start &amp;&amp;
+		    kernel_code.end &lt;= res-&gt;end)
+			request_resource(res, &amp;kernel_code);
+		if (kernel_data.start &gt;= res-&gt;start &amp;&amp;
+		    kernel_data.end &lt;= res-&gt;end)
+			request_resource(res, &amp;kernel_data);
+	}
+</pre><p>
+IORESOURCE_BUSY&#25351;&#26126;&#35813;&#36164;&#28304;&#22312;&#20351;&#29992;&#20013;&#65292;&#19981;&#21487;&#34987;&#20998;&#37197;&#65292;IORESOURCE_MEM&#25351;&#26126;&#36825;&#26159;&#20351;&#29992;&#20869;&#23384;&#26144;&#23556;&#30340;&#36164;&#28304;&#12290;&#25509;&#30528;&#39044;&#30041;kernel_code&#21644;kernel_data&#21306;&#65292;&#20197;&#38450;&#20854;&#20182;&#22806;&#35774;&#30340;I/O&#22320;&#22336;&#26144;&#23556;&#21040;&#20869;&#26680;&#20195;&#30721;&#21644;&#25968;&#25454;&#21306;&#12290;&#25152;&#20197;System RAM&#36164;&#28304;&#24635;&#26159;&#31532;&#19968;&#20010;&#30003;&#35831;&#30340;&#22806;&#35774;I/O&#36164;&#28304;&#12290;
+</p><pre class="programlisting">
+	if (mdesc-&gt;video_start) {
+		video_ram.start = mdesc-&gt;video_start;
+		video_ram.end   = mdesc-&gt;video_end;
+		request_resource(&amp;iomem_resource, &amp;video_ram);
+	}
+
+	/*
+	 * Some machines don't have the possibility of ever
+	 * possessing lp0, lp1 or lp2
+	 */
+	if (mdesc-&gt;reserve_lp0)
+		request_resource(&amp;ioport_resource, &amp;lp0);
+	if (mdesc-&gt;reserve_lp1)
+		request_resource(&amp;ioport_resource, &amp;lp1);
+	if (mdesc-&gt;reserve_lp2)
+		request_resource(&amp;ioport_resource, &amp;lp2);
+}
+</pre><p>
+&#22914;&#26524;&#31995;&#32479;&#20013;&#27880;&#20876;&#20102;&#35270;&#39057;&#35774;&#22791;&#65292;&#37027;&#20040;&#36890;&#24120;&#35270;&#39057;&#39537;&#21160;&#20250;&#23558;&#35270;&#23631;&#35774;&#22791;&#21344;&#29992;&#30340;&#20869;&#23384;&#36164;&#28304;&#27880;&#20876;&#20989;&#25968;&#36807;&#36733;&#21040;&#26426;&#22120;&#25551;&#36848;&#31526;&#30340;video_start&#25351;&#38024;&#20989;&#25968;&#19978;&#12290;&#24182;&#22312;&#27492;&#26102;&#35843;&#29992;&#12290;lp0/1/2&#26159;&#32769;&#24335;&#30340;&#24182;&#21475;&#25171;&#21360;&#26426;&#35774;&#22791;&#65292;&#23427;&#20204;&#36890;&#36807;I/O&#31471;&#21475;&#26144;&#23556;&#26469;&#24037;&#20316;&#65292;&#25152;&#20197;&#27880;&#20876;&#21040;ioport_resource&#20013;&#12290;
+</p>	
+	<p>
+	</p>
+</div>
+<div class="sect2" title="11.2. cpu_init"><div class="titlepage"><div><div><h3 class="title"><a name="cpu_init"></a>11.2. cpu_init</h3></div></div></div>
+<p>
+cpu_init&#29992;&#26469;&#35774;&#32622;CPU&#22312;&#21508;&#31181;&#24037;&#20316;&#27169;&#24335;&#19979;&#30340;&#22534;&#26632;&#22320;&#22336;&#12290;&#26174;&#28982;&#20219;&#20309;&#19968;&#20010;CPU&#30340;&#22534;&#26632;&#23492;&#23384;&#22120;&#37117;&#26377;&#19968;&#20221;&#33258;&#24049;&#30340;&#25335;&#36125;&#65292;&#36825;&#26679;&#23427;&#20204;&#25165;&#33021;&#29420;&#31435;&#22788;&#29702;&#20013;&#26029;&#12290;
+</p><pre class="programlisting">
+struct stack {
+	u32 irq[3];
+	u32 abt[3];
+	u32 und[3];
+} ____cacheline_aligned;
+
+static struct stack stacks[NR_CPUS];
+
+void cpu_init(void)
+{
+	unsigned int cpu = smp_processor_id();
+	struct stack *stk = &amp;stacks[cpu];
+
+	__asm__ (
+	"msr	cpsr_c, %1\n\t"
+	"add	sp, %0, %2\n\t"
+	"msr	cpsr_c, %3\n\t"
+	"add	sp, %0, %4\n\t"
+	"msr	cpsr_c, %5\n\t"
+	"add	sp, %0, %6\n\t"
+	"msr	cpsr_c, %7"
+	    :
+	    : "r" (stk),
+	      "I" (PSR_F_BIT | PSR_I_BIT | IRQ_MODE),
+	      "I" (offsetof(struct stack, irq[0])),
+	      "I" (PSR_F_BIT | PSR_I_BIT | ABT_MODE),
+	      "I" (offsetof(struct stack, abt[0])),
+	      "I" (PSR_F_BIT | PSR_I_BIT | UND_MODE),
+	      "I" (offsetof(struct stack, und[0])),
+	      "I" (PSR_F_BIT | PSR_I_BIT | SVC_MODE)
+	    : "r14");
+}
+</pre><p>
+&#26597;&#30475;&#32534;&#35793;&#21518;&#30340;&#27719;&#32534;&#35821;&#35328;&#22914;&#19979;&#65306;
+</p><pre class="programlisting">
+c002d190:       e1a0c00d        mov     ip, sp
+c002d194:       e92dd800        push    {fp, ip, lr, pc}
+......
+c002d1c0:       e59f3024        ldr     r3, [pc, #36]   ; c002d1ec &lt;cpu_init+0x5c&gt;
+</pre><p>
+ldr&#23558;stacks&#30340;&#22320;&#22336;&#35013;&#20837;r3&#65292;&#20063;&#21363;stacks[cpu].irq[0]&#30340;&#22320;&#22336;&#12290;
+</p><pre class="programlisting">
+/* 
+ * CPSR_c&#20013;&#30340;c&#26631;&#24535;&#24847;&#21619;&#30528;&#21482;&#25913;&#21464;CPSR&#25511;&#21046;&#22495;&#23631;&#34109;&#23383;&#33410;&#20063;&#21363;cpsr[0:7]&#12290;0xd2&#23545;&#24212;IRQ&#27169;&#24335;&#65292;&#24182;&#31105;&#27490;IRQ&#21644;FIQ&#20013;&#26029;&#12290;
+ * add&#25351;&#20196;&#23558;r3+0&#23384;&#20837;sp&#65292;&#30001;&#20110;&#20219;&#20309;&#27169;&#24335;&#37117;&#26377;&#29420;&#31435;&#30340;sp&#23492;&#23384;&#22120;&#65292;&#25152;&#20197;&#36825;&#37324;&#23558;&#20381;&#27425;&#35774;&#32622;IRQ&#65292;ABT&#65292;UND&#27169;&#24335;&#30340;&#22534;&#26632;
+ */ 
+c002d1c4:       e321f0d2        msr     CPSR_c, #210    ; 0xd2
+c002d1c8:       e283d000        add     sp, r3, #0      ; 0x0
+/* ABT&#27169;&#24335;&#20851;IRQ&#21644;FIQ&#20013;&#26029;&#65292;&#23558;r3+0xc&#30340;&#20540;&#25918;&#20837;sp*/
+c002d1cc:       e321f0d7        msr     CPSR_c, #215    ; 0xd7
+c002d1d0:       e283d00c        add     sp, r3, #12     ; 0xc
+/* UND&#27169;&#24335;&#20851;IRQ&#21644;FIQ&#20013;&#26029;&#65292;&#23558;r3+0x18&#30340;&#20540;&#25918;&#20837;sp*/
+c002d1d4:       e321f0db        msr     CPSR_c, #219    ; 0xdb
+c002d1d8:       e283d018        add     sp, r3, #24     ; 0x18
+/* &#36820;&#22238;&#21040;SVC&#27169;&#24335; */
+c002d1dc:       e321f0d3        msr     CPSR_c, #211    ; 0xd3
+/* ldm &#23558;&#20445;&#23384;&#22312;sp&#20013;&#30340;&#20540;&#20986;&#26632;&#65292;&#20998;&#21035;&#20445;&#23384;&#21040;fp, sp&#21644;pc&#20013;&#65292;&#19982;&#36827;&#20837;&#20989;&#25968;&#26102;&#21387;&#26632;&#30456;&#21628;&#24212;*/
+c002d1e0:       e89da800        ldm     sp, {fp, sp, pc}
+</pre><p>
+&#26174;&#28982;&#20197;&#19978;&#30340;&#20195;&#30721;&#29992;&#26469;&#35774;&#32622;IRQ/ABT/UND&#19977;&#31181;&#27169;&#24335;&#30340;&#22534;&#26632;&#22320;&#22336;&#65292;&#24182;&#19988;&#35813;&#22320;&#22336;&#26159;&#30001;&#38745;&#24577;&#21464;&#37327;stacks&#30340;&#22320;&#22336;&#20915;&#23450;&#30340;&#12290;stacks&#30340;&#24320;&#22987;&#22320;&#22336;&#23601;&#26159;irq[0]&#30340;&#22320;&#22336;&#65292;&#24320;&#22987;&#22320;&#22336;&#30340;0xc&#20559;&#31227;&#22788;&#26159;abt[0]&#30340;&#22320;&#22336;&#65292;0x18&#30340;&#20559;&#31227;&#22788;&#21017;&#26159;und[0]&#30340;&#22320;&#22336;&#12290;
+</p><div class="figure"><a name="idp80855572"></a><p class="title"><b>&#22270; 59. IRQ/ABT/UND&#20013;&#26029;&#22534;&#26632;</b></p><div class="figure-contents"><div><img src="images/irq_stack.gif" alt="IRQ/ABT/UND&#20013;&#26029;&#22534;&#26632;"></div></div></div><p><br class="figure-break">
+&#19978;&#22270;&#20013;&#25551;&#36848;&#20102;IRQ/ABT/UND&#19977;&#31181;&#27169;&#24335;&#30340;&#22534;&#26632;&#22320;&#22336;&#65292;&#24182;&#19988;&#22534;&#26632;&#26159;&#21521;&#39640;&#22320;&#22336;&#22686;&#21152;&#65292;&#19988;&#20570;&#22810;&#21482;&#33021;&#23384;&#25918;&#19977;&#20010;&#25972;&#24418;&#25968;&#25454;&#65292;&#36825;&#19968;&#28857;&#21487;&#20197;&#22312;<a class="xref" href="ar01s16.html#irq_vector" title="16.3. &#20013;&#26029;&#21521;&#37327;">&#31532; 16.3 &#33410; &#8220;&#20013;&#26029;&#21521;&#37327;&#8221;</a>&#30475;&#21040;&#12290;&#37027;&#20040;SVC&#27169;&#24335;&#30340;&#22534;&#26632;&#22320;&#22336;&#22312;&#20309;&#22788;&#35774;&#32622;&#30340;&#21602;&#65311;&#22312;arch/arm/kernel/head.S&#20013;&#26377;&#22914;&#19979;&#20195;&#30721;&#65306;
+</p><pre class="programlisting">
+__switch_data:
+	......
+	.long	init_thread_union + THREAD_START_SP @ sp
+	......
+__mmap_switched:
+	......
+	ldmia	r3, {r4, r5, r6, r7, sp}
+	......		
+</pre><p>
+&#36825;&#37324;&#30340;sp&#20540;&#34987;&#36171;&#20540;&#20026;init_thread_union + THREAD_START_SP&#65292;init_thread_union&#26159;&#20869;&#26680;&#32447;&#31243;struct thread_info &#32467;&#26500;&#20307;&#30340;&#24320;&#22987;&#22320;&#22336;&#65292;&#36890;&#24120;&#23427;&#19982;__data_start&#30456;&#31561;&#12290;
+</p><pre class="programlisting">
+#define THREAD_SIZE_ORDER       1
+#define THREAD_SIZE             8192
+#define THREAD_START_SP         (THREAD_SIZE - 8)
+</pre><p>
+</p><p>&#20869;&#26680;&#32447;&#31243;struct thread_info &#32467;&#26500;&#20307;&#30340;&#22823;&#23567;&#20026;THREAD_SIZE&#65292;&#20854;&#20013;&#32447;&#31243;&#20449;&#24687;&#22312;&#26368;&#24213;&#37096;&#65292;&#20854;&#20313;&#30340;&#20869;&#23384;&#20316;&#20026;&#32447;&#31243;&#30340;&#22534;&#26632;&#20351;&#29992;&#12290;&#36825;&#37324;&#23558;init_thread_union&#21152;&#19978;THREAD_SIZE&#65292;&#26159;&#22240;&#20026;&#22534;&#26632;&#26159;&#21521;&#19979;&#22686;&#38271;&#30340;&#65292;&#20877;&#20943;&#21435;8&#65292;&#26159;&#20026;&#20102;&#22312;&#22534;&#26632;&#19978;&#31471;&#30041;&#20986;&#20013;&#26029;&#22788;&#29702;&#25152;&#38656;&#30340;&#31354;&#38388;&#12290;</p><p>
+</p><p>&#40664;&#35748;&#24773;&#20917;&#19979;&#20869;&#26680;&#24182;&#19981;&#24320;&#21551;FIQ&#21151;&#33021;&#65292;&#21482;&#26377;&#22312;&#37197;&#32622;CONFIG_FIQ&#26102;&#65292;&#24555;&#36895;&#20013;&#26029;&#30340;&#30456;&#20851;&#20195;&#30721;&#25165;&#20250;&#32534;&#35793;&#36827;&#20869;&#26680;&#12290;
+</p><pre class="programlisting">
+arch/arm/kernel/Makefile
+obj-$(CONFIG_FIQ)               += fiq.o
+</pre><p>
+&#32780;&#30456;&#20851;&#30340;&#20989;&#25968;&#23601;&#23450;&#20041;&#22312;fiq.c&#20013;&#65292;&#35774;&#32622;FIQ&#22534;&#26632;&#30340;&#20989;&#25968;&#22914;&#19979;&#25152;&#31034;&#65306;
+</p><pre class="programlisting">
+void __attribute__((naked)) set_fiq_regs(struct pt_regs *regs)
+{
+        register unsigned long tmp;
+        asm volatile (
+        "mov    ip, sp\n\
+        stmfd   sp!, {fp, ip, lr, pc}\n\
+        sub     fp, ip, #4\n\
+        mrs     %0, cpsr\n\
+        msr     cpsr_c, %2      @ select FIQ mode\n\
+        mov     r0, r0\n\
+        ldmia   %1, {r8 - r14}\n\
+        msr     cpsr_c, %0      @ return to SVC mode\n\
+        mov     r0, r0\n\
+        ldmfd   sp, {fp, sp, pc}"
+        : "=&amp;r" (tmp)
+        : "r" (&amp;regs-&gt;ARM_r8), "I" (PSR_I_BIT | PSR_F_BIT | FIQ_MODE));
+}
+</pre><p>
+&#36825;&#37324;ldmia&#35774;&#32622;FIQ&#22534;&#26632;&#65292;&#32780;&#21442;&#25968;&#26469;&#33258;regs&#12290;
+</p><p>
+&#36890;&#36807;&#20197;&#19978;&#30340;&#35774;&#32622;&#65292;&#20869;&#26680;&#22312;&#21508;&#20010;&#27169;&#24335;&#19979;&#30340;&#22534;&#26632;&#22914;&#19979;&#34920;&#25152;&#31034;&#65306;
+</p><div class="table"><a name="idp80860364"></a><p class="title"><b>&#34920; 12. &#20869;&#26680;&#22534;&#26632;&#35774;&#32622;</b></p><div class="table-contents">
+<table summary="&#20869;&#26680;&#22534;&#26632;&#35774;&#32622;" border="1"><colgroup><col><col></colgroup><thead><tr><th>CPU&#27169;&#24335;</th><th>&#22534;&#26632;sp</th></tr></thead><tbody><tr><td>SVC&#36229;&#32423;&#27169;&#24335;</td><td>init_thread_union + THREAD_START_SP</td></tr><tr><td>IRQ&#20013;&#26029;&#27169;&#24335;</td><td>stacks[cpu].irq</td></tr><tr><td>ABT&#20013;&#27490;&#27169;&#24335;</td><td>stacks[cpu].stack.abt</td></tr><tr><td>UND&#26410;&#23450;&#20041;&#27169;&#24335;</td><td>stacks[cpu].stack.und</td></tr><tr><td>FIQ&#27169;&#24335;</td><td>set_fiq_regs&#35774;&#23450;</td></tr></tbody></table>
+</div></div><p><br class="table-break">
+</p>
+<p></p>
+<p></p>
+<p></p>
+<p></p>
+</div>
+<div class="sect2" title="11.3. early_trap_init"><div class="titlepage"><div><div><h3 class="title"><a name="idp80864708"></a>11.3. early_trap_init</h3></div></div></div>
+<pre class="programlisting">
+	/*
+	 * Set up various architecture-specific pointers
+	 */
+	init_arch_irq = mdesc-&gt;init_irq;
+	system_timer = mdesc-&gt;timer;
+	init_machine = mdesc-&gt;init_machine;
+	early_trap_init();
+}	
+</pre>
+setup_arch&#30340;&#26368;&#21518;&#37096;&#20998;&#35760;&#24405;&#19968;&#20123;&#29305;&#23450;&#26550;&#26500;&#30340;&#25351;&#38024;&#65292;&#23427;&#20204;&#20877;&#25509;&#19979;&#26469;&#30340;&#21021;&#22987;&#21270;&#20013;&#34987;&#35843;&#29992;&#12290;
+<pre class="programlisting">
+arch/arm/kernel/traps.c
+void __init early_trap_init(void)
+{
+        unsigned long vectors = CONFIG_VECTORS_BASE;
+        extern char __stubs_start[], __stubs_end[];
+        extern char __vectors_start[], __vectors_end[];
+        extern char __kuser_helper_start[], __kuser_helper_end[];
+        int kuser_sz = __kuser_helper_end - __kuser_helper_start;
+
+        /*
+         * Copy the vectors, stubs and kuser helpers (in entry-armv.S)
+         * into the vector page, mapped at 0xffff0000, and ensure these
+         * are visible to the instruction stream.
+         */
+        memcpy((void *)vectors, __vectors_start, __vectors_end - __vectors_start);
+        memcpy((void *)vectors + 0x200, __stubs_start, __stubs_end - __stubs_start);
+        memcpy((void *)vectors + 0x1000 - kuser_sz, __kuser_helper_start, kuser_sz);
+
+        /*
+         * Copy signal return handlers into the vector page, and
+         * set sigreturn to be a pointer to these.
+         */
+        memcpy((void *)KERN_SIGRETURN_CODE, sigreturn_codes,
+               sizeof(sigreturn_codes));
+
+        flush_icache_range(vectors, vectors + PAGE_SIZE);
+        modify_domain(DOMAIN_USER, DOMAIN_CLIENT);
+}
+</pre>
+early_trap_init&#21021;&#22987;&#21270;ARM Linux&#20013;&#26029;&#21521;&#37327;&#65292;&#23427;&#24050;&#32463;&#23436;&#20840;&#20195;&#26367;&#20102;trap_init&#20989;&#25968;&#12290;&#39318;&#20808;&#36890;&#36807;memcpy&#22797;&#21046;__vectors_start&#30340;&#20013;&#26029;&#22788;&#29702;&#20989;&#25968;&#30340;&#20837;&#21475;&#21040;vectors&#65292;vectors&#34987;&#36171;&#20540;&#20026;CONFIG_VECTORS_BASE&#65292;&#23427;&#22312;.config&#20013;&#34987;&#35774;&#32622;&#20026;0xffff0000&#12290;&#23427;&#23601;&#26159;&#39029;&#34920;&#20013;&#24314;&#31435;&#30340;&#20013;&#26029;&#21521;&#37327;&#30340;&#20837;&#21475;&#22320;&#22336;&#12290;__vectors_start&#31561;&#19968;&#20123;&#21015;&#20013;&#26029;&#21521;&#37327;&#37117;&#24212;&#20197;&#22312;&#21517;&#20026;entry-arm&#20013;&#26029;&#21521;&#37327;&#34920;&#25918;&#22312;&#36825;&#20010;&#25991;&#20214;&#37324;&#12290;
+<pre class="programlisting">
+        .globl  __vectors_start
+__vectors_start:
+        swi     SYS_ERROR0 // &#22797;&#20301;&#24322;&#24120;
+        b       vector_und + stubs_offset
+        ldr     pc, .LCvswi + stubs_offset
+        b       vector_pabt + stubs_offset
+        b       vector_dabt + stubs_offset
+        b       vector_addrexcptn + stubs_offset
+        b       vector_irq + stubs_offset
+        b       vector_fiq + stubs_offset
+
+        .globl  __vectors_end
+__vectors_end:
+</pre>
+__vectors_start&#33267;__vectors_end&#20043;&#38388;&#20026;&#24322;&#24120;&#21521;&#37327;&#34920;&#12290;&#24403;&#26377;&#24322;&#24120;&#21457;&#29983;&#26102;&#65292;&#22788;&#29702;&#22120;&#20250;&#36339;&#36716;&#21040;&#23545;&#24212;&#30340;0xffff0000&#36215;&#22987;&#30340;&#21521;&#37327;&#22788;&#21462;&#25351;&#20196;&#65292;&#28982;&#21518;&#65292;&#36890;&#36807;b&#25351;&#20196;&#25955;&#36716;&#21040;&#24322;&#24120;&#22788;&#29702;&#20195;&#30721;&#65294;&#22240;&#20026;ARM&#20013;b&#25351;&#20196;&#26159;&#30456;&#23545;&#36339;&#36716;&#65292;&#32780;&#19988;&#21482;&#26377;+/-32MB&#30340;&#23547;&#22336;&#33539;&#22260;&#65292;&#25152;&#20197;&#25226;__stubs_start~__stubs_end&#20043;&#38388;&#30340;&#24322;&#24120;&#22788;&#29702;&#20195;&#30721;&#22797;&#21046;&#21040;&#20102;0xffff0200&#36215;&#22987;&#22788;,&#36825;&#37324;&#21487;&#30452;&#25509;&#29992;b&#25351;&#20196;&#36339;&#36716;&#36807;&#21435;&#65292;&#36825;&#26679;&#27604;&#20351;&#29992;&#32477;&#23545;&#36339;&#36716;&#65288;ldr)&#25928;&#29575;&#39640;&#12290;__stubs_start&#33267;__stubs_end&#20043;&#38388;&#26159;&#24322;&#24120;&#22788;&#29702;&#30340;&#20301;&#32622;&#12290;&#20063;&#20301;&#20110;&#25991;&#20214;arch/arm/kernel/entry-armv.S&#20013;&#65292;&#36825;&#37096;&#20998;&#20195;&#30721;&#34987;&#22797;&#21046;&#21040;0xffff0200&#22788;&#12290;vector_und&#31561;&#21442;&#25968;&#36890;&#36807;&#23439;vector_stub&#25193;&#23637;&#32780;&#25104;&#12290;
+<pre class="programlisting">
+	.macro	vector_stub, name, mode, correction=0
+	.align	5
+
+vector_\name:
+	.if \correction
+	sub	lr, lr, #\correction
+	.endif
+
+	@
+	@ Save r0, lr_&lt;exception&gt; (parent PC) and spsr_&lt;exception&gt;
+	@ (parent CPSR)
+	@
+	stmia	sp, {r0, lr}		@ save r0, lr
+	mrs	lr, spsr
+	str	lr, [sp, #8]		@ save spsr
+
+	@
+	@ Prepare for SVC32 mode.  IRQs remain disabled.
+	@
+	mrs	r0, cpsr
+	eor	r0, r0, #(\mode ^ SVC_MODE)
+	msr	spsr_cxsf, r0
+
+	@
+	@ the branch table must immediately follow this code
+	@
+	and	lr, lr, #0x0f
+	mov	r0, sp
+	ldr	lr, [pc, lr, lsl #2]
+	movs	pc, lr			@ branch to handler in SVC mode
+ENDPROC(vector_\name)
+	.endm
+</pre>
+stubs_offset&#26159;&#22914;&#20309;&#30830;&#23450;&#30340;&#21602;?&#24403;&#27719;&#32534;&#22120;&#30475;&#21040;B&#25351;&#20196;&#21518;&#20250;&#25226;&#35201;&#36339;&#36716;&#30340;&#26631;&#31614;&#36716;&#21270;&#20026;&#30456;&#23545;&#20110;&#24403;&#21069;PC&#30340;&#20559;&#31227;&#37327;&#65288;±32M&#65289;&#20889;&#20837;&#25351;&#20196;&#30721;&#12290;&#20174;&#19978;&#38754;&#30340;&#20195;&#30721;&#21487;&#20197;&#30475;&#21040;&#20013;&#26029;&#21521;&#37327;&#34920;&#21644;stubs&#37117;&#21457;&#29983;&#20102;&#20195;&#30721;&#25644;&#31227;&#65292;&#25152;&#20197;&#22914;&#26524;&#20013;&#26029;&#21521;&#37327;&#34920;&#20013;&#20173;&#28982;&#20889;&#25104;b vector_irq&#65292;&#37027;&#20040;&#23454;&#38469;&#25191;&#34892;&#30340;&#26102;&#20505;&#23601;&#26080;&#27861;&#36339;&#36716;&#21040;&#25644;&#31227;&#21518;&#30340;vector_irq&#22788;&#65292;&#22240;&#20026;&#25351;&#20196;&#30721;&#37324;&#20889;&#30340;&#26159;&#21407;&#26469;&#30340;&#20559;&#31227;&#37327;&#65292;&#25152;&#20197;&#38656;&#35201;&#25226;&#25351;&#20196;&#30721;&#20013;&#30340;&#20559;&#31227;&#37327;&#20889;&#25104;&#25644;&#31227;&#21518;&#30340;&#12290;&#25105;&#20204;&#25226;&#25644;&#31227;&#21069;&#30340;&#20013;&#26029;&#21521;&#37327;&#34920;&#20013;&#30340;irq&#20837;&#21475;&#22320;&#22336;&#35760;irq_PC,&#23427;&#22312;&#20013;&#26029;&#21521;&#37327;&#34920;&#30340;&#20559;&#31227;&#37327;&#23601;&#26159;irq_PC-vectors_start, vector_irq&#22312;stubs&#20013;&#30340;&#20559;&#31227;&#37327;&#26159;vector_irq-stubs_start&#65292;&#36825;&#20004;&#20010;&#20559;&#31227;&#37327;&#22312;&#25644;&#31227;&#21069;&#21518;&#26159;&#19981;&#21464;&#30340;&#12290;&#25644;&#31227;&#21518; vectors_start&#22312;0xffff0000&#22788;&#65292;&#32780;stubs_start&#22312;0xffff0200&#22788;&#65292;&#25152;&#20197;&#25644;&#31227;&#21518;&#30340;vector_irq&#30456;&#23545;&#20110;&#20013;&#26029; &#21521;&#37327;&#20013;&#30340;&#20013;&#26029;&#20837;&#21475;&#22320;&#22336;&#30340;&#20559;&#31227;&#37327;&#23601;&#26159;&#65292;200+vector_irq&#22312;stubs&#20013;&#30340;&#20559;&#31227;&#37327;&#20877;&#20943;&#21435;&#20013;&#26029;&#20837;&#21475;&#22312;&#21521;&#37327;&#34920;&#20013;&#30340;&#20559;&#31227;&#37327;&#65292;&#21363;200+ vector_irq-stubs_start-irq_PC+vectors_start = (vector_irq-irq_PC) + vectors_start+200-stubs_start,&#23545;&#20110;&#25324;&#21495;&#20869;&#30340;&#20540;&#23454;&#38469;&#19978;&#23601;&#26159;&#20013;&#26029;&#21521;&#37327;&#34920;&#20013;&#20889;&#30340;vector_irq&#65292;&#20943;&#21435;irq_PC&#26159;&#30001;&#27719;&#32534;&#22120;&#23436;&#25104;&#30340;&#65292;&#32780;&#21518;&#38754;&#30340; vectors_start+200-stubs_start&#23601;&#24212;&#35813;&#26159;stubs_offset&#65292;&#23454;&#38469;&#19978;&#22312;entry-armv.S&#20013;&#20063;&#26159;&#36825;&#26679;&#23450;&#20041;&#30340;&#12290;
+<pre class="programlisting">
+	.globl	__stubs_start
+__stubs_start:
+/*
+ * Interrupt dispatcher
+ */
+	vector_stub	irq, IRQ_MODE, 4
+
+	.long	__irq_usr			@  0  (USR_26 / USR_32)
+	.long	__irq_invalid			@  1  (FIQ_26 / FIQ_32)
+	.long	__irq_invalid			@  2  (IRQ_26 / IRQ_32)
+	.long	__irq_svc			@  3  (SVC_26 / SVC_32)
+	.long	__irq_invalid			@  4
+	.long	__irq_invalid			@  5
+	.long	__irq_invalid			@  6
+	......
+.LCvswi:
+	.word	vector_swi
+
+	.globl	__stubs_end
+__stubs_end:
+
+	.equ	stubs_offset, __vectors_start + 0x200 - __stubs_start
+</pre>
+<p>
+</p>
+</div>
+<div class="sect2" title="11.4. sched_init"><div class="titlepage"><div><div><h3 class="title"><a name="idp80872396"></a>11.4. sched_init</h3></div></div></div>
+<pre class="programlisting">
+	sched_init();
+	/*
+	 * Disable preemption - early bootup scheduling is extremely
+	 * fragile until we cpu_idle() for the first time.
+	 */
+	preempt_disable();
+</pre>
+sched_init&#21021;&#22987;&#21270;&#36827;&#31243;&#35843;&#24230;&#22120;&#12290;preempt_disable&#31105;&#27490;&#35843;&#24230;&#65292;&#36825;&#26159;&#20026;&#20102;&#20869;&#26680;&#36827;&#19968;&#27493;&#21021;&#22987;&#21270;&#20854;&#20182;&#37096;&#20998;&#12290;&#24403;&#35843;&#29992;&#26368;&#21518;&#19968;&#20010;&#20989;&#25968;rest_init&#26102;&#65292;&#36890;&#36807;cpu_idle&#23436;&#25104;&#31532;&#19968;&#27425;&#35843;&#24230;&#12290;
+</div>
+<div class="sect2" title="11.5. setup_command_line"><div class="titlepage"><div><div><h3 class="title"><a name="idp80873452"></a>11.5. setup_command_line</h3></div></div></div>
+command_line&#21442;&#25968;&#22312;start_kernel&#20013;&#23450;&#20041;&#65292;&#28982;&#21518;&#22312;setup_arch&#20013;&#34987;&#36171;&#20104;&#20540;&#12290;setup_arch&#39318;&#20808;&#23545;CONFIG_CMDLINE&#20256;&#36882;&#30340;&#21442;&#25968;&#36890;&#36807;parse_cmdline&#36827;&#34892;&#35299;&#26512;&#12290;parse_cmdline&#23545;&#25152;&#26377;__early_param&#23439;&#23450;&#20041;&#30340;&#21442;&#25968;&#36827;&#34892;&#35299;&#26512;&#65306;
+<pre class="programlisting">
+./mm/mmu.c:125:__early_param("cachepolicy=", early_cachepolicy);
+./mm/mmu.c:133:__early_param("nocache", early_nocache);
+./mm/mmu.c:141:__early_param("nowb", early_nowrite);
+./mm/mmu.c:153:__early_param("ecc=", early_ecc);
+./mm/mmu.c:655:__early_param("vmalloc=", early_vmalloc);
+./mm/init.c:46:__early_param("initrd=", early_initrd);
+./kernel/setup.c:415:__early_param("mem=", early_mem);
+</pre>
+&#25152;&#26377;&#26410;&#34987;__early_param&#23450;&#20041;&#30340;&#21442;&#25968;&#22343;&#34987;&#20256;&#36882;&#32473;setup_command_line&#20989;&#25968;&#12290;
+<pre class="programlisting">
+/*
+ * We need to store the untouched command line for future reference.
+ * We also need to store the touched command line since the parameter
+ * parsing is performed in place, and we should allow a component to
+ * store reference of name/value for future reference.
+ */
+static void __init setup_command_line(char *command_line)
+{
+	saved_command_line = alloc_bootmem(strlen (boot_command_line)+1);
+	static_command_line = alloc_bootmem(strlen (command_line)+1);
+	strcpy (saved_command_line, boot_command_line);
+	strcpy (static_command_line, command_line);
+}
+</pre>
+saved_command_line&#21644;static_command_line&#39318;&#20808;&#36890;&#36807;Bootmem&#26426;&#21046;&#20998;&#37197;&#20869;&#23384;&#65292;&#28982;&#21518;&#20998;&#21035;&#20445;&#23384;&#26410;&#22788;&#29702;&#30340;&#21407;&#22987;&#21629;&#20196;&#34892;&#65292;&#20197;&#21450;&#36890;&#36807;parse_cmdline&#22788;&#29702;&#36807;&#30340;&#21629;&#20196;&#34892;&#65292;&#19968;&#20010;&#23454;&#38469;&#30340;&#31034;&#20363;&#22914;&#19979;&#65306;
+<pre class="programlisting">
+CONFIG_CMDLINE="root=/dev/mtdblock2 rootfstype=cramfs init=/linuxrc console=ttySAC0,115200 mem=256M"
+
+saved_command_line:root=/dev/mtdblock2 rootfstype=cramfs console=ttySAC0,115200 mem=256M bootmem_debug=1
+static_command_line:root=/dev/mtdblock2 rootfstype=cramfs console=ttySAC0,115200 bootmem_debug=1
+</pre>
+</div>
+<div class="sect2" title="11.6. build_all_zonelists"><div class="titlepage"><div><div><h3 class="title"><a name="idp80876692"></a>11.6. build_all_zonelists</h3></div></div></div>
+<pre class="programlisting">
+mm/page_alloc.c
+
+void build_all_zonelists(void)
+{
+	set_zonelist_order();
+</pre>
+set_zonelist_order&#20989;&#25968;&#19982;CONFIG_NUMA&#26159;&#21542;&#23450;&#20041;&#26377;&#20851;&#65292;&#27809;&#26377;&#23450;&#26102;&#65292;&#22914;&#19979;&#25152;&#31034;&#65306;
+<pre class="programlisting">
+/*
+ *  zonelist_order:
+ *  0 = automatic detection of better ordering.
+ *  1 = order by ([node] distance, -zonetype)
+ *  2 = order by (-zonetype, [node] distance)
+ *
+ *  If not NUMA, ZONELIST_ORDER_ZONE and ZONELIST_ORDER_NODE will create
+ *  the same zonelist. So only NUMA can configure this param.
+ */ 
+#define ZONELIST_ORDER_DEFAULT  0 
+#define ZONELIST_ORDER_NODE     1
+#define ZONELIST_ORDER_ZONE     2
+
+static void set_zonelist_order(void)
+{
+	current_zonelist_order = ZONELIST_ORDER_ZONE;
+}
+</pre>
+<pre class="programlisting">
+include/linux/kernel.h
+/* Values used for system_state */
+extern enum system_states {
+        SYSTEM_BOOTING,
+        SYSTEM_RUNNING,
+        SYSTEM_HALT,
+        SYSTEM_POWER_OFF,
+        SYSTEM_RESTART,
+        SYSTEM_SUSPEND_DISK,
+} system_state;
+
+	if (system_state == SYSTEM_BOOTING) {
+		__build_all_zonelists(NULL);
+		mminit_verify_zonelist();
+		cpuset_init_current_mems_allowed();
+	} else {
+		/* we have to stop all cpus to guarantee there is no user
+		   of zonelist */
+		stop_machine(__build_all_zonelists, NULL, NULL);
+		/* cpuset refresh routine should be here */
+	}
+</pre>
+system_state&#40664;&#35748;&#34987;&#21021;&#22987;&#21270;&#20026;SYSTEM_BOOTING&#65292;&#23427;&#22312;rest_init&#25165;&#20250;&#34987;&#25913;&#21464;&#20026;SYSTEM_RUNNING&#12290;&#36825;&#37324;&#36890;&#36807;__build_all_zonelists&#26469;&#35774;&#32622;&#20869;&#23384;&#31649;&#29702;&#21306;&#20013;&#30340;&#20998;&#37197;&#22120;&#21442;&#32771;&#38142;&#34920;zonelists&#25104;&#21592;&#65292;&#23427;&#26681;&#25454;&#35775;&#38382;&#20248;&#20808;&#32423;&#26469;&#23558;&#19981;&#36890;&#31649;&#29702;&#21306;&#25346;&#22312;&#21040;&#35813;&#38142;&#34920;&#12290;&#36890;&#24120;&#21482;&#26377;&#37197;&#32622;&#20102;CONFIG_NUMA&#26102;&#25165;&#26377;&#25928;&#65292;&#21542;&#21017;&#21482;&#26159;&#25353;&#24403;&#21069;&#33410;&#28857;&#20013;&#30340;node_zones&#25968;&#32452;&#25104;&#21592;&#30340;&#19979;&#26631;&#20381;&#24207;&#21152;&#20837;zonelists&#12290;
+<pre class="programlisting">	
+	vm_total_pages = nr_free_pagecache_pages();
+	/*
+	 * Disable grouping by mobility if the number of pages in the
+	 * system is too low to allow the mechanism to work. It would be
+	 * more accurate, but expensive to check per-zone. This check is
+	 * made on memory-hotadd so a system can start with mobility
+	 * disabled and enable it later
+	 */
+	if (vm_total_pages &lt; (pageblock_nr_pages * MIGRATE_TYPES))
+		page_group_by_mobility_disabled = 1;
+	else
+		page_group_by_mobility_disabled = 0;
+
+	printk("Built %i zonelists in %s order, mobility grouping %s.  "
+		"Total pages: %ld\n",
+			num_online_nodes(),
+			zonelist_order_name[current_zonelist_order],
+			page_group_by_mobility_disabled ? "off" : "on",
+			vm_total_pages);
+#ifdef CONFIG_NUMA
+	printk("Policy zone: %s\n", zone_names[policy_zone]);
+#endif
+</pre>
+&#26681;&#25454;&#24403;&#21069;&#31995;&#32479;&#20013;&#30340;&#29289;&#29702;&#20869;&#23384;&#22823;&#23567;&#65292;&#26469;&#20915;&#23450;&#26159;&#21542;&#21551;&#29992;&#27969;&#21160;&#20998;&#32452;(Mobility Grouping)&#26426;&#21046;&#65292;&#36825;&#31181;&#26426;&#21046;&#21487;&#20197;&#22312;&#20998;&#37197;&#22823;&#20869;&#23384;&#22359;&#26102;&#20943;&#23569;&#20869;&#23384;&#30862;&#29255;&#12290;&#26174;&#28982;&#21482;&#26377;&#20869;&#23384;&#36275;&#22815;&#22823;&#26102;&#25165;&#20250;&#21551;&#29992;&#35813;&#21151;&#33021;&#12290;
+</div>
+<div class="sect2" title="11.7. page_alloc_init"><div class="titlepage"><div><div><h3 class="title"><a name="idp80880012"></a>11.7. page_alloc_init</h3></div></div></div>
+<p>
+</p><pre class="programlisting">
+void __init page_alloc_init(void)
+{
+	hotcpu_notifier(page_alloc_cpu_notify, 0);
+}
+</pre><p>
+hotcpu_notifier&#26159;&#19968;&#20010;&#23439;&#65292;&#22312;&#32534;&#35793;&#36873;&#39033;CONFIG_HOTPLUG_CPU(CPU&#28909;&#25554;&#25300;)&#36215;&#20316;&#29992;&#26102;&#65292;&#23427;&#25165;&#26377;&#25928;&#12290;&#21542;&#21017;&#19981;&#20570;&#20219;&#20309;&#20107;&#24773;&#12290;
+</p><pre class="programlisting">
+include/linux/cpu.h
+/* old style is :hotcpu_notifier(fn, pri) do { } while (0)  */
+#define hotcpu_notifier(fn, pri)  do { (void)(fn); } while (0)
+</pre><p>
+&#26087;&#20195;&#30721;&#30340;&#23450;&#20041;&#35201;&#23481;&#26131;&#29702;&#35299;&#65292;&#20063;&#21363;&#26410;&#20351;&#33021;CONFIG_HOTPLUG_CPU&#26102;&#65292;&#20160;&#20040;&#20063;&#19981;&#20570;&#12290;(void)(fn)&#25193;&#23637;&#24320;&#23601;&#26159;(void)(page_alloc_cpu_notify)&#65292;&#36825;&#24182;&#19981;&#26159;&#23545;&#20989;&#25968;page_alloc_cpu_notify&#30340;&#24341;&#29992;&#65292;&#32780;&#26159;&#31867;&#20284;&#20110;int a; (int)(a);&#30340;&#19968;&#31181;&#20351;&#29992;&#26041;&#24335;&#65292;GCC&#20250;&#23558;&#36825;&#31181;&#20195;&#30721;&#20248;&#21270;&#25481;&#12290;&#20026;&#20160;&#20040;&#35201;&#36825;&#26679;&#20570;&#21602;&#65311;&#36825;&#26159;&#20026;&#20102;&#22312;&#27809;&#26377;&#37197;&#32622;CPU&#28909;&#25554;&#25300;&#21151;&#33021;&#30340;&#31995;&#32479;&#19978;&#36991;&#20813;GCC&#31867;&#20284;&#30340;&#25265;&#24616;&#65306;
+</p><pre class="programlisting">
+mm/page_alloc.c:4152: warning: 'page_alloc_cpu_notify' defined but not used
+</pre><p>
+&#24635;&#32780;&#35328;&#20043;&#65292;page_alloc_init&#20989;&#25968;&#21482;&#26377;&#22312;&#24320;&#21551;CONFIG_HOTPLUG_CPU&#26102;&#65292;&#25165;&#26377;&#20316;&#29992;&#65292;&#27492;&#26102;&#23436;&#25104;&#23545;&#27599;&#20010;CPU&#30340;&#36890;&#21578;&#21151;&#33021;&#12290;
+</p>
+</div>
+<div class="sect2" title="11.8. &#31532;&#20108;&#38454;&#27573;&#30340;&#21442;&#25968;&#35299;&#26512;"><div class="titlepage"><div><div><h3 class="title"><a name="idp80883860"></a>11.8. &#31532;&#20108;&#38454;&#27573;&#30340;&#21442;&#25968;&#35299;&#26512;</h3></div></div></div>
+<pre class="programlisting">
+	parse_early_param();
+	parse_args("Booting kernel", static_command_line, __start___param,
+		   __stop___param - __start___param,
+		   &amp;unknown_bootoption);
+</pre>
+parse_early_param&#21442;&#25968;&#35299;&#26512;&#20989;&#25968;&#20027;&#35201;&#38024;&#23545;__setup_param&#22768;&#26126;&#30340;&#21442;&#25968;&#36827;&#34892;&#35299;&#26512;&#12290;parse_args&#22312;&#36825;&#37324;&#20027;&#35201;&#38024;&#23545;&#32534;&#35793;&#36827;&#20869;&#26680;&#30340;&#27169;&#22359;&#20013;&#30340;&#21442;&#25968;&#36827;&#34892;&#35299;&#26512;&#12290;
+<pre class="programlisting">
+/* Sort the kernel's built-in exception table */
+void __init sort_main_extable(void)
+{
+	sort_extable(__start___ex_table, __stop___ex_table);
+}
+</pre>
+sort_main_extable&#23545;__start___ex_table&#21644;__stop___ex_table&#20043;&#38388;&#30340;&#24322;&#24120;&#34920;struct exception_table_entry&#20803;&#32032;&#36827;&#34892;&#25490;&#24207;&#65292;&#20197;&#21152;&#24555;&#23545;&#24322;&#24120;&#30340;&#22788;&#29702;&#12290;
+<pre class="programlisting">
+arch/arm/kernel/vmlinux.lds.S
+                __start___ex_table = .;
+#ifdef CONFIG_MMU
+                *(__ex_table)
+#endif
+                __stop___ex_table = .;
+</pre>
+&#23450;&#20041;&#21040;__ex_table&#33410;&#20013;&#30340;&#20195;&#30721;&#22343;&#30001;&#27719;&#32534;&#25110;&#32773;&#20869;&#23884;&#35821;&#35328;&#20889;&#25104;&#65292;&#20363;&#22914;&#65306;
+<pre class="programlisting">
+arch/arm/kernel/entry-armv.S
+	.section .fixup, "ax"
+4:	mov	pc, r9
+	.previous
+	.section __ex_table,"a"
+	.long	1b, 4b
+</pre>
+__ex_table&#33410;&#20013;&#30340;"a"&#26159;&#25351;&#35813;&#33410;&#20013;&#30340;&#20195;&#30721;&#38656;&#35201;&#20998;&#37197;&#20869;&#23384;&#12290;.long 1b, 4b&#21017;&#20998;&#21035;&#21069;&#38754;&#30340;&#26631;&#21495;1&#21644;4&#65292;&#20854;&#20013;&#22914;&#26524;&#26631;&#21495;1&#23545;&#24212;&#30340;&#23376;&#31243;&#24207;&#22914;&#26524;&#22788;&#29702;&#20013;&#20986;&#29616;&#38382;&#39064;&#65292;&#21017;&#32487;&#32493;&#32487;&#32493;&#26631;&#21495;4&#30340;&#23376;&#31243;&#24207;&#65292;&#20197;&#30830;&#20445;&#21487;&#20197;&#22312;&#24322;&#24120;&#22788;&#29702;&#20013;&#36820;&#22238;&#12290;
+&#25509;&#19979;&#26469;&#30340;trap_init()&#26159;&#19968;&#20010;&#31354;&#20989;&#25968;&#65292;&#23427;&#34987;&#21508;&#20010;&#31995;&#32479;&#26550;&#26500;&#19979;&#30340;trap&#21021;&#22987;&#21270;&#20195;&#30721;&#21462;&#20195;&#12290;
+</div>
+<div class="sect2" title="11.9. rcu_init"><div class="titlepage"><div><div><h3 class="title"><a name="idp80887004"></a>11.9. rcu_init</h3></div></div></div>
+Read-Copy-Update&#26426;&#21046;&#22312;&#27492;&#26102;&#21021;&#22987;&#21270;&#65292;&#23427;&#22522;&#20110;&#20462;&#25913;&#21103;&#26412;&#65292;&#32780;&#35835;&#32773;&#21487;&#20197;&#22312;&#19981;&#21152;&#38145;&#30340;&#24773;&#20917;&#19979;&#26469;&#35835;&#21462;&#36164;&#28304;&#65292;&#24403;&#27809;&#26377;&#35835;&#32773;&#35835;&#21462;&#26102;&#23558;&#21103;&#26412;&#26367;&#25442;&#65292;&#24182;&#22312;&#36866;&#24403;&#30340;&#26102;&#21051;&#37322;&#25918;&#26087;&#30340;&#25968;&#25454;&#12290;&#23427;&#22312;&#35835;&#21435;&#27425;&#25968;&#22810;&#65292;&#32780;&#20889;&#30340;&#27425;&#25968;&#23569;&#65292;&#24182;&#19988;&#36164;&#28304;&#21306;&#21487;&#20197;&#36890;&#36807;&#25351;&#38024;&#34920;&#31034;&#30340;&#24773;&#20917;&#19979;&#24456;&#39640;&#25928;&#12290;RCU&#30340;&#21021;&#22987;&#21270;&#20301;&#20110;start_kernel&#20013;&#30340;rcu_init&#20195;&#30721;&#22914;&#19979;: 
+<pre class="programlisting">
+kernel/rcupdate.c
+void __init rcu_init(void)
+{
+	__rcu_init();
+}
+
+kernel/rcuclassic.c
+void __init __rcu_init(void)
+{
+	rcu_cpu_notify(&amp;rcu_nb, CPU_UP_PREPARE,
+			(void *)(long)smp_processor_id());
+	/* Register notifier for non-boot CPUs */
+	register_cpu_notifier(&amp;rcu_nb);
+}
+</pre>
+rcu&#26426;&#21046;&#30340;&#26680;&#24515;&#20070;&#31821;&#32467;&#26500;&#26159;&#21517;&#20026;rcu_nb&#30340;&#36890;&#30693;&#38142;&#34920;&#32467;&#26500;struct notifier_block&#12290;&#36890;&#30693;&#38142;&#34920;&#33410;&#28857;&#30340;&#32467;&#26500;&#22914;&#19979;&#65292;&#20854;&#20013;notifier_call&#26159;&#36890;&#30693;&#20107;&#20214;&#30340;&#22788;&#29702;&#20989;&#25968;&#65292;priority&#21017;&#26159;&#35813;&#33410;&#28857;&#30340;&#20248;&#20808;&#32423;&#12290;
+<pre class="programlisting">
+struct notifier_block {
+	int (*notifier_call)(struct notifier_block *, unsigned long, void *);
+	struct notifier_block *next;
+	int priority;
+};
+
+static struct notifier_block __cpuinitdata rcu_nb = {
+	.notifier_call	= rcu_cpu_notify,
+};
+</pre>
+rcu_nb&#30340;&#36890;&#30693;&#22788;&#29702;&#20989;&#25968;&#20026;rcu_cpu_notify&#65292;&#23427;&#29992;&#26469;&#22788;&#29702;&#20197;&#19979;&#20107;&#20214;&#65306;CPU_UP_PREPARE&#65292;CPU_UP_PREPARE_FROZEN&#21644;CPU_DEAD&#65292;CPU_DEAD_FROZEN&#65292;&#23427;&#20204;&#20998;&#21035;&#23545;&#24212;CPU&#19978;&#32447;&#21644;&#19979;&#32447;&#12290;
+<pre class="programlisting">
+static int __cpuinit rcu_cpu_notify(struct notifier_block *self,
+				unsigned long action, void *hcpu)
+{
+	long cpu = (long)hcpu;
+
+	switch (action) {
+	case CPU_UP_PREPARE:
+	case CPU_UP_PREPARE_FROZEN:
+		rcu_online_cpu(cpu);
+		break;
+	case CPU_DEAD:
+	case CPU_DEAD_FROZEN:
+		rcu_offline_cpu(cpu);
+		break;
+	default:
+		break;
+	}
+	return NOTIFY_OK;
+}
+</pre>
+&#22312;&#31995;&#32479;&#21021;&#22987;&#35805;&#38454;&#27573;&#65292;__rcu_init&#23558;&#22312;&#24403;&#21069;CPU&#19978;&#27880;&#20876;CPU_UP_PREPARE&#20107;&#20214;&#12290;&#23545;&#24212;&#30340;&#22788;&#29702;&#20989;&#25968;&#20026;&#65306;rcu_online_cpu&#12290;
+<pre class="programlisting">
+static void rcu_init_percpu_data(int cpu, struct rcu_ctrlblk *rcp,
+						struct rcu_data *rdp)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&amp;rcp-&gt;lock, flags);
+	memset(rdp, 0, sizeof(*rdp));
+	rdp-&gt;nxttail[0] = rdp-&gt;nxttail[1] = rdp-&gt;nxttail[2] = &amp;rdp-&gt;nxtlist;
+	rdp-&gt;donetail = &amp;rdp-&gt;donelist;
+	rdp-&gt;quiescbatch = rcp-&gt;completed;
+	rdp-&gt;qs_pending = 0;
+	rdp-&gt;cpu = cpu;
+	rdp-&gt;blimit = blimit;
+	spin_unlock_irqrestore(&amp;rcp-&gt;lock, flags);
+}
+
+static void __cpuinit rcu_online_cpu(int cpu)
+{
+	struct rcu_data *rdp = &amp;per_cpu(rcu_data, cpu);
+	struct rcu_data *bh_rdp = &amp;per_cpu(rcu_bh_data, cpu);
+
+	rcu_init_percpu_data(cpu, &amp;rcu_ctrlblk, rdp);
+	rcu_init_percpu_data(cpu, &amp;rcu_bh_ctrlblk, bh_rdp);
+	open_softirq(RCU_SOFTIRQ, rcu_process_callbacks);
+}
+</pre>
+&#27599;CPU&#22343;&#26377;&#19968;&#20010;rcu_data&#65292;rcu_ctrlblk&#26159;&#25511;&#21046;&#22359;(Control Block)&#12290;&#36825;&#37324;&#21487;&#20197;&#30475;&#21040;RCU&#26426;&#21046;&#26159;&#36890;&#36807;RCU_SOFTIRQ&#36719;&#20013;&#26029;&#23454;&#29616;&#30340;&#12290;&#22312;RCU_SOFTIRQ&#36719;&#20013;&#26029;&#34987;&#21021;&#20986;&#21457;&#26102;&#65292;&#22788;&#29702;&#20989;&#25968;rcu_process_callbacks&#23558;&#22788;&#29702;rcu_data&#21644;rcu_bh_data&#25968;&#25454;&#12290;&#20869;&#26680;&#32447;&#31243;ksoftirqd&#21017;&#29992;&#26469;&#32479;&#19968;&#22788;&#29702;&#36719;&#20013;&#26029;&#12290;
+<pre class="programlisting">
+static void rcu_process_callbacks(struct softirq_action *unused)
+{
+	smp_mb(); /* See above block comment. */
+	__rcu_process_callbacks(&amp;rcu_ctrlblk, &amp;__get_cpu_var(rcu_data));
+	__rcu_process_callbacks(&amp;rcu_bh_ctrlblk, &amp;__get_cpu_var(rcu_bh_data));
+	smp_mb(); /* See above block comment. */
+}
+
+void open_softirq(int nr, void (*action)(struct softirq_action *))
+{
+	softirq_vec[nr].action = action;
+}
+</pre>
+</div>
+<div class="sect2" title="11.10. init_IRQ"><div class="titlepage"><div><div><h3 class="title"><a name="idp80891844"></a>11.10. init_IRQ</h3></div></div></div>
+init_IRQ&#21021;&#22987;&#21270;&#20013;&#26029;&#25551;&#36848;&#31526;&#20013;&#30340;status&#12290;&#32780;init_arch_irq&#21017;&#30001;&#29305;&#23450;&#30340;&#31995;&#32479;&#26550;&#26500;&#25552;&#20379;&#65292;&#20197;&#29992;&#26469;&#21021;&#22987;&#21270;&#31995;&#32479;&#20013;&#30340;&#20013;&#26029;&#21151;&#33021;&#12290;
+<pre class="programlisting">
+void __init init_IRQ(void)
+{
+	int irq;
+
+	for (irq = 0; irq &lt; NR_IRQS; irq++)
+		irq_desc[irq].status |= IRQ_NOREQUEST | IRQ_NOPROBE;
+
+#ifdef CONFIG_SMP
+	bad_irq_desc.affinity = CPU_MASK_ALL;
+	bad_irq_desc.cpu = smp_processor_id();
+#endif
+	init_arch_irq();
+}
+</pre>
+NR_IRQS&#20381;&#25454;CPU&#31995;&#32479;&#26550;&#26500;&#35774;&#23450;&#12290;
+<pre class="programlisting">
+arch/arm/plat-s3c64xx/include/plat/irqs.h
+/* Set the default NR_IRQS */
+#define NR_IRQS (IRQ_EINT_GROUP9_BASE + IRQ_EINT_GROUP9_NR + 1)
+</pre>
+init_arch_irq&#22312;&#21021;&#22987;&#21270;&#31995;&#32479;&#26550;&#26500;&#30456;&#20851;&#30340;&#20195;&#30721;&#20013;&#34987;&#36171;&#20540;&#20026;init_irq&#65292;&#36825;&#37324;&#20026;s3c6410_init_irq&#12290;
+<pre class="programlisting">
+arch/arm/kernel/setup.c
+void __init setup_arch(char **cmdline_p)
+{
+......
+init_arch_irq = mdesc-&gt;init_irq;
+......
+}
+</pre>
+
+<pre class="programlisting">
+arch/arm/mach-s3c6410/cpu.c
+void __init s3c6410_init_irq(void)
+{
+	/* VIC0 is missing IRQ7, VIC1 is fully populated. */
+  s3c64xx_init_irq(~0 &amp; ~(1 &lt;&lt; 7), ~0);
+}
+</pre>
+<pre class="programlisting">
+arch/arm/plat-s3c64xx/irq.c
+void __init s3c64xx_init_irq(u32 vic0_valid, u32 vic1_valid)
+{
+  int uart, irq;
+
+  printk(KERN_DEBUG "%s: initialising interrupts\n", __func__);
+
+  /* initialise the pair of VICs */
+  vic_init(S3C_VA_VIC0, S3C_VIC0_BASE, vic0_valid);
+  vic_init(S3C_VA_VIC1, S3C_VIC1_BASE, vic1_valid);
+
+  /* add the timer sub-irqs */
+  set_irq_chained_handler(IRQ_TIMER0_VIC, s3c_irq_demux_timer0);
+  set_irq_chained_handler(IRQ_TIMER1_VIC, s3c_irq_demux_timer1);
+  set_irq_chained_handler(IRQ_TIMER2_VIC, s3c_irq_demux_timer2);
+  set_irq_chained_handler(IRQ_TIMER3_VIC, s3c_irq_demux_timer3);
+  set_irq_chained_handler(IRQ_TIMER4_VIC, s3c_irq_demux_timer4);
+
+  for (irq = IRQ_TIMER0; irq &lt;= IRQ_TIMER4; irq++) {
+          set_irq_chip(irq, &amp;s3c_irq_timer);
+          set_irq_handler(irq, handle_level_irq);
+          set_irq_flags(irq, IRQF_VALID);
+  }
+
+  for (uart = 0; uart &lt; ARRAY_SIZE(uart_irqs); uart++)
+          s3c64xx_uart_irq(&amp;uart_irqs[uart]);
+}
+</pre>
+&#27880;&#24847;&#21040;&#36825;&#20123;&#37117;&#26159;&#23545;&#24213;&#23618;&#30828;&#20214;&#23492;&#23384;&#22120;&#30340;&#25805;&#20316;&#12290;S3C_VA_VIC0&#34394;&#25311;&#22320;&#22336;&#26159;&#22312;setup_arch&#20013;mdesc-&gt;map_io&#30340;&#25805;&#20316;&#23454;&#29616;&#26144;&#23556;&#30340;&#65306;
+<pre class="programlisting">
+arch/arm/plat-s3c64xx/cpu.c
+static struct map_desc s3c_iodesc[] __initdata = {
+  {
+          .virtual        = (unsigned long)S3C_VA_SYS,
+          .pfn            = __phys_to_pfn(S3C64XX_PA_SYSCON),
+          .length         = SZ_4K,
+          .type           = MT_DEVICE,
+  }, {
+          .virtual        = (unsigned long)(S3C_VA_UART + UART_OFFS),
+          .pfn            = __phys_to_pfn(S3C_PA_UART),
+          .length         = SZ_4K,
+          .type           = MT_DEVICE,
+  }, {
+          .virtual        = (unsigned long)S3C_VA_VIC0,
+          .pfn            = __phys_to_pfn(S3C64XX_PA_VIC0),
+          .length         = SZ_16K,
+          .type           = MT_DEVICE,
+  }, {
+          .virtual        = (unsigned long)S3C_VA_VIC1,
+          .pfn            = __phys_to_pfn(S3C64XX_PA_VIC1),
+          .length         = SZ_16K,
+          .type           = MT_DEVICE,
+  }, {
+          .virtual        = (unsigned long)S3C_VA_TIMER,
+          .pfn            = __phys_to_pfn(S3C_PA_TIMER),
+          .length         = SZ_16K,
+          .type           = MT_DEVICE,
+  }, {
+          .virtual        = (unsigned long)S3C64XX_VA_GPIO,
+          .pfn            = __phys_to_pfn(S3C64XX_PA_GPIO),
+          .length         = SZ_4K,
+          .type           = MT_DEVICE,
+  },
+};
+</pre>
+<div class="itemizedlist"><ul class="itemizedlist" type="disc"><li class="listitem">S3C64XX_PA_SYSCON&#23545;&#24212;&#31995;&#32479;&#30340;&#25511;&#21046;&#25509;&#21475;&#23492;&#23384;&#22120;&#22320;&#22336;&#65307;&#31995;&#32479;&#25511;&#21046;&#22120;&#25511;&#21046;PLL&#65292;&#26102;&#38047;&#21457;&#29983;&#22120;&#65292;&#30005;&#28304;&#31649;&#29702;&#37096;&#20998;&#21644;&#20854;&#20182;&#31995;&#32479;&#37096;&#20998;&#12290;</li><li class="listitem">S3C_PA_UART&#23545;&#24212;UART&#25511;&#21046;&#22120;&#12290;</li><li class="listitem">S3C64XX_PA_VIC0&#21644;S3C64XX_PA_VIC1&#23545;&#24212;&#30690;&#37327;&#20013;&#26029;&#25511;&#21046;&#22120;&#12290;</li><li class="listitem">S3C_PA_TIMER&#23545;&#24212;PWM&#33033;&#23485;&#35843;&#21046;&#23450;&#26102;&#22120;&#12290;</li><li class="listitem">S3C64XX_PA_GPIO&#21017;&#23545;&#24212;&#20102;&#36890;&#29992;IO&#31471;&#21475;&#12290;</li></ul></div>
+</div>
+<div class="sect2" title="11.11. pidhash_init"><div class="titlepage"><div><div><h3 class="title"><a name="idp80899732"></a>11.11. pidhash_init</h3></div></div></div>
+LINUX&#36827;&#31243;&#24635;&#26159;&#20250;&#20998;&#37197;&#19968;&#20010;&#21495;&#30721;&#29992;&#20110;&#22312;&#20854;&#21629;&#20196;&#31354;&#38388;&#20013;&#21807;&#19968;&#22320;&#26631;&#35782;&#23427;&#20204;&#12290;&#35813;&#21495;&#30721;&#34987;&#31216;&#20316;&#36827;&#31243;ID&#21495;&#65292;&#31616;&#31216;PID&#12290;&#29992;fork&#25110;clone&#20135;&#29983;&#30340;&#27599;&#20010;&#36827;&#31243;&#37117;&#30001;&#20869;&#26680;&#33258;&#21160;&#22320;&#20998;&#37197;&#19968;&#20010;&#26032;&#30340;&#21807;&#19968;&#30340;PID&#20540;&#12290;&#20026;&#20102;&#20415;&#20110;&#31649;&#29702;PID&#65292;&#31995;&#32479;&#23450;&#20041;&#20102;&#19968;&#20010;&#21704;&#24076;&#25968;&#32452;&#12290;
+<pre class="programlisting">
+kernel/pid.c
+static struct hlist_head *pid_hash;
+</pre>
+hlist_head&#31867;&#22411;&#26159;&#19968;&#20010;&#20869;&#26680;&#29992;&#20110;&#24314;&#31435;&#21452;&#38142;&#25955;&#21015;&#34920;&#30340;&#26631;&#20934;&#25968;&#25454;&#32467;&#26500;&#12290;pid_hash&#29992;&#20316;&#19968;&#20010;hlist_head&#25968;&#32452;&#65292;&#25968;&#32452;&#30340;&#20803;&#32032;&#25968;&#30446;&#21462;&#20915;&#20110;&#35745;&#31639;&#26426;&#30340;&#20869;&#23384;&#37197;&#32622;&#65292;&#20026;16&#21040;4096&#20043;&#38388;&#30340;2&#30340;&#24130;&#25351;&#25968;&#12290;
+<pre class="programlisting">
+void __init pidhash_init(void)
+{
+	int i, pidhash_size;
+	unsigned long megabytes = nr_kernel_pages &gt;&gt; (20 - PAGE_SHIFT);
+
+	pidhash_shift = max(4, fls(megabytes * 4));
+	pidhash_shift = min(12, pidhash_shift);
+	pidhash_size = 1 &lt;&lt; pidhash_shift;
+
+	printk("PID hash table entries: %d (order: %d, %Zd bytes)\n",
+		pidhash_size, pidhash_shift,
+		pidhash_size * sizeof(struct hlist_head));
+
+	pid_hash = alloc_bootmem(pidhash_size *	sizeof(*(pid_hash)));
+	if (!pid_hash)
+		panic("Could not alloc pidhash!\n");
+	for (i = 0; i &lt; pidhash_size; i++)
+		INIT_HLIST_HEAD(&amp;pid_hash[i]);
+}
+</pre>
+pidhash_init&#22312;&#31995;&#32479;&#21551;&#21160;&#26102;&#34987;&#25191;&#34892;&#65292;&#20027;&#35201;&#20570;&#20102;&#20197;&#19979;&#24037;&#20316;&#65306;
+<div class="itemizedlist"><ul class="itemizedlist" type="disc"><li class="listitem">&#26681;&#25454;nr_kernel_pages&#25351;&#23450;&#30340;&#20869;&#23384;&#22823;&#23567;&#35745;&#31639;PID&#21704;&#24076;&#34920;&#30340;&#22823;&#23567;pidhash_size&#12290;</li><li class="listitem">&#22312;&#32456;&#31471;&#25171;&#21360;&#20986;&#20998;&#37197;&#30340;&#34920;&#30340;&#22823;&#23567;&#65292;&#25152;&#21344;&#30340;&#38454;&#25968;&#20197;&#21450;&#24635;&#30340;&#21344;&#29992;&#20869;&#23384;&#23383;&#33410;&#25968;&#12290;</li><li class="listitem">&#36890;&#36807;Bootmem&#31995;&#32479;&#20026;pid_hash&#20998;&#37197;&#31354;&#38388;&#12290;</li><li class="listitem">&#36890;&#36807;INIT_HLIST_HEAD&#21021;&#22987;&#21270;hash&#34920;&#12290;</li></ul></div>
+</div>
+<div class="sect2" title="11.12. init_timers"><div class="titlepage"><div><div><h3 class="title"><a name="idp80903100"></a>11.12. init_timers</h3></div></div></div>
+<pre class="programlisting">
+void __init init_timers(void)
+{
+	int err = timer_cpu_notify(&amp;timers_nb, (unsigned long)CPU_UP_PREPARE,
+				(void *)(long)smp_processor_id());
+
+	init_timer_stats();
+
+	BUG_ON(err == NOTIFY_BAD);
+	register_cpu_notifier(&amp;timers_nb);
+	open_softirq(TIMER_SOFTIRQ, run_timer_softirq);
+}
+</pre>
+init_timers&#20027;&#35201;&#21021;&#22987;&#21270;&#26412;&#22320;&#36719;&#20214;&#26102;&#38047;&#65306;
+<div class="itemizedlist"><ul class="itemizedlist" type="disc"><li class="listitem">&#21021;&#22987;&#21270;&#26412; CPU &#19978;&#30340;&#36719;&#20214;&#26102;&#38047;&#30456;&#20851;&#30340;&#25968;&#25454;&#32467;&#26500;&#12290;</li><li class="listitem">&#21521;cpu_chain&#36890;&#30693;&#38142;&#27880;&#20876;&#20803;&#32032; timers_nb&#65292;&#35813;&#20803;&#32032;&#30340;&#22238;&#35843;&#20989;&#25968;&#29992;&#20110;&#21021;&#22987;&#21270;&#25351;&#23450;CPU&#19978;&#30340;&#36719;&#20214;&#26102;&#38047;&#30456;&#20851;&#30340;&#25968;&#25454;&#32467;&#26500;&#12290;</li><li class="listitem">&#21021;&#22987;&#21270;&#26102;&#38047;&#30340;&#36719;&#20013;&#26029;&#22788;&#29702;&#20989;&#25968;&#12290;</li></ul></div>
+&#19982;RCU&#26426;&#21046;&#31867;&#20284;&#65292;&#36719;&#20214;&#26102;&#38047;&#20063;&#26159;&#36890;&#36807;&#36719;&#20013;&#26029;&#23454;&#29616;&#30340;&#12290;init_timers&#35843;&#29992;timer_cpu_notify&#21021;&#22987;&#21270;&#20869;&#26680;&#23450;&#26102;&#22120;struct tvec_base&#32467;&#26500;&#12290;timer_jiffies&#25104;&#21592;&#25351;&#26126;&#20102;&#26368;&#36817;&#21363;&#23558;&#36229;&#26102;&#30340;&#30456;&#23545;&#20540;&#65292;&#20063;&#21363;tv1[0]&#30340;&#36229;&#26102;&#30456;&#23545;&#20540;&#12290;
+<pre class="programlisting">
+struct tvec_base {
+	spinlock_t lock;
+	struct timer_list *running_timer;
+	unsigned long timer_jiffies;
+	struct tvec_root tv1;
+	struct tvec tv2;
+	struct tvec tv3;
+	struct tvec tv4;
+	struct tvec tv5;
+} ____cacheline_aligned;
+
+kernel/timer.c
+struct tvec_base boot_tvec_bases;
+</pre>
+<div class="figure"><a name="idp80906164"></a><p class="title"><b>&#22270; 60. &#20869;&#26680;&#23450;&#26102;&#22120;&#24067;&#23616;</b></p><div class="figure-contents"><div><img src="images/timer.gif" alt="&#20869;&#26680;&#23450;&#26102;&#22120;&#24067;&#23616;"></div></div></div><br class="figure-break">
+&#20869;&#26680;&#23450;&#26102;&#22120;&#30340;&#32467;&#26500;&#22914;&#19978;&#22270;&#25152;&#31034;&#12290;&#23427;&#38388;&#25509;&#23450;&#20041;&#20102;&#20116;&#20010;&#25968;&#32452;&#65292;&#20854;&#20013;&#31532;&#19968;&#20010;&#25968;&#32452;&#26159;tvec_root&#31867;&#22411;&#65292;&#20854;&#20313;&#22235;&#20010;&#22343;&#20026;tvec&#31867;&#22411;&#65292;&#23427;&#20204;&#23454;&#38469;&#37117;&#26159;&#23545;&#38142;&#34920;&#22836;&#36827;&#34892;&#30340;&#25968;&#32452;&#23553;&#35013;&#12290;&#20869;&#26680;&#20026;&#20102;&#24555;&#36895;&#21450;&#26102;&#30340;&#22788;&#29702;&#23450;&#26102;&#22120;&#65292;&#23427;&#23558;&#19981;&#21516;&#30340;&#23450;&#26102;&#22120;&#26681;&#25454;&#21040;&#26399;&#26102;&#38388;&#20998;&#21035;&#20998;&#32452;&#65292;&#26368;&#38752;&#21069;&#30340;&#25918;&#22312;tv1&#20013;&#65292;&#20381;&#27425;&#31867;&#25512;&#12290;
+<pre class="programlisting">
+struct tvec {
+	struct list_head vec[TVN_SIZE];
+};
+
+struct tvec_root {
+	struct list_head vec[TVR_SIZE];
+};
+</pre>
+&#30001;&#20110;&#27599;&#20010;&#20998;&#32452;&#26412;&#36523;&#26159;&#19968;&#20010;&#21452;&#21521;&#38142;&#34920;&#65292;
+<div class="table"><a name="idp80908020"></a><p class="title"><b>&#34920; 13. &#23450;&#26102;&#22120;&#26102;&#38388;&#38388;&#38548;</b></p><div class="table-contents">
+<table summary="&#23450;&#26102;&#22120;&#26102;&#38388;&#38388;&#38548;" border="1"><colgroup><col><col></colgroup><thead><tr><th>&#26102;&#38388;&#20998;&#32452; </th><th> &#26102;&#38388;&#38388;&#38548; </th></tr></thead><tbody><tr><td>tv1</td><td>0&#33267;255</td></tr><tr><td>tv2</td><td>2<sup>8</sup>&#33267;2<sup>14</sup>-1</td></tr><tr><td>tv3</td><td>2<sup>14</sup>&#33267;2<sup>20</sup>-1</td></tr><tr><td>tv4</td><td>2<sup>20</sup>&#33267;2<sup>26</sup>-1</td></tr><tr><td>tv5</td><td>2<sup>26</sup>&#33267;2<sup>32</sup>-1</td></tr></tbody></table>
+</div></div><br class="table-break">
+<p>
+TVR_SIZE&#21644;TVN_SIZE&#20915;&#23450;&#20102;tvec_root&#21644;tvec&#30340;&#38142;&#34920;&#30340;&#20010;&#25968;&#12290;&#22914;&#26524;&#20026;&#20102;&#33410;&#32422;&#20869;&#23384;&#21487;&#20197;&#37197;&#32622;CONFIG_BASE_SMALL&#20026;0&#65292;&#21542;&#21017;TVN_BITS&#30340;&#20540;&#20026;6&#65292;&#32780;TVR_BITS&#23545;&#24212;8&#12290;&#25152;&#20197;tvec_root&#21644;tvec&#30340;&#38142;&#34920;&#30340;&#20010;&#25968;&#20998;&#21035;&#20026;256&#21644;64&#12290;&#25152;&#20197;&#23545;&#20110;tv1&#26469;&#35828;&#65292;&#23427;&#30340;&#27599;&#19968;&#20010;&#38142;&#34920;&#23545;&#24212;&#19982;&#23427;&#30340;&#19979;&#26631;&#30456;&#21516;&#30340;&#21040;&#26399;&#26102;&#38388;&#30340;&#23450;&#26102;&#22120;&#12290;
+</p><pre class="programlisting">
+#define TVN_BITS (CONFIG_BASE_SMALL ? 4 : 6)
+#define TVR_BITS (CONFIG_BASE_SMALL ? 6 : 8)
+#define TVN_SIZE (1 &lt;&lt; TVN_BITS)
+#define TVR_SIZE (1 &lt;&lt; TVR_BITS)
+</pre><p>
+</p>
+timer_cpu_notify&#22312;&#21021;&#22987;&#21270;&#38454;&#27573;&#26102;&#21442;&#25968;action&#34987;&#25351;&#23450;&#20026;CPU_UP_PREPARE&#65292;&#27492;&#26102;&#23427;&#23558;&#35843;&#29992;init_timers_cpu&#26469;&#21021;&#22987;&#21270;&#24403;&#21069;CPU&#23545;&#24212;&#30340;tvec_base&#32467;&#26500;&#12290;&#23545;&#20110;&#38750;SMP&#31995;&#32479;&#26469;&#35828;&#23601;&#26159;boot_tvec_bases&#12290;&#21021;&#22987;&#21270;&#30340;&#20195;&#30721;&#22914;&#19979;&#65306;
+<pre class="programlisting">
+/kernel/timer.c(init_timers_cpu)
+	spin_lock_init(&amp;base-&gt;lock);
+
+	for (j = 0; j &lt; TVN_SIZE; j++) {
+		INIT_LIST_HEAD(base-&gt;tv5.vec + j);
+		INIT_LIST_HEAD(base-&gt;tv4.vec + j);
+		INIT_LIST_HEAD(base-&gt;tv3.vec + j);
+		INIT_LIST_HEAD(base-&gt;tv2.vec + j);
+	}
+	for (j = 0; j &lt; TVR_SIZE; j++)
+		INIT_LIST_HEAD(base-&gt;tv1.vec + j);
+
+	base-&gt;timer_jiffies = jiffies;
+</pre>
+init_timer_stats&#20989;&#25968;&#21482;&#26377;&#22312;&#37197;&#32622;CONFIG_TIMER_STATS&#26102;&#25165;&#26377;&#25928;&#65292;&#21542;&#21017;&#20026;&#31354;&#20989;&#25968;&#12290;register_cpu_notifier&#22312;SMP&#19978;&#26377;&#25928;&#65292;&#21542;&#21017;&#20026;&#31354;&#20989;&#25968;&#12290;open_softirq&#29992;&#26469;&#27880;&#20876;TIMER_SOFTIRQ&#36719;&#20013;&#26029;&#30340;&#22788;&#29702;&#20989;&#25968;run_timer_softirq&#12290;run_timer_softirq&#29992;&#26469;&#22312;&#36719;&#20013;&#26029;&#20013;&#20351;&#29992;&#21518;&#21322;&#27493;&#26469;&#36827;&#34892;&#23450;&#26102;&#22120;&#38142;&#34920;&#30340;&#22788;&#29702;&#12290;
+</div>
+<div class="sect2" title="11.13. hrtimers_init"><div class="titlepage"><div><div><h3 class="title"><a name="idp80915908"></a>11.13. hrtimers_init</h3></div></div></div>
+hrtimers_init&#19982;init_timers&#31867;&#20284;&#65292;&#20294;&#26159;&#23427;&#21021;&#22987;&#21270;&#27599;CPU&#21464;&#37327;hrtimer_bases&#65292;&#23427;&#29992;&#26469;&#23454;&#29616;&#39640;&#31934;&#24230;&#23450;&#26102;&#22120;&#12290;
+</div>
+</div><div class="navfooter"><hr><table width="100%" summary="Navigation footer"><tr><td width="40%" align="left"><a accesskey="p" href="ar01s10.html">&#19978;&#19968;&#39029;</a> </td><td width="20%" align="center"> </td><td width="40%" align="right"> <a accesskey="n" href="ar01s12.html">&#19979;&#19968;&#39029;</a></td></tr><tr><td width="40%" align="left" valign="top">10. Bootmem&#26426;&#21046; </td><td width="20%" align="center"><a accesskey="h" href="index.html">&#36215;&#22987;&#39029;</a></td><td width="40%" align="right" valign="top"> 12. &#39029;&#34920;&#26426;&#21046;</td></tr></table></div></body></html>

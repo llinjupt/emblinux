@@ -1,0 +1,68 @@
+<sect1><title>内核通知链</title>
+<sect2><title>概述</title>
+<para>
+在Linux内核中，各个子系统之间有很强的相互关系，某些子系统可能对其它子系统产生的事件感兴趣。为了让某个子系统在发生某个事件时通知感兴趣的子系统，Linux内核引入了通知链技术。通知链只能够在内核的子系统之间使用，而不能够在内核和用户空间进行事件的通知。</para>
+<para>
+组成内核的核心系统代码均位于kernel目录下，通知链表就位于其中，它位于kernel/notifier.c中，对应的头文件为include/linux/notifier.h。通知链表机制并不复杂，实现它的代码只有区区几百行。
+</para>
+</sect2>
+<sect2><title>数据结构</title>
+所有通知链的核心数据结构都位于notifier.h中。通知链的核心结构是notifier_block 。
+<programlisting><![CDATA[
+struct notifier_block {
+        int (*notifier_call)(struct notifier_block *, unsigned long, void *);
+        struct notifier_block *next;
+        int priority;
+};
+]]></programlisting>
+其中notifier_call是通知链要执行的函数指针，next用来连接其它的通知结构，priority是这个通知的优先级，同一条链上的notifier_block是按优先级排列的。内核代码中一般把通知链命名为xxx_chain, xxx_nofitier_chain这种形式的变量名。围绕核心数据结构notifier_block，内核定义了四种通知链类型：<?linebreak?>
+<para>
+<emphasis>1.</emphasis>原子通知链（ Atomic notifier chains ）：通知链元素的回调函数（当事件发生时要执行的函数）在中断或原子操作上下文中运行，不允许阻塞。对应的链表头结构：
+<programlisting><![CDATA[
+struct atomic_notifier_head {
+        spinlock_t lock;
+        struct notifier_block *head;
+};
+]]></programlisting>
+</para><para>
+<emphasis>2.</emphasis>可阻塞通知链（ Blocking notifier chains ）：通知链元素的回调函数在进程上下文中运行，允许阻塞。对应的链表头：
+<programlisting><![CDATA[
+struct blocking_notifier_head {
+        struct rw_semaphore rwsem;
+        struct notifier_block *head;
+};
+]]></programlisting>
+</para>
+<para>
+<emphasis>3.</emphasis>原始通知链（ Raw notifier chains ）：对通知链元素的回调函数没有任何限制，所有锁和保护机制都由调用者维护。对应的链表头：
+<programlisting><![CDATA[
+struct raw_notifier_head {
+        struct notifier_block *head;
+};
+]]></programlisting>
+</para><para>
+<emphasis>4.</emphasis>SRCU 通知链（ SRCU notifier chains ）：可阻塞通知链的一种变体。对应的链表头：
+<programlisting><![CDATA[
+struct srcu_notifier_head {
+        struct mutex mutex;
+        struct srcu_struct srcu;
+        struct notifier_block *head;
+};
+]]></programlisting>
+</para>
+</sect2>
+<sect2><title>运作机制</title>
+<para>
+通知链的运作机制包括两个角色：
+<itemizedlist> 
+	<listitem>被通知者：对某一事件感兴趣一方。定义了当事件发生时，相应的处理函数，即回调函数，被通知者将其注册到通知链中（被通知者注册的动作就是在通知链中增加一项）。</listitem>
+	<listitem>通知者：事件的通知者。当检测到某事件，或者本身产生事件时，通知所有对该事件感兴趣的一方事件发生。它定义了一个通知链，其中保存了每一个被通知者对事件的回调函数。通知这个过程实际上就是遍历通知链中的每一项，然后调用相应的回调函数。</listitem>
+</itemizedlist>
+包括以下过程：
+<itemizedlist> 
+<listitem>通知者定义通知链。</listitem>
+<listitem>被通知者向通知链中注册回调函数。</listitem>
+<listitem>当事件发生时，通知者发出通知（执行通知链中所有元素的回调函数）。</listitem></itemizedlist>
+</para>
+</sect2>
+</sect1>

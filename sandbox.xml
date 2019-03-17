@@ -1,0 +1,35 @@
+<sect1><title>DocBook语法参考</title>
+<sect2><title>语法测试沙箱</title>
+	<para>
+<programlisting><![CDATA[
+
+]]></programlisting>	
+	</para>	
+	<para>
+	</para>
+</sect2>
+<sect2><title id="test">Sandbox</title>
+	<table><title>Memory Hierarchy</title>
+	<tgroup cols="2">
+	<thead><row><entry></entry><entry>
+	</entry></row></thead>
+	<tbody>
+	<row><entry></entry><entry></entry></row>		
+	</tbody>
+	</tgroup>
+	</table>
+<itemizedlist> 
+	<listitem></listitem>
+	<listitem></listitem>
+</itemizedlist>
+<programlisting><![CDATA[
+<figure><title>内核RAM布局</title><graphic fileref="images/kernelmap.gif"/></figure>
+]]></programlisting>	
+10<superscript>0</superscript>=1
+10<subscript>0</subscript>=1
+<xref linkend="test"/>
+&lt; &gt;
+<footnote><para>到底位于哪里呢？</para></footnote>
+<emphasis>强调</emphasis>
+</sect2>
+</sect1>
